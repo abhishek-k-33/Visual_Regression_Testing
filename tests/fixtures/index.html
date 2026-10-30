@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Visual Regression Test Fixture</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 24px;
+      border-bottom: 1px solid #334155;
+      margin-bottom: 32px;
+    }
+    h1 {
+      font-size: 28px;
+      color: #38bdf8;
+    }
+    .timestamp {
+      background: #1e293b;
+      padding: 8px 16px;
+      border-radius: 6px;
+      color: #94a3b8;
+      font-size: 14px;
+    }
+    .hero {
+      margin-bottom: 40px;
+    }
+    .hero p {
+      font-size: 18px;
+      color: #94a3b8;
+      line-height: 1.6;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+      margin-bottom: 40px;
+    }
+    @media (max-width: 600px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 24px;
+    }
+    .card h2 {
+      color: #f1f5f9;
+      margin-bottom: 12px;
+      font-size: 20px;
+    }
+    .card p {
+      color: #94a3b8;
+      line-height: 1.5;
+    }
+    .animated-banner {
+      background: linear-gradient(90deg, #6366f1, #a855f7);
+      padding: 16px;
+      border-radius: 8px;
+      text-align: center;
+      animation: pulse 1s infinite alternate;
+      margin-bottom: 30px;
+    }
+    @keyframes pulse {
+      from { transform: scale(1); opacity: 0.8; }
+      to { transform: scale(1.02); opacity: 1; }
+    }
+    .dynamic-ad {
+      background: #475569;
+      color: #fbbf24;
+      padding: 12px;
+      border-radius: 6px;
+      text-align: center;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Visual Regression Test Fixture</h1>
+      <div class="timestamp">Dynamic Clock: <span id="clock">12:00:00</span></div>
+    </header>
+
+    <div class="animated-banner">
+      Special Offer: Continuous Visual Testing
+    </div>
+
+    <div class="hero">
+      <p>This fixture validates multi-viewport rendering, animation freezing, and CSS selector masking.</p>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Card Alpha</h2>
+        <p>Deterministic layout verification card across desktop and mobile viewports.</p>
+      </div>
+      <div class="card">
+        <h2>Card Beta</h2>
+        <p>Validates container queries and responsive flex/grid adaptations.</p>
+      </div>
+    </div>
+
+    <div class="dynamic-ad">
+      Live Dynamic Ad (Masked before capture)
+    </div>
+  </div>
+</body>
+</html>

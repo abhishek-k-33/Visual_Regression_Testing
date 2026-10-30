@@ -1,0 +1,24 @@
+{
+  "baseUrl": "https://example.com",
+  "routes": [
+    "/"
+  ],
+  "viewports": [
+    {
+      "name": "desktop",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "name": "mobile",
+      "width": 375,
+      "height": 812
+    }
+  ],
+  "maskSelectors": [
+    ".timestamp",
+    ".dynamic-ad",
+    "img.avatar"
+  ],
+  "threshold": 0.01
+}

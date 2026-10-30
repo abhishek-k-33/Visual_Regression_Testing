@@ -107,10 +107,40 @@ To validate the phase completion, three deterministic verification checks were e
 
 ---
 
-## 6. Next Implementation Milestone
+## 6. Phase 1, Part 2: Configuration & Capture Engine Implementation
 
-**Milestone:** Phase 1, Part 2  
+### Deliverables Completed
+
+1. **`visual.config.json`**:
+   - Standardized JSON specification defining `baseUrl`, `routes`, `viewports` (desktop/mobile), `maskSelectors`, and `threshold`.
+
+2. **Configuration Validator & Loader (`src/cli/config.js`)**:
+   - Strict schema validation checking valid HTTP/HTTPS URLs, non-empty routes, positive integer dimensions, unique viewport names, and valid threshold bounds (0 to 1).
+   - Normalization helpers: strips trailing slashes on base URLs, automatically prepends leading slashes on route paths, and applies sensible defaults.
+   - CLI runtime override support.
+
+3. **Multi-Viewport Headless Capture Engine (`src/cli/capture.js`)**:
+   - Playwright Chromium headless automation.
+   - Deterministic style injection: freezes all CSS animations, transitions, caret blink, and smooth scrolling behaviors (`* { transition: none !important; animation: none !important; }`).
+   - Region masking: Injects `visibility: hidden !important` for elements matching `maskSelectors` to prevent false positive regressions from dynamic timestamps, clocks, and rotating banners.
+   - Full-page responsive screenshot capture saving organized artifacts per run ID.
+
+4. **CLI Entry Point (`src/cli/index.js`)**:
+   - Commander-based command-line interface.
+   - Provides `visual-ci capture` command with options for `--config`, `--run-id`, `--base-url`, and `--output-dir`.
+
+5. **Test Suites & Verification Deliverables**:
+   - **Unit Tests:** 14 tests for configuration validation/loading, 9 tests for slug generation and deterministic CSS rules (`tests/config.test.js`, `tests/capture.test.js`).
+   - **Integration Test:** 1 automated integration test launching a real headless browser against a test server (`tests/capture-integration.test.js`). All 24 tests passed in Vitest.
+   - **Phase 1 Deliverable Check:** Executed `tests/verify-phase-1.js` with a local responsive fixture page. Generated and verified deterministic desktop (`1440x900`, 64.9 KB) and mobile (`375x829`, 49.0 KB) PNG snapshots under `storage/runs/test-init/`.
+
+---
+
+## 7. Next Implementation Milestone
+
+**Milestone:** Phase 2  
 **Deliverables:**
-1. Specification and creation of `visual.config.json`.
-2. Implementation of configuration validator and default fallback loader.
-3. Unit test coverage for configuration edge cases (missing routes, invalid viewports, negative thresholds).
+1. Implementation of `src/cli/compare.js` with `pixelmatch` and `pngjs`.
+2. Automatic dimension normalization: canvas resizing and buffer padding for height/width mismatches.
+3. Baseline promotion and `NEW_BASELINE` detection logic.
+4. Diff screenshot generation and terminal mismatch percentage reporting.
