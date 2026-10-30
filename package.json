@@ -1,0 +1,40 @@
+{
+  "name": "visual-regression-tool",
+  "version": "1.0.0",
+  "description": "Self-hosted, open-source Visual Regression Testing and CI tool",
+  "type": "module",
+  "main": "src/cli/index.js",
+  "bin": {
+    "visual-ci": "./src/cli/index.js"
+  },
+  "scripts": {
+    "start": "node src/server/app.js",
+    "server": "node src/server/app.js",
+    "capture": "node src/cli/index.js capture",
+    "test:visual": "node src/cli/index.js test",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "visual-regression",
+    "testing",
+    "playwright",
+    "ci",
+    "screenshot",
+    "pixelmatch"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "commander": "^13.1.0",
+    "ejs": "^3.1.10",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "pixelmatch": "^7.1.0",
+    "playwright": "^1.50.1",
+    "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.7"
+  }
+}

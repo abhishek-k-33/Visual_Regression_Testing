@@ -1,0 +1,33 @@
+# Environment files
+.env*
+
+
+# Node
+node_modules/
+dist/
+build/
+coverage/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Visual Regression Tool storage & database
+storage/runs/*
+!storage/runs/.gitkeep
+storage/*.sqlite
+storage/*.sqlite-journal
+storage/*.sqlite3
+*.sqlite
+*.sqlite-journal
+*.sqlite3
+*.db
+
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.antigravity/
+
+
