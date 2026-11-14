@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
+import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from './config.js';
-import { captureScreenshots } from './capture.js';
+import { captureScreenshots, getSnapshotFilename } from './capture.js';
+import { compareSnapshot } from './compare.js';
 
 const program = new Command();
 
@@ -56,6 +58,108 @@ program
       console.log('──────────────────────────────────────────────────────\n');
     } catch (err) {
       console.error(`\n[ERROR] Capture failed: ${err.message}\n`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('test')
+  .description('Capture screenshots and compare against baseline golden masters')
+  .option('-c, --config <path>', 'Path to visual.config.json')
+  .option('-r, --run-id <id>', 'Identifier for the test run')
+  .option('-u, --base-url <url>', 'Override target baseUrl')
+  .option('--update-baselines', 'Promote all current screenshots to baseline images')
+  .action(async (options) => {
+    try {
+      const overrides = {};
+      if (options.baseUrl) {
+        overrides.baseUrl = options.baseUrl;
+      }
+
+      const config = loadConfig(options.config, overrides);
+      const runId = options.runId || `run_${Date.now()}`;
+      const baselinesDir = path.resolve(process.cwd(), config.storageDir, 'baselines');
+      const runsDir = path.resolve(process.cwd(), config.storageDir, 'runs', runId);
+
+      console.log('──────────────────────────────────────────────────────');
+      console.log('  Visual Regression Testing Tool: Compare & Test');
+      console.log('──────────────────────────────────────────────────────');
+      console.log(`  Target Base URL : ${config.baseUrl}`);
+      console.log(`  Routes          : ${config.routes.join(', ')}`);
+      console.log(`  Viewports       : ${config.viewports.map((v) => `${v.name} (${v.width}x${v.height})`).join(', ')}`);
+      console.log(`  Threshold       : ${config.threshold * 100}%`);
+      console.log(`  Run ID          : ${runId}`);
+      console.log('──────────────────────────────────────────────────────\n');
+
+      const startTime = Date.now();
+
+      console.log('  Step 1: Capturing screenshots...');
+      const snapshots = await captureScreenshots(config, {
+        runId,
+        onProgress: (snap) => {
+          console.log(`    📸 Captured ${snap.route} @ ${snap.viewport}`);
+        }
+      });
+
+      console.log('\n  Step 2: Comparing against baselines...');
+      const results = [];
+      let passedCount = 0;
+      let failedCount = 0;
+      let newBaselineCount = 0;
+
+      for (const snap of snapshots) {
+        if (options.updateBaselines) {
+          fs.mkdirSync(baselinesDir, { recursive: true });
+          const baselineFilename = getSnapshotFilename(snap.route, snap.viewport);
+          const baselinePath = path.join(baselinesDir, baselineFilename);
+          fs.copyFileSync(snap.filepath, baselinePath);
+          console.log(`    [UPDATED BASELINE] ${snap.route} @ ${snap.viewport}`);
+          newBaselineCount++;
+          results.push({ ...snap, status: 'NEW_BASELINE', mismatchPercentage: 0 });
+          continue;
+        }
+
+        const comp = compareSnapshot(snap, {
+          baselinesDir,
+          diffDir: runsDir,
+          allowedThreshold: config.threshold
+        });
+
+        results.push(comp);
+
+        if (comp.status === 'NEW_BASELINE') {
+          newBaselineCount++;
+          console.log(`    [NEW BASELINE] ${comp.route} @ ${comp.viewport} -> Baseline created`);
+        } else if (comp.status === 'MATCH') {
+          passedCount++;
+          console.log(`    [PASS] ${comp.route} @ ${comp.viewport} (${comp.mismatchPercentage.toFixed(2)}% mismatch)`);
+        } else {
+          failedCount++;
+          console.log(`    [FAIL] ${comp.route} @ ${comp.viewport} (${comp.mismatchPercentage.toFixed(2)}% mismatch > ${config.threshold * 100}% threshold)`);
+        }
+      }
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+
+      console.log('\n──────────────────────────────────────────────────────');
+      console.log('  Visual Regression Test Summary');
+      console.log('──────────────────────────────────────────────────────');
+      console.log(`  Total Snapshots  : ${results.length}`);
+      console.log(`  Passed (Match)   : ${passedCount}`);
+      console.log(`  Failed (Diff)    : ${failedCount}`);
+      console.log(`  New Baselines    : ${newBaselineCount}`);
+      console.log(`  Execution Time   : ${elapsed}s`);
+      console.log('──────────────────────────────────────────────────────\n');
+
+      if (failedCount > 0) {
+        console.error(`[FAILURE] Visual regressions detected in ${failedCount} snapshot(s).\n`);
+        process.exit(1);
+      } else {
+        console.log('[SUCCESS] All snapshots passed without visual regressions!\n');
+        process.exit(0);
+      }
+    } catch (err) {
+      console.error(`\n[ERROR] Test run failed: ${err.message}\n`);
       process.exit(1);
     }
   });

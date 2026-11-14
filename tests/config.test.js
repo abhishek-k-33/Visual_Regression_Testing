@@ -1,6 +1,31 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { validateConfig, loadConfig } from '../src/cli/config.js';
+import { validateConfig, loadConfig, stripJsonComments } from '../src/cli/config.js';
+
+describe('JSON Comment Stripper (stripJsonComments)', () => {
+  it('strips UTF-8 BOM if present', () => {
+    const jsonWithBom = '\uFEFF{"baseUrl": "https://example.com", "routes": ["/"]}';
+    const cleanJson = stripJsonComments(jsonWithBom);
+    expect(cleanJson.charCodeAt(0)).not.toBe(0xFEFF);
+    expect(JSON.parse(cleanJson).baseUrl).toBe('https://example.com');
+  });
+
+  it('strips single-line and multi-line comments while preserving URLs', () => {
+    const jsonWithComments = `
+      {
+        // This is a line comment
+        "baseUrl": "https://example.com/api//v1", /* inline block comment */
+        "routes": [
+          "/" // homepage
+        ]
+      }
+    `;
+    const cleanJson = stripJsonComments(jsonWithComments);
+    const parsed = JSON.parse(cleanJson);
+    expect(parsed.baseUrl).toBe('https://example.com/api//v1');
+    expect(parsed.routes).toEqual(['/']);
+  });
+});
 
 describe('Configuration Validator (validateConfig)', () => {
   const validBaseConfig = {
@@ -100,6 +125,11 @@ describe('Configuration Validator (validateConfig)', () => {
     expect(() => validateConfig({ ...validBaseConfig, threshold: 1.05 })).toThrow('"threshold" must be a number between 0 and 1');
     expect(() => validateConfig({ ...validBaseConfig, threshold: '0.05' })).toThrow('"threshold" must be a number between 0 and 1');
     expect(() => validateConfig({ ...validBaseConfig, threshold: NaN })).toThrow('"threshold" must be a number between 0 and 1');
+  });
+
+  it('rejects storageDir that attempts to escape the project workspace', () => {
+    expect(() => validateConfig({ ...validBaseConfig, storageDir: '../../outside' }))
+      .toThrow('"storageDir" must be located inside the project workspace.');
   });
 });
 

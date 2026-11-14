@@ -1,9 +1,9 @@
 {
-  "baseUrl": "https://example.com",
+  "baseUrl": "https://example.com",//this is the address of the website which we have to visit to test //
   "routes": [
     "/"
-  ],
-  "viewports": [
+  ],//here we add addition pages or pages in the site which we have to test. Eg- home,about
+  "viewports": [// viewport contains the screen sizes to simulate
     {
       "name": "desktop",
       "width": 1440,
@@ -15,10 +15,10 @@
       "height": 812
     }
   ],
-  "maskSelectors": [
+  "maskSelectors": [// elements of css to disable before taking the ss
     ".timestamp",
     ".dynamic-ad",
     "img.avatar"
   ],
-  "threshold": 0.01
+  "threshold": 0.01 // filter that how much error is acceptable and after what % is it a faliure
 }

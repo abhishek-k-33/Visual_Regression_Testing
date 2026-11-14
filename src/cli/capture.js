@@ -1,6 +1,7 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { chromium } from 'playwright';
+import fs from 'node:fs'; // import node file system
+import path from 'node:path';// import node path
+import { chromium } from 'playwright';// chromium is the engine on which google chrome is based on. Our robot will directly bypass the
+// chrome or other browser and use the chromium engine instead which is a lot lighter and faster. 
 
 /**
  * Creates a clean filesystem-friendly slug from a URL route.
@@ -8,14 +9,15 @@ import { chromium } from 'playwright';
  * @param {string} route - The route path (e.g. "/" or "/blog/post-1")
  * @returns {string} Clean file slug
  */
-export function getRouteSlug(route) {
+export function getRouteSlug(route) {// converts a web address into a safe legal framework on our computer 
+  // what this function does is that if removes / from page names so that it can be saved as a file
   if (!route || route === '/') {
-    return 'index';
+    return 'index'; // returns the name of the homepage which is generally named index.html
   }
   return route
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, '')
-    .replace(/[^a-zA-Z0-9_-]/g, '_');
+    .replace(/^\/+/, '')// replaces the slashes at the very front of the address. ^ means at the beginning 
+    .replace(/\/+$/, '')// replaces the slashes at the very last of the address ,$ means attthe end
+    .replace(/[^a-zA-Z0-9_-]/g, '_');// ^ means anything except. replaces anything except atoz and 0to9 ,_,-with _
 }
 
 /**
@@ -26,8 +28,8 @@ export function getRouteSlug(route) {
  * @returns {string} Filename (e.g. "index-desktop.png")
  */
 export function getSnapshotFilename(route, viewportName) {
-  const slug = getRouteSlug(route);
-  return `${slug}-${viewportName}.png`;
+  const slug = getRouteSlug(route); // saves the slug of the address to slug variable 
+  return `${slug}-${viewportName}.png`; // combines the slug the viewport name and the .png extension to form a clean organized filename
 }
 
 /**
@@ -39,8 +41,8 @@ export function getSnapshotFilename(route, viewportName) {
  * @param {string[]} [maskSelectors=[]] - CSS selectors to mask
  * @returns {string} Injected CSS string
  */
-export function buildDeterministicStyle(maskSelectors = []) {
-  let css = `
+export function buildDeterministicStyle(maskSelectors = []) {// this function mutes the css
+  let css  = `
     *, *::before, *::after {
       -webkit-transition: none !important;
       -moz-transition: none !important;
@@ -55,7 +57,8 @@ export function buildDeterministicStyle(maskSelectors = []) {
       caret-color: transparent !important;
       scroll-behavior: auto !important;
     }
-  `;
+  `;// this is a custome block of css which is designed to block all the animations on a website .
+  // this first line applies the css to each element of the webpage. * in css means all 
 
   if (maskSelectors && maskSelectors.length > 0) {
     const combinedSelector = maskSelectors.join(', ');
