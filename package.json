@@ -12,6 +12,7 @@
     "server": "node src/server/app.js",
     "capture": "node src/cli/index.js capture",
     "test:visual": "node src/cli/index.js test",
+    "demo": "node scripts/demo.js",
     "docker:build": "docker compose build",
     "docker:dashboard": "docker compose up dashboard",
     "docker:test": "docker compose run --rm runner",

@@ -16,6 +16,8 @@ yarn-error.log*
 # Visual Regression Tool storage & database
 storage/runs/*
 !storage/runs/.gitkeep
+storage/baselines/*
+!storage/baselines/.gitkeep
 storage/*.sqlite*
 *.sqlite*
 *.db*
