@@ -1,0 +1,36 @@
+# ==============================================================================
+# Visual Regression Testing & Review Dashboard - Docker Compose Specification
+# ==============================================================================
+
+services:
+  # Service 1: Web Review Dashboard & REST API
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: visual-ci-dashboard
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - NODE_ENV=production
+    volumes:
+      # Mount host storage directory for baseline images, test runs, and SQLite DB
+      - ./storage:/app/storage
+
+  # Service 2: Visual Regression Test Runner CLI
+  runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: visual-ci-runner
+    command: ["node", "src/cli/index.js", "test"]
+    environment:
+      - NODE_ENV=production
+    volumes:
+      # Share storage directory and live config with host
+      - ./storage:/app/storage
+      - ./visual.config.json:/app/visual.config.json:ro
+    # Host networking enables capturing web apps running on http://localhost:<port> on the host
+    network_mode: "host"

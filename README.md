@@ -204,7 +204,22 @@ Launches the Express dashboard and REST API server:
 ```bash
 npm start
 ```
+
 *Access the dashboard at:* **[http://localhost:4000](http://localhost:4000)**
+
+### 4. Run Inside Docker (Cross-OS Rendering Consistency)
+To eliminate font and sub-pixel antialiasing differences across macOS, Windows, and Linux:
+
+```bash
+# Build the standardized Playwright container
+npm run docker:build
+
+# Run visual regression tests inside the container
+npm run docker:test
+
+# Start the review dashboard inside the container
+npm run docker:dashboard
+```
 
 ---
 
@@ -269,6 +284,7 @@ Detailed implementation specifications, security audits, and architectural recor
 - **[Phase 1 Implementation Record](docs/PHASE_1_EXECUTION.md)**: Playwright engine, deterministic animation freezing, dynamic DOM masking.
 - **[Phase 2 Implementation Record](docs/PHASE_2_EXECUTION.md)**: Pixel diffing engine, canvas dimension normalization, baseline promotion.
 - **[Phase 3 Implementation Record](docs/PHASE_3_EXECUTION.md)**: SQLite storage, REST API, interactive review dashboard, and security hardening.
+- **[Phase 4 Implementation Record](docs/PHASE_4_EXECUTION.md)**: Cross-platform Docker containerization, volume sharing, and font normalization.
 
 ---
 
@@ -277,7 +293,7 @@ Detailed implementation specifications, security audits, and architectural recor
 - [x] **Phase 1:** Multi-viewport capture engine & deterministic DOM freezing.
 - [x] **Phase 2:** Pixel diffing engine, dimension normalizer & CLI test command.
 - [x] **Phase 3:** Embedded SQLite storage, REST API & interactive review dashboard.
-- [ ] **Phase 4:** Cross-platform Docker containerization (`Dockerfile`, `docker-compose.yml`) for OS-independent rendering consistency.
+- [x] **Phase 4:** Cross-platform Docker containerization (`Dockerfile`, `docker-compose.yml`) for OS-independent rendering consistency.
 - [ ] **Phase 5:** GitHub Actions CI workflow with automated PR checks and artifact uploads.
 
 ---
