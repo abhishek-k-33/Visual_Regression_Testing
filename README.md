@@ -189,6 +189,7 @@ node src/cli/index.js test
 - `-c, --config <path>`: Specify a custom configuration file path.
 - `-r, --run-id <id>`: Assign a custom identifier to the test run (defaults to `run_<timestamp>`).
 - `-u, --base-url <url>`: Override the `baseUrl` (useful for staging/preview environments).
+- `-s, --summary-file <path>`: Custom file name or path for the markdown test report.
 - `--update-baselines`: Automatically promote all current screenshots to golden master baselines.
 
 ### 2. Capture Screenshots Only
@@ -245,12 +246,23 @@ For every route and viewport, three interactive visual tabs are available:
 
 ---
 
+## 🚀 GitHub Actions CI Pipeline
+
+The project includes pre-configured automation for GitHub Actions (`.github/workflows/visual-ci.yml`):
+
+- **Automatic PR & Push Testing**: Runs visual regression checks whenever a PR or commit is pushed to `main`.
+- **Baseline Caching**: Automatically restores `storage/baselines` using GitHub Actions cache, falling back to the `main` branch.
+- **Rich Markdown Step Summaries**: Generates a formatted table of every tested route, viewport, mismatch percentage, and pass/fail badge directly in the GitHub Actions run summary (`GITHUB_STEP_SUMMARY`).
+- **Diff Artifact Downloads**: On any visual regression failure, all diff screenshots in `storage/runs/` are zipped and uploaded as a workflow artifact (`visual-regression-diffs`) for quick inspection.
+
+---
+
 ## 🧪 Testing & Verification
 
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 52 Vitest unit & integration tests
+# Run all 62 Vitest unit & integration tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -261,6 +273,12 @@ node tests/verify-phase-2.js
 
 # Run Phase 3 Deliverable Verification (Database, Dashboard & Approvals)
 node tests/verify-phase-3.js
+
+# Run Phase 4 Deliverable Verification (Docker & Cross-OS Environment)
+node tests/verify-phase-4.js
+
+# Run Phase 5 Deliverable Verification (GitHub Actions CI & Markdown Reports)
+node tests/verify-phase-5.js
 ```
 
 ### Verification Results
@@ -271,9 +289,10 @@ node tests/verify-phase-3.js
  ✓ tests/capture-integration.test.js (1 test)
  ✓ tests/db.test.js (7 tests)
  ✓ tests/server.test.js (8 tests)
+ ✓ tests/reporter.test.js (10 tests)
 
- Test Files  6 passed (6)
-      Tests  52 passed (52)
+ Test Files  7 passed (7)
+      Tests  62 passed (62)
 ```
 
 ---
@@ -285,6 +304,7 @@ Detailed implementation specifications, security audits, and architectural recor
 - **[Phase 2 Implementation Record](docs/PHASE_2_EXECUTION.md)**: Pixel diffing engine, canvas dimension normalization, baseline promotion.
 - **[Phase 3 Implementation Record](docs/PHASE_3_EXECUTION.md)**: SQLite storage, REST API, interactive review dashboard, and security hardening.
 - **[Phase 4 Implementation Record](docs/PHASE_4_EXECUTION.md)**: Cross-platform Docker containerization, volume sharing, and font normalization.
+- **[Phase 5 Implementation Record](docs/PHASE_5_EXECUTION.md)**: GitHub Actions CI workflow, PR gating, Markdown step summaries, and diff archiving.
 
 ---
 
@@ -294,7 +314,7 @@ Detailed implementation specifications, security audits, and architectural recor
 - [x] **Phase 2:** Pixel diffing engine, dimension normalizer & CLI test command.
 - [x] **Phase 3:** Embedded SQLite storage, REST API & interactive review dashboard.
 - [x] **Phase 4:** Cross-platform Docker containerization (`Dockerfile`, `docker-compose.yml`) for OS-independent rendering consistency.
-- [ ] **Phase 5:** GitHub Actions CI workflow with automated PR checks and artifact uploads.
+- [x] **Phase 5:** GitHub Actions CI workflow with automated PR checks, Markdown step summaries, and diff artifact uploads.
 
 ---
 

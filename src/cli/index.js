@@ -8,14 +8,17 @@ import { loadConfig } from './config.js';
 import { captureScreenshots, getSnapshotFilename } from './capture.js';
 import { compareSnapshot } from './compare.js';
 import { createTestRun, createSnapshot } from '../server/db.js';
+import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
 
 function getGitContext() {
+  const envBranch = process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME;
+  const envSha = process.env.GITHUB_SHA ? process.env.GITHUB_SHA.substring(0, 7) : null;
   try {
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    const commit_hash = execSync('git rev-parse --short HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const branch = envBranch || execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const commit_hash = envSha || execSync('git rev-parse --short HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     return { branch, commit_hash };
   } catch {
-    return { branch: null, commit_hash: null };
+    return { branch: envBranch || null, commit_hash: envSha || null };
   }
 }
 
@@ -81,6 +84,7 @@ program
   .option('-r, --run-id <id>', 'Identifier for the test run')
   .option('-u, --base-url <url>', 'Override target baseUrl')
   .option('--update-baselines', 'Promote all current screenshots to baseline images')
+  .option('-s, --summary-file <path>', 'Custom file name or relative path for markdown summary')
   .action(async (options) => {
     try {
       const overrides = {};
@@ -151,9 +155,10 @@ program
         }
       }
 
+      const gitInfo = getGitContext();
+
       // Record test run & snapshots in SQLite database for web review dashboard
       try {
-        const gitInfo = getGitContext();
         const overallStatus = failedCount > 0 ? 'FAILED' : 'PASSED';
 
         createTestRun({
@@ -181,6 +186,24 @@ program
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
 
+      // Generate GitHub-flavored markdown summary report
+      const summaryMarkdown = generateSummaryMarkdown({
+        runId,
+        gitInfo,
+        threshold: config.threshold,
+        elapsed,
+        passedCount,
+        failedCount,
+        newBaselineCount,
+        results
+      });
+
+      const summaryOptions = { runsDir };
+      if (options.summaryFile) {
+        summaryOptions.summaryFileName = options.summaryFile;
+      }
+      const { runSummaryPath, stepSummaryWritten } = writeSummaryReport(summaryMarkdown, summaryOptions);
+
       console.log('\n──────────────────────────────────────────────────────');
       console.log('  Visual Regression Test Summary');
       console.log('──────────────────────────────────────────────────────');
@@ -191,6 +214,13 @@ program
       console.log(`  Execution Time   : ${elapsed}s`);
       console.log('──────────────────────────────────────────────────────');
       console.log(`  Review Dashboard : http://localhost:4000/runs/${runId}`);
+      if (runSummaryPath) {
+        const relSummary = path.relative(process.cwd(), runSummaryPath);
+        console.log(`  Summary Report   : ${relSummary}`);
+      }
+      if (stepSummaryWritten) {
+        console.log('  CI Step Summary  : Appended to GITHUB_STEP_SUMMARY');
+      }
       console.log('──────────────────────────────────────────────────────\n');
 
       if (failedCount > 0) {
