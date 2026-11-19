@@ -59,16 +59,25 @@ An open-source, self-hosted visual regression testing engine and interactive rev
 Visual Regression Testing Project/
 ├── package.json                   # Scripts and project dependencies
 ├── visual.config.json             # Visual regression test specifications
+├── Dockerfile                     # Standardized Playwright + Ubuntu font container
+├── docker-compose.yml             # Orchestration for dashboard & test runner
+├── .dockerignore                  # Docker build context exclusions
+├── .github/                       # GitHub automation
+│   └── workflows/
+│       └── visual-ci.yml          # GitHub Actions visual regression pipeline
 ├── docs/                          # Detailed engineering milestone records
 │   ├── PHASE_1_EXECUTION.md       # Foundation & Playwright Capture Engine
 │   ├── PHASE_2_EXECUTION.md       # Pixel Diffing & Dimension Normalizer
-│   └── PHASE_3_EXECUTION.md       # SQLite Storage & Interactive Dashboard
+│   ├── PHASE_3_EXECUTION.md       # SQLite Storage & Interactive Dashboard
+│   ├── PHASE_4_EXECUTION.md       # Cross-Platform Docker Containerization
+│   └── PHASE_5_EXECUTION.md       # GitHub Actions CI & Markdown Reporting
 ├── src/
 │   ├── cli/                       # CLI commands and screenshot engine
 │   │   ├── index.js               # CLI entry point (`visual-ci capture`, `visual-ci test`)
 │   │   ├── capture.js             # Playwright multi-viewport capture engine
 │   │   ├── compare.js             # Pixel comparison and canvas dimension normalizer
-│   │   └── config.js              # Config loader with comment-stripping parser
+│   │   ├── config.js              # Config loader with comment-stripping parser
+│   │   └── reporter.js            # Markdown report generator & GITHUB_STEP_SUMMARY
 │   └── server/                    # Web review dashboard & REST API
 │       ├── app.js                 # Express server configuration
 │       ├── db.js                  # SQLite schema, queries, and path security
@@ -95,9 +104,12 @@ Visual Regression Testing Project/
     ├── config.test.js             # Config validation and path traversal tests
     ├── db.test.js                 # SQLite queries and path jail tests
     ├── server.test.js             # Express REST API and dashboard view tests
+    ├── reporter.test.js           # Markdown reporter & CI step summary tests
     ├── verify-phase-1.js          # Phase 1 deliverable verification script
     ├── verify-phase-2.js          # Phase 2 deliverable verification script
-    └── verify-phase-3.js          # Phase 3 deliverable verification script
+    ├── verify-phase-3.js          # Phase 3 deliverable verification script
+    ├── verify-phase-4.js          # Phase 4 deliverable verification script
+    └── verify-phase-5.js          # Phase 5 deliverable verification script
 ```
 
 ---
