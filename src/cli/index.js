@@ -3,9 +3,21 @@
 import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
 import { loadConfig } from './config.js';
 import { captureScreenshots, getSnapshotFilename } from './capture.js';
 import { compareSnapshot } from './compare.js';
+import { createTestRun, createSnapshot } from '../server/db.js';
+
+function getGitContext() {
+  try {
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const commit_hash = execSync('git rev-parse --short HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return { branch, commit_hash };
+  } catch {
+    return { branch: null, commit_hash: null };
+  }
+}
 
 const program = new Command();
 
@@ -115,7 +127,7 @@ program
           fs.copyFileSync(snap.filepath, baselinePath);
           console.log(`    [UPDATED BASELINE] ${snap.route} @ ${snap.viewport}`);
           newBaselineCount++;
-          results.push({ ...snap, status: 'NEW_BASELINE', mismatchPercentage: 0 });
+          results.push({ ...snap, status: 'NEW_BASELINE', mismatchPercentage: 0, baselinePath });
           continue;
         }
 
@@ -139,6 +151,34 @@ program
         }
       }
 
+      // Record test run & snapshots in SQLite database for web review dashboard
+      try {
+        const gitInfo = getGitContext();
+        const overallStatus = failedCount > 0 ? 'FAILED' : 'PASSED';
+
+        createTestRun({
+          id: runId,
+          commit_hash: gitInfo.commit_hash,
+          branch: gitInfo.branch,
+          status: overallStatus
+        });
+
+        for (const r of results) {
+          createSnapshot({
+            run_id: runId,
+            route: r.route,
+            viewport: r.viewport,
+            baseline_path: r.baselinePath || null,
+            current_path: r.currentPath || r.filepath,
+            diff_path: r.diffPath || null,
+            mismatch_percentage: r.mismatchPercentage || 0,
+            status: r.status
+          });
+        }
+      } catch (dbErr) {
+        console.warn(`  [WARN] Failed to record run in database: ${dbErr.message}`);
+      }
+
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
 
       console.log('\n──────────────────────────────────────────────────────');
@@ -149,6 +189,8 @@ program
       console.log(`  Failed (Diff)    : ${failedCount}`);
       console.log(`  New Baselines    : ${newBaselineCount}`);
       console.log(`  Execution Time   : ${elapsed}s`);
+      console.log('──────────────────────────────────────────────────────');
+      console.log(`  Review Dashboard : http://localhost:4000/runs/${runId}`);
       console.log('──────────────────────────────────────────────────────\n');
 
       if (failedCount > 0) {

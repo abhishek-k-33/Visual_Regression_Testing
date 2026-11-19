@@ -16,13 +16,9 @@ yarn-error.log*
 # Visual Regression Tool storage & database
 storage/runs/*
 !storage/runs/.gitkeep
-storage/*.sqlite
-storage/*.sqlite-journal
-storage/*.sqlite3
-*.sqlite
-*.sqlite-journal
-*.sqlite3
-*.db
+storage/*.sqlite*
+*.sqlite*
+*.db*
 
 
 # OS & IDE
