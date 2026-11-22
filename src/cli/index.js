@@ -7,7 +7,8 @@ import { execSync } from 'node:child_process';
 import { loadConfig } from './config.js';
 import { captureScreenshots, getSnapshotFilename } from './capture.js';
 import { compareSnapshot, sha256 } from './compare.js';
-import { createTestRun, createSnapshot } from '../server/db.js';
+import { createTestRun, createSnapshot, getDb } from '../server/db.js';
+import { resolveStorageRoot } from '../server/paths.js';
 import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
 
 function getGitContext() {
@@ -62,7 +63,7 @@ program
 
       const results = await captureScreenshots(config, {
         runId,
-        outputDir: options.outputDir,
+        outputDir: options.outputDir || path.join(resolveStorageRoot(config.storageDir), 'runs'),
         onProgress: (snap) => {
           const relPath = path.relative(process.cwd(), snap.filepath);
           console.log(`  [OK] ${snap.route} @ ${snap.viewport} (${snap.width}x${snap.height}) -> ${relPath}`);
@@ -99,8 +100,11 @@ program
 
       const config = loadConfig(options.config, overrides);
       const runId = options.runId || `run_${Date.now()}`;
-      const baselinesDir = path.resolve(process.cwd(), config.storageDir, 'baselines');
-      const runsDir = path.resolve(process.cwd(), config.storageDir, 'runs', runId);
+      // Same root the dashboard uses (VISUAL_STORAGE_DIR > storageDir > ./storage),
+      // so baselines, screenshots and the database always end up together.
+      const storageRoot = resolveStorageRoot(config.storageDir);
+      const baselinesDir = path.join(storageRoot, 'baselines');
+      const runsDir = path.join(storageRoot, 'runs', runId);
       const strict = options.strict ?? process.env.CI === 'true';
 
       console.log('──────────────────────────────────────────────────────');
@@ -111,6 +115,7 @@ program
       console.log(`  Viewports       : ${config.viewports.map((v) => `${v.name} (${v.width}x${v.height})`).join(', ')}`);
       console.log(`  Threshold       : ${config.threshold * 100}%`);
       console.log(`  Run ID          : ${runId}`);
+      console.log(`  Storage         : ${path.relative(process.cwd(), storageRoot) || '.'}`);
       console.log(`  Missing baseline: ${strict ? 'fail (strict)' : 'create from current screenshot'}`);
       console.log('──────────────────────────────────────────────────────\n');
 
@@ -119,6 +124,7 @@ program
       console.log('  Step 1: Capturing screenshots...');
       const snapshots = await captureScreenshots(config, {
         runId,
+        outputDir: path.join(storageRoot, 'runs'),
         onProgress: (snap) => {
           console.log(`    📸 Captured ${snap.route} @ ${snap.viewport}`);
           if (!snap.networkIdle) console.log(NOT_IDLE_NOTE);
@@ -181,12 +187,13 @@ program
       try {
         const overallStatus = failedCount > 0 ? 'FAILED' : 'PASSED';
 
+        const db = getDb(path.join(storageRoot, 'data.sqlite'));
         createTestRun({
           id: runId,
           commit_hash: gitInfo.commit_hash,
           branch: gitInfo.branch,
           status: overallStatus
-        });
+        }, db);
 
         for (const r of results) {
           createSnapshot({
@@ -200,7 +207,7 @@ program
             diff_path: r.diffPath || null,
             mismatch_percentage: r.mismatchPercentage || 0,
             status: r.status
-          });
+          }, db);
         }
       } catch (dbErr) {
         console.warn(`  [WARN] Failed to record run in database: ${dbErr.message}`);

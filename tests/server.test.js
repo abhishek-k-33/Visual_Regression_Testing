@@ -280,6 +280,26 @@ describe('Express Review Dashboard & REST API', () => {
     expect(fs.readFileSync(staleBaseline, 'utf8')).toBe('NEWER_APPROVED_BASELINE');
   });
 
+  it('shows images for runs recorded under another storage root (Docker vs host)', async () => {
+    createTestRun({ id: 'docker-run', status: 'FAILED' });
+    createSnapshot({
+      run_id: 'docker-run',
+      route: '/',
+      viewport: 'desktop',
+      baseline_path: '/app/storage/baselines/index-desktop.png',
+      baseline_snapshot_path: '/app/storage/runs/docker-run/baselines/index-desktop.png',
+      baseline_sha256: 'x',
+      current_path: '/app/storage/runs/docker-run/index-desktop.png',
+      diff_path: '/somewhere/else/entirely.png',
+      status: 'DIFF'
+    });
+    const html = await (await fetch(`${baseUrl}/runs/docker-run`)).text();
+    expect(html).toContain('src="/storage/runs/docker-run/baselines/index-desktop.png"');
+    expect(html).toContain('src="/storage/runs/docker-run/index-desktop.png"');
+    expect(html).not.toContain('/somewhere/else');
+    expect(html).not.toContain('src=""');
+  });
+
   it('POST /api/snapshots/:id/approve promotes baseline and updates status to APPROVED', async () => {
     fs.writeFileSync(baselineFile, 'OLD_IMAGE');
     fs.writeFileSync(currentFile, 'NEW_IMAGE');

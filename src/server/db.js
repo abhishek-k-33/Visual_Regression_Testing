@@ -5,9 +5,13 @@ import path from 'node:path';
 import { getStorageRoot, resolvePngInside } from './paths.js';
 
 /**
- * Default database path within storage directory.
+ * Default database path: data.sqlite inside the storage root (see getStorageRoot).
+ *
+ * @returns {string}
  */
-export const DEFAULT_DB_PATH = path.resolve(process.cwd(), 'storage/data.sqlite');
+export function getDefaultDbPath() {
+  return path.join(getStorageRoot(), 'data.sqlite');
+}
 
 let dbInstance = null;
 
@@ -19,7 +23,7 @@ let dbInstance = null;
  * @returns {Database.Database} SQLite database connection
  */
 export function initDb(customDbPath) {
-  const dbPath = customDbPath || DEFAULT_DB_PATH;
+  const dbPath = customDbPath || getDefaultDbPath();
 
   // Ensure parent directory exists
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });

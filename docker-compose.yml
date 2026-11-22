@@ -21,6 +21,8 @@ services:
     volumes:
       # Mount host storage directory for baseline images, test runs, and SQLite DB
       - ./storage:/app/storage
+      # Live config, so the dashboard and runner agree on storageDir
+      - ./visual.config.json:/app/visual.config.json:ro
 
   # Service 2: Visual Regression Test Runner CLI
   runner:

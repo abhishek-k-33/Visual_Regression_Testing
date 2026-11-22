@@ -3,6 +3,8 @@
 **Date:** October 29, 2026  
 **Status:** Completed & Verified  
 
+> **Update (November 22, 2026):** Masking now paints matched elements as solid black boxes using Playwright's screenshot `mask` option, as the README describes. The `visibility: hidden` rule described below didn't cover elements with an inline `!important` style, and it showed the background instead of a mask. `multer` was never used and has been removed from the dependencies.
+
 ---
 
 ## 1. Executive Summary

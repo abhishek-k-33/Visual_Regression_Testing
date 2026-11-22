@@ -1,14 +1,47 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripJsonComments, validateStorageDir } from '../cli/config.js';
 
 /**
- * Absolute path of the storage root (holds runs/, baselines/ and the SQLite DB).
- * Read at call time so tests can point it elsewhere via VISUAL_STORAGE_DIR.
+ * Absolute storage root (holds runs/, baselines/ and the SQLite DB) for a given
+ * config storageDir. Precedence: VISUAL_STORAGE_DIR env > storageDir > ./storage.
+ *
+ * @param {string} [storageDir] - storageDir from visual.config.json (relative to cwd)
+ * @returns {string}
+ */
+export function resolveStorageRoot(storageDir) {
+  if (process.env.VISUAL_STORAGE_DIR) return path.resolve(process.env.VISUAL_STORAGE_DIR);
+  return path.resolve(process.cwd(), storageDir || 'storage');
+}
+
+let configStorageDir; // undefined = visual.config.json not read yet
+
+// Only storageDir matters here, so a config the CLI completes with flags (e.g. no
+// baseUrl, passed via --base-url) still works. Read once per process.
+function readConfiguredStorageDir() {
+  const configPath = path.resolve(process.cwd(), 'visual.config.json');
+  if (!fs.existsSync(configPath)) return null;
+  try {
+    const parsed = JSON.parse(stripJsonComments(fs.readFileSync(configPath, 'utf8')));
+    return validateStorageDir(parsed?.storageDir);
+  } catch (err) {
+    console.warn(`[WARN] Ignoring storageDir in ${configPath} (${err.message}); using ./storage. ` +
+      'Set VISUAL_STORAGE_DIR to choose the storage folder explicitly.');
+    return null;
+  }
+}
+
+/**
+ * Storage root for the dashboard, which has no --config flag: honours
+ * VISUAL_STORAGE_DIR, then storageDir from ./visual.config.json, then ./storage.
+ * The env var is read on every call so tests can repoint it.
  *
  * @returns {string}
  */
 export function getStorageRoot() {
-  return path.resolve(process.env.VISUAL_STORAGE_DIR || path.join(process.cwd(), 'storage'));
+  if (process.env.VISUAL_STORAGE_DIR) return resolveStorageRoot();
+  if (configStorageDir === undefined) configStorageDir = readConfiguredStorageDir();
+  return resolveStorageRoot(configStorageDir);
 }
 
 /**

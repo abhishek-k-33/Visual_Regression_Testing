@@ -44,15 +44,8 @@ describe('Capture Utilities', () => {
       expect(css).toContain('scroll-behavior: auto !important');
     });
 
-    it('appends visibility hidden for mask selectors', () => {
-      const css = buildDeterministicStyle(['.timestamp', '#live-chat', 'img.avatar']);
-      expect(css).toContain('.timestamp, #live-chat, img.avatar {');
-      expect(css).toContain('visibility: hidden !important');
-    });
-
-    it('handles empty maskSelectors array without injecting selector rules', () => {
-      const css = buildDeterministicStyle([]);
-      expect(css).not.toContain('visibility: hidden !important');
+    it('does not hide elements: masking is done with black boxes at screenshot time', () => {
+      expect(buildDeterministicStyle()).not.toContain('visibility: hidden');
     });
   });
 });

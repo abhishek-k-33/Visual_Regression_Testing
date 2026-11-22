@@ -114,6 +114,7 @@ Visual Regression Testing Project/
     ├── db.test.js                 # SQLite queries and path jail tests
     ├── docker.test.js             # Docker image tag matches the pinned Playwright version
     ├── server.test.js             # Express REST API and dashboard view tests
+    ├── storage-dir.test.js        # Custom storageDir honoured by CLI and dashboard
     ├── reporter.test.js           # Markdown reporter & CI step summary tests
     ├── verify-phase-1.js          # Phase 1 deliverable verification script
     ├── verify-phase-2.js          # Phase 2 deliverable verification script
@@ -188,9 +189,21 @@ Configure your target URL, routes, viewports, and masking rules in `visual.confi
 | `baseUrl` | `string` | *(Required)* | The base URL of the web application being tested. |
 | `routes` | `string[]` | `["/"]` | Array of relative routes to capture. |
 | `viewports` | `object[]` | Desktop & Mobile | Viewport dimensions (`name`, `width`, `height`). |
-| `maskSelectors` | `string[]` | `[]` | CSS selectors obscured with black rectangles (`#000000`). |
+| `maskSelectors` | `string[]` | `[]` | Selectors whose elements are painted over with solid black boxes (`#000000`) in the screenshot, using Playwright's screenshot `mask`. CSS selectors work (Playwright selector syntax is also accepted); pseudo-elements such as `::after` are not supported, and an invalid entry fails the capture with an error naming it. |
 | `threshold` | `number` | `0.01` | Maximum allowable pixel mismatch ratio (0.01 = 1.0%). |
-| `storageDir` | `string` | `"./storage"` | Local directory for storing baselines, runs, and SQLite DB. |
+| `storageDir` | `string` | `"./storage"` | Directory (inside the project) for baselines, runs and the SQLite DB. The CLI and the dashboard both use it; the dashboard reads it from `./visual.config.json`. `docker-compose.yml` mounts `./storage`, so update the volumes if you change it, and add `<storageDir>/runs/` to `.gitignore` (databases are already ignored). |
+
+### Environment Variables
+The app reads these from the environment (it does not load a `.env` file):
+
+| Variable | Default | Used by | Description |
+| :--- | :--- | :--- | :--- |
+| `PORT` | `4000` | Dashboard | Port to listen on. |
+| `HOST` | `127.0.0.1` | Dashboard | Interface to bind; `0.0.0.0` exposes it on your network (no authentication). |
+| `ALLOWED_HOSTS` | *(none)* | Dashboard | Comma-separated hostnames allowed in the `Host` header besides `localhost` and IP addresses. |
+| `VISUAL_STORAGE_DIR` | *(unset)* | CLI & dashboard | Overrides `storageDir` for both (e.g. to point the dashboard at a config passed with `--config`). |
+| `DEMO_PORT` | `4567` | Demo site | Port for `npm run demo:serve` / `npm run demo`. |
+| `CI` | *(unset)* | CLI | When `true`, `test` defaults to `--strict`. |
 
 ---
 
@@ -312,7 +325,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 109 Vitest unit & integration tests
+# Run all 118 Vitest unit & integration tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -333,19 +346,20 @@ node tests/verify-phase-5.js
 
 ### Verification Results
 ```text
- ✓ tests/config.test.js (17 tests)
- ✓ tests/capture.test.js (9 tests)
+ ✓ tests/config.test.js (21 tests)
+ ✓ tests/capture.test.js (8 tests)
  ✓ tests/compare.test.js (11 tests)
- ✓ tests/capture-integration.test.js (4 tests)
+ ✓ tests/capture-integration.test.js (6 tests)
  ✓ tests/cli-strict.test.js (5 tests)
  ✓ tests/db.test.js (16 tests)
  ✓ tests/docker.test.js (3 tests)
  ✓ tests/per-run-baselines.test.js (11 tests)
- ✓ tests/server.test.js (22 tests)
+ ✓ tests/server.test.js (23 tests)
+ ✓ tests/storage-dir.test.js (3 tests)
  ✓ tests/reporter.test.js (11 tests)
 
- Test Files  10 passed (10)
-      Tests  109 passed (109)
+ Test Files  11 passed (11)
+      Tests  118 passed (118)
 ```
 
 ---

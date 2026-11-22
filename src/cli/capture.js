@@ -36,13 +36,15 @@ export function getSnapshotFilename(route, viewportName) {
  * CSS injected into every page to ensure deterministic captures:
  * - Freezes all CSS animations and transitions
  * - Hides the typing caret
- * - Optionally masks specified CSS selectors
+ * (maskSelectors are not handled here: they are painted as black boxes by
+ * page.screenshot's `mask` option, see MASK_COLOR.)
  *
- * @param {string[]} [maskSelectors=[]] - CSS selectors to mask
  * @returns {string} Injected CSS string
  */
-export function buildDeterministicStyle(maskSelectors = []) {// this function mutes the css
-  let css  = `
+export const MASK_COLOR = '#000000';
+
+export function buildDeterministicStyle() {// this function mutes the css
+  const css = `
     *, *::before, *::after {
       -webkit-transition: none !important;
       -moz-transition: none !important;
@@ -60,16 +62,24 @@ export function buildDeterministicStyle(maskSelectors = []) {// this function mu
   `;// this is a custome block of css which is designed to block all the animations on a website .
   // this first line applies the css to each element of the webpage. * in css means all 
 
-  if (maskSelectors && maskSelectors.length > 0) {
-    const combinedSelector = maskSelectors.join(', ');
-    css += `
-      ${combinedSelector} {
-        visibility: hidden !important;
-      }
-    `;
-  }
-
   return css;
+}
+
+/**
+ * Fails fast, naming the offending entry, if a maskSelectors entry isn't a valid
+ * Playwright selector (pseudo-elements such as ::after are not supported).
+ *
+ * @param {import('playwright').Page} page
+ * @param {string[]} [maskSelectors]
+ */
+async function assertValidMaskSelectors(page, maskSelectors = []) {
+  for (const [i, selector] of maskSelectors.entries()) {
+    try {
+      await page.locator(selector).count();
+    } catch (err) {
+      throw new Error(`maskSelectors[${i}] "${selector}" is not a valid selector: ${err.message.split('\n')[0]}`);
+    }
+  }
 }
 
 /**
@@ -97,9 +107,10 @@ export async function captureScreenshots(config, options = {}) {
 
   fs.mkdirSync(targetDir, { recursive: true });
 
-  const deterministicCss = buildDeterministicStyle(config.maskSelectors);
+  const deterministicCss = buildDeterministicStyle();
   const browser = await chromium.launch({ headless: true });
   const results = [];
+  let masksChecked = false;
 
   try {
     for (const route of config.routes) {
@@ -130,7 +141,12 @@ export async function captureScreenshots(config, options = {}) {
             networkIdle = false;
           }
 
-          // Inject deterministic styles to freeze animations and mask dynamic elements
+          if (!masksChecked) {
+            await assertValidMaskSelectors(page, config.maskSelectors);
+            masksChecked = true;
+          }
+
+          // Inject deterministic styles to freeze animations and hide the caret
           await page.addStyleTag({ content: deterministicCss });
 
           // Brief pause to allow any synchronous style recalculation
@@ -139,10 +155,14 @@ export async function captureScreenshots(config, options = {}) {
           const filename = getSnapshotFilename(route, viewport.name);
           const filepath = path.join(targetDir, filename);
 
-          // Full page capture
+          // Full page capture. Masked elements are painted over with solid black boxes;
+          // unlike hiding them with CSS this also covers canvases, iframes and elements
+          // whose inline styles would override an injected rule.
           await page.screenshot({
             path: filepath,
-            fullPage: true
+            fullPage: true,
+            mask: (config.maskSelectors || []).map((selector) => page.locator(selector)),
+            maskColor: MASK_COLOR
           });
 
           const snapshotResult = {
