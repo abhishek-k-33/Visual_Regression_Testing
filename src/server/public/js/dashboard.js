@@ -3,9 +3,11 @@
  * - Real-time filtering by status tab (All, Passed, Approved, Failed)
  * - Search bar filter (Run ID, branch, commit)
  * - Client-side table pagination
+ *
+ * Loaded as a module (deferred), so the DOM is already parsed when this runs.
  */
 
-document.addEventListener('DOMContentLoaded', () => {
+function initDashboard() {
   const table = document.getElementById('test-runs-table');
   if (!table) return;
 
@@ -131,4 +133,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Initial render
   updateTable();
-});
+}
+
+initDashboard();

@@ -5,6 +5,8 @@ import path from 'node:path';
 import app from '../src/server/app.js';
 import { initDb, closeDb, createTestRun, createSnapshot } from '../src/server/db.js';
 import { isAllowedHost } from '../src/server/security.js';
+import { indexModel } from '../src/server/viewModels.js';
+import { pageLocals } from '../src/server/urls.js';
 
 const SAME_ORIGIN_WRITE = { method: 'POST', headers: { 'X-Requested-With': 'test' } };
 
@@ -117,6 +119,94 @@ describe('Express Review Dashboard & REST API', () => {
     expect(html).toContain('api-run-1');
     expect(html).toContain('Side-by-Side');
     expect(html).toContain('Approve & Update Baseline');
+  });
+
+  describe('base path (sub-path hosting)', () => {
+    // Every local href/src/action must go through url(), so a sub-path build works.
+    function expectAllLocalUrlsUnder(html, prefix, label) {
+      const urls = [...html.matchAll(/\s(?:href|src|action|srcset|formaction|poster)=["']([^"']*)["']/g)].map((m) => m[1]);
+      const local = urls.filter((u) => !/^(https?:|#|data:)/i.test(u));
+      expect(local.length, label).toBeGreaterThan(0);
+      for (const u of local) expect(u, `${label}: ${u}`).toMatch(new RegExp(`^${prefix}/`));
+    }
+
+    async function withBase(base, fn) {
+      const previous = app.locals.base;
+      app.locals.base = base;
+      try {
+        return await fn();
+      } finally {
+        app.locals.base = previous;
+      }
+    }
+
+    it('prefixes every local URL on the dashboard and run pages, and exposes data-base', async () => {
+      await withBase('/x', async () => {
+        for (const page of ['/', '/runs/api-run-1', '/runs/no-such-run']) {
+          const html = await (await fetch(`${baseUrl}${page}`)).text();
+          expect(html, page).toContain('data-base="/x"');
+          expect(html, page).toContain('data-mode="live"');
+          expectAllLocalUrlsUnder(html, '/x', page);
+        }
+        const runPage = await (await fetch(`${baseUrl}/runs/api-run-1`)).text();
+        expect(runPage).toContain('src="/x/storage/runs/api-run-1/index-desktop.png"');
+        expect(runPage).toContain('<script type="module" src="/x/js/review-actions.js"></script>');
+      });
+      expect(app.locals.base).toBe('');
+    });
+
+    it('prefixes every local URL on the error page', async () => {
+      const html = await withBase('/x', () => new Promise((resolve, reject) => {
+        app.render('layout', { title: 'Error', heading: 'Boom', message: '<b>bad</b>' }, (err, out) => (err ? reject(err) : resolve(out)));
+      }));
+      expect(html).toContain('data-base="/x"');
+      expect(html).toContain('<h2>Boom</h2>');
+      expect(html).toContain('&lt;b&gt;bad&lt;/b&gt;');
+      expect(html).not.toContain('slider.js');
+      expectAllLocalUrlsUnder(html, '/x', 'error page');
+    });
+
+    it('renders under a sub-path via pageLocals() render options without touching app.locals', async () => {
+      const html = await new Promise((resolve, reject) => {
+        app.render('index', { ...indexModel(), ...pageLocals({ base: '/y/', mode: 'static' }) },
+          (err, out) => (err ? reject(err) : resolve(out)));
+      });
+      expect(html).toContain('data-base="/y"');
+      expect(html).toContain('data-mode="static"');
+      expectAllLocalUrlsUnder(html, '/y', 'pageLocals render');
+      expect(app.locals.base).toBe('');
+      expect(app.locals.mode).toBe('live');
+    });
+
+    it('encodes run ids in links and the encoded link opens the run', async () => {
+      const odd = 'feat/x#1 a';
+      createTestRun({ id: odd, status: 'PASSED' });
+      const index = await (await fetch(`${baseUrl}/`)).text();
+      const href = `/runs/${encodeURIComponent(odd)}`;
+      expect(index).toContain(`href="${href}"`);
+      const res = await fetch(`${baseUrl}${href}`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('feat/x#1 a');
+    });
+
+    it('renders root-relative URLs with the default empty base', async () => {
+      const html = await (await fetch(`${baseUrl}/`)).text();
+      expect(html).toContain('data-base=""');
+      expect(html).toContain('href="/css/styles.css"');
+      expect(html).toContain('<script type="module" src="/js/dashboard.js"></script>');
+      expect(html).toContain('<div id="live-region" class="visually-hidden" role="status" aria-live="polite"></div>');
+    });
+
+    it('serves the dashboard ES modules', async () => {
+      for (const file of ['common.js', 'tabs.js', 'slider.js', 'review-actions.js', 'dashboard.js']) {
+        const res = await fetch(`${baseUrl}/js/${file}`);
+        expect(res.status, file).toBe(200);
+        expect(res.headers.get('content-type'), file).toMatch(/javascript/);
+        // Imports must be relative so they resolve under any base path
+        const src = await res.text();
+        for (const m of src.matchAll(/^import .* from '([^']+)'/gm)) expect(m[1], file).toMatch(/^\.\//);
+      }
+    });
   });
 
   describe('cross-site request protection', () => {

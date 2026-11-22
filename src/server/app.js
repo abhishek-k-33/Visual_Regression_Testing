@@ -7,6 +7,7 @@ import viewRouter from './routes/views.js';
 import { getDb } from './db.js';
 import { getStorageRoot, resolvePngInside } from './paths.js';
 import { hostAllowlist, requireSameOriginForWrites } from './security.js';
+import { makeUrl } from './urls.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,6 +23,14 @@ app.use(hostAllowlist);
 // View engine setup
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
+
+// Every local link in the views goes through url() (see urls.js). The live server
+// renders at the site root. To render under a sub-path (the static Pages build),
+// pass pageLocals({ base, mode }) as render options rather than changing app.locals,
+// so base, mode and url() always agree and live requests are unaffected.
+app.locals.base = '';
+app.locals.mode = 'live';
+app.locals.url = (p) => makeUrl(app.locals.base)(p);
 
 // Static assets
 app.use(express.static(path.join(__dirname, 'public')));

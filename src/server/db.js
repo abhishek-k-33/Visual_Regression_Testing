@@ -164,7 +164,8 @@ export function createSnapshot(snap, db = getDb()) {
 }
 
 /**
- * Fetches all test runs ordered by creation date descending,
+ * Fetches all test runs ordered by creation date descending (newest insert first
+ * when several share the same second),
  * augmented with snapshot counts (total, diffs, matches).
  *
  * @param {Database.Database} [db] - Optional DB instance
@@ -182,7 +183,7 @@ export function getAllTestRuns(db = getDb()) {
     FROM test_runs r
     LEFT JOIN snapshots s ON s.run_id = r.id
     GROUP BY r.id
-    ORDER BY r.created_at DESC
+    ORDER BY r.created_at DESC, r.rowid DESC
   `);
   return stmt.all();
 }

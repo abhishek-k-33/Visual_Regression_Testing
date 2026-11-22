@@ -58,6 +58,16 @@ describe('SQLite Storage Layer (db.js)', () => {
     expect(run.total_snapshots).toBe(0);
   });
 
+  it('lists runs newest first, breaking same-second ties by insertion order', () => {
+    // Ids chosen so neither ascending nor descending id order matches insertion order
+    for (const id of ['run-m', 'run-z', 'run-a']) createTestRun({ id, status: 'PASSED' }, db);
+    createTestRun({ id: 'run-old', status: 'PASSED' }, db);
+    db.prepare("UPDATE test_runs SET created_at = '2026-01-01 12:00:00'").run();
+    db.prepare("UPDATE test_runs SET created_at = '2025-12-31 12:00:00' WHERE id = 'run-old'").run();
+
+    expect(getAllTestRuns(db).map((r) => r.id)).toEqual(['run-a', 'run-z', 'run-m', 'run-old']);
+  });
+
   it('creates and associates snapshots with a run', () => {
     createTestRun({ id: 'run-102', status: 'FAILED' }, db);
 
