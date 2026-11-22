@@ -4,7 +4,10 @@
 # Ensures 100% deterministic font kerning & sub-pixel rendering across macOS, Windows, Linux
 # ==============================================================================
 
-FROM mcr.microsoft.com/playwright:v1.50.1-noble
+# Must match the exact "playwright" version in package.json / package-lock.json:
+# each Playwright release only works with the browser builds bundled in its own image.
+# tests/docker.test.js fails if they drift apart.
+FROM mcr.microsoft.com/playwright:v1.64.1-noble
 
 # Set working directory
 WORKDIR /app
@@ -20,8 +23,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy package manifests
 COPY package.json package-lock.json ./
 
-# Install dependencies (better-sqlite3 compiles native bindings during install)
-RUN npm ci
+# Install runtime dependencies only. better-sqlite3 ships prebuilt N-API binaries,
+# so no install scripts are needed (npm would otherwise try `node-gyp rebuild`,
+# and this image has no compiler). The second line fails the build loudly if a
+# dependency ever stops working without its install script.
+RUN npm ci --omit=dev --ignore-scripts \
+    && node -e "new (require('better-sqlite3'))(':memory:').prepare('select 1').get()"
 
 # Copy application source code and configuration
 COPY src/ ./src/

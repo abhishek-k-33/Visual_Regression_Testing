@@ -23,7 +23,7 @@ check('Dockerfile exists', dockerfileExists, 'Dockerfile was not found in projec
 
 if (dockerfileExists) {
   const content = fs.readFileSync(dockerfilePath, 'utf8');
-  check('Dockerfile uses official Playwright base image', content.includes('FROM mcr.microsoft.com/playwright:v1.50.1-noble'), 'Expected base image mcr.microsoft.com/playwright:v1.50.1-noble');
+  check('Dockerfile uses official Playwright base image', content.includes('FROM mcr.microsoft.com/playwright:v1.64.1-noble'), 'Expected base image mcr.microsoft.com/playwright:v1.64.1-noble');
   check('Dockerfile installs Linux typography packages', content.includes('fonts-noto-color-emoji') && content.includes('fonts-liberation'), 'Missing font packages in Dockerfile');
   check('Dockerfile sets working directory /app', content.includes('WORKDIR /app'), 'Missing WORKDIR /app');
   check('Dockerfile executes npm ci for clean build', content.includes('npm ci'), 'Missing npm ci instruction');
