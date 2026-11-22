@@ -15,6 +15,8 @@ describe('Reporter Module (Phase 5)', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-ci-reporter-test-'));
     originalStepSummary = process.env.GITHUB_STEP_SUMMARY;
+    // GitHub Actions sets this for every step; tests opt in explicitly
+    delete process.env.GITHUB_STEP_SUMMARY;
   });
 
   afterEach(() => {
