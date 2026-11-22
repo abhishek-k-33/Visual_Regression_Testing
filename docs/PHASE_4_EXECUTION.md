@@ -16,13 +16,13 @@ By encapsulating Playwright Chromium, standardized Linux font packages, and the 
 ## 2. Deliverables Completed
 
 ### 1. Standardized Playwright Container (`Dockerfile`)
-- **Base Image**: `mcr.microsoft.com/playwright:v1.50.1-noble` (Ubuntu 24.04 LTS), bundling compatible Chromium binaries and system rendering dependencies.
+- **Base Image**: `mcr.microsoft.com/playwright:v1.64.1-noble` (Ubuntu 24.04 LTS), bundling compatible Chromium binaries and system rendering dependencies.
 - **Typography Normalization**: Installs standardized TrueType/OpenType font packages to ensure consistent text rendering across all platforms:
   - `fonts-noto-color-emoji`
   - `fonts-liberation`
   - `fonts-dejavu-core`
   - `fonts-freefont-ttf`
-- **Native Dependency Build**: Runs `npm ci` with native C++ compilation support for `better-sqlite3`.
+- **Dependency Install**: Runs `npm ci --omit=dev --ignore-scripts`. `better-sqlite3` (v13+) ships prebuilt N-API binaries, so nothing is compiled; a build step loads SQLite to fail fast if that ever changes. The base image tag must equal the pinned `playwright` version, enforced by `tests/docker.test.js`.
 - **Directory Structure & Permissions**: Pre-initializes `/app/storage/baselines` and `/app/storage/runs`.
 - **Port Exposure**: Exposes port `4000` for the Web Review Dashboard.
 - **Default Entrypoint**: Defaults to starting the Express server (`node src/server/app.js`).
