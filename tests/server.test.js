@@ -228,6 +228,25 @@ describe('Express Review Dashboard & REST API', () => {
     });
   });
 
+  it('GET /runs/:id shows a missing baseline without a broken image or slider', async () => {
+    createTestRun({ id: 'missing-run', status: 'FAILED' });
+    createSnapshot({
+      run_id: 'missing-run',
+      route: '/new-page',
+      viewport: 'desktop',
+      baseline_path: path.join(storageRoot, 'baselines', 'new-page-desktop.png'),
+      current_path: path.join(storageRoot, 'runs', 'missing-run', 'new-page-desktop.png'),
+      status: 'MISSING_BASELINE'
+    });
+
+    const html = await (await fetch(`${baseUrl}/runs/missing-run`)).text();
+    expect(html).toContain('MISSING BASELINE');
+    expect(html).toContain('Approving will make the current screenshot its baseline');
+    expect(html).toContain('Approve & Update Baseline');
+    expect(html).not.toContain('/storage/baselines/new-page-desktop.png');
+    expect(html).not.toContain('data-tab="slider"');
+  });
+
   it('POST /api/snapshots/:id/approve promotes baseline and updates status to APPROVED', async () => {
     fs.writeFileSync(baselineFile, 'OLD_IMAGE');
     fs.writeFileSync(currentFile, 'NEW_IMAGE');

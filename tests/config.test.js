@@ -136,7 +136,7 @@ describe('Configuration Validator (validateConfig)', () => {
 describe('Configuration Loader (loadConfig)', () => {
   it('loads and validates the root visual.config.json file successfully', () => {
     const config = loadConfig();
-    expect(config.baseUrl).toBe('https://example.com');
+    expect(config.baseUrl).toBe('http://127.0.0.1:4567');
     expect(config.routes).toEqual(['/']);
     expect(config.viewports).toHaveLength(2);
     expect(config.threshold).toBe(0.01);

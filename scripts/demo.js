@@ -1,64 +1,15 @@
-import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createDemoServer, DEMO_PORT } from './demo-app.js';
 
 const execFileAsync = promisify(execFile);
-const PORT = 4567;
+const PORT = DEMO_PORT;
+// Own config (route /__vrt_demo) so the demo's baselines never overwrite the committed
+// CI baselines in storage/baselines (__vrt_demo-*.png are gitignored).
+const DEMO_CONFIG = 'scripts/demo.config.json';
 let isMutated = false;
 
-function renderHtml() {
-  if (!isMutated) {
-    return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Visual CI Demo</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0B1020; color: #F8FAFC; margin: 0; padding: 60px 40px; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 80vh; }
-    .card { background: #151F33; border: 1px solid #26344D; border-radius: 16px; padding: 48px; max-width: 600px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.4); }
-    h1 { font-size: 32px; margin-top: 0; color: #38BDF8; font-weight: 700; }
-    p { font-size: 16px; color: #94A3B8; line-height: 1.6; margin-bottom: 32px; }
-    .btn { display: inline-block; background: #2997FF; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Visual CI Live Demonstration</h1>
-    <p>This is the original, verified baseline master. The button is centered and the theme is tuned for modern developer tools.</p>
-    <a href="#" class="btn">Deploy to Production</a>
-  </div>
-</body>
-</html>`;
-  }
-
-  // Mutated version with unexpected visual layout shift & color regression
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Visual CI Demo</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0B1020; color: #F8FAFC; margin: 0; padding: 60px 40px; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 80vh; }
-    .card { background: #151F33; border: 1px solid #26344D; border-radius: 16px; padding: 48px; max-width: 600px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.4); }
-    h1 { font-size: 32px; margin-top: 0; color: #F43F5E; font-weight: 700; } /* Regression: color turned red */
-    p { font-size: 16px; color: #94A3B8; line-height: 1.6; margin-bottom: 48px; } /* Regression: spacing shifted */
-    .btn { display: inline-block; background: #8B5CF6; color: white; padding: 14px 44px; margin-left: 60px; border-radius: 20px; text-decoration: none; font-weight: 600; font-size: 15px; } /* Regression: shifted right, purple, pill shape */
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Visual CI Live Demonstration</h1>
-    <p>This is the original, verified baseline master. The button is centered and the theme is tuned for modern developer tools.</p>
-    <a href="#" class="btn">Deploy to Production</a>
-  </div>
-</body>
-</html>`;
-}
-
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/html' });
-  res.end(renderHtml());
-});
+const server = createDemoServer(() => isMutated);
 
 server.listen(PORT, '127.0.0.1', async () => {
   console.log('──────────────────────────────────────────────────────');
@@ -75,6 +26,7 @@ server.listen(PORT, '127.0.0.1', async () => {
     await execFileAsync('node', [
       'src/cli/index.js',
       'test',
+      '--config', DEMO_CONFIG,
       '--base-url', `http://127.0.0.1:${PORT}`,
       '--run-id', demoRun1,
       '--update-baselines'
@@ -89,6 +41,7 @@ server.listen(PORT, '127.0.0.1', async () => {
       await execFileAsync('node', [
         'src/cli/index.js',
         'test',
+        '--config', DEMO_CONFIG,
         '--base-url', `http://127.0.0.1:${PORT}`,
         '--run-id', demoRun2
       ]);

@@ -131,6 +131,20 @@ describe('Pixel Diffing Engine (compare.js)', () => {
       expect(result.diffPath).toBeNull();
     });
 
+    it('strict mode: reports MISSING_BASELINE and does not create the baseline', () => {
+      const currentPath = path.join(runsDir, 'index-desktop.png');
+      fs.writeFileSync(currentPath, createSolidPng(10, 10, 50, 100, 150));
+
+      const result = compareSnapshot(
+        { route: '/', viewport: 'desktop', filepath: currentPath },
+        { baselinesDir, diffDir: runsDir, createMissingBaselines: false }
+      );
+
+      expect(result.status).toBe('MISSING_BASELINE');
+      expect(result.baselinePath).toBe(path.join(baselinesDir, 'index-desktop.png'));
+      expect(fs.existsSync(result.baselinePath)).toBe(false);
+    });
+
     it('marks snapshot as MATCH when baseline exists and images are identical', () => {
       const baselinePath = path.join(baselinesDir, 'index-desktop.png');
       const currentPath = path.join(runsDir, 'index-desktop.png');

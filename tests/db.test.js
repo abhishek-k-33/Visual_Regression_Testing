@@ -111,6 +111,10 @@ describe('SQLite Storage Layer (db.js)', () => {
     // Update snapshot to MATCH
     db.prepare("UPDATE snapshots SET status = 'MATCH' WHERE run_id = 'run-103'").run();
     expect(recalculateRunStatus('run-103', db)).toBe('PASSED');
+
+    // A missing baseline (strict mode) fails the run like a diff
+    db.prepare("UPDATE snapshots SET status = 'MISSING_BASELINE' WHERE run_id = 'run-103'").run();
+    expect(recalculateRunStatus('run-103', db)).toBe('FAILED');
   });
 
   it('approves a snapshot, copies file over baseline, and recalculates run status', () => {
@@ -184,6 +188,17 @@ describe('SQLite Storage Layer (db.js)', () => {
       }, db);
       return () => approveSnapshot(snap.id, db, { storageRoot });
     }
+
+    it('approving a MISSING_BASELINE snapshot creates the baseline', () => {
+      const newBaseline = path.join(storageRoot, 'baselines', 'brand-new-desktop.png');
+      const snap = createSnapshot({
+        run_id: 'run-sec', route: '/brand-new', viewport: 'desktop',
+        current_path: goodCurrent, baseline_path: newBaseline, status: 'MISSING_BASELINE'
+      }, db);
+      const result = approveSnapshot(snap.id, db, { storageRoot });
+      expect(fs.readFileSync(newBaseline, 'utf8')).toBe('NEW');
+      expect(result.snapshot.status).toBe('APPROVED');
+    });
 
     it('refuses to copy a source outside storage/runs (e.g. a secrets file)', () => {
       const secret = path.join(testTmpDir, '.env');

@@ -15,8 +15,8 @@ permissions:
   contents: read
 
 jobs:
-  visual-tests:
-    name: Visual Regression Tests
+  unit-tests:
+    name: Unit & Integration Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -32,32 +32,52 @@ jobs:
       - name: Install Node Dependencies
         run: npm ci
 
-      - name: Cache Playwright Chromium
-        uses: actions/cache@v4
-        id: playwright-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-
-      - name: Install Playwright Browsers & OS Dependencies
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
+      - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Install Playwright OS Dependencies (Cache Hit)
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium
+      - name: Run Test Suite
+        run: npm test
 
-      - name: Restore Golden Baselines Cache
-        uses: actions/cache@v4
+  visual-tests:
+    name: Visual Regression Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      # Baselines are committed in storage/baselines/, so the checkout brings in
+      # exactly the baselines approved for this commit.
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
         with:
-          path: storage/baselines
-          key: visual-baselines-${{ runner.os }}-${{ github.ref_name }}
-          restore-keys: |
-            visual-baselines-${{ runner.os }}-main
-            visual-baselines-${{ runner.os }}-
+          node-version: 22
 
+      # Same image used to create the baselines (npm run docker:update-baselines),
+      # so fonts and rendering match pixel for pixel.
+      - name: Build Visual Test Image
+        run: docker build -t visual-ci .
+
+      - name: Start Demo Site
+        run: |
+          node scripts/serve-demo.js > demo-site.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:4567/ > /dev/null && exit 0
+            sleep 1
+          done
+          cat demo-site.log
+          exit 1
+
+      # --strict: a missing baseline fails the job instead of being created.
       - name: Run Visual Regression Tests
-        run: npm run test:visual
+        run: |
+          docker run --rm --network host \
+            -e CI=true -e GITHUB_SHA -e GITHUB_REF_NAME -e GITHUB_HEAD_REF \
+            -e GITHUB_STEP_SUMMARY=/tmp/step-summary.md \
+            -v "$GITHUB_STEP_SUMMARY:/tmp/step-summary.md" \
+            -v "$PWD/storage:/app/storage" \
+            -v "$PWD/visual.config.json:/app/visual.config.json:ro" \
+            visual-ci node src/cli/index.js test --strict
 
       - name: Upload Diff Artifacts on Failure
         if: failure()

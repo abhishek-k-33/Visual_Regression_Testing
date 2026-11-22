@@ -15,6 +15,8 @@ describe('Reporter Module (Phase 5)', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'visual-ci-reporter-test-'));
     originalStepSummary = process.env.GITHUB_STEP_SUMMARY;
+    // GitHub Actions sets this for every step; tests opt in explicitly
+    delete process.env.GITHUB_STEP_SUMMARY;
   });
 
   afterEach(() => {
@@ -45,6 +47,12 @@ describe('Reporter Module (Phase 5)', () => {
       const badge = formatStatusBadge('NEW_BASELINE');
       expect(badge).toContain('🟡');
       expect(badge).toContain('NEW BASELINE');
+    });
+
+    it('returns red badge for MISSING_BASELINE', () => {
+      const badge = formatStatusBadge('MISSING_BASELINE');
+      expect(badge).toContain('🔴');
+      expect(badge).toContain('MISSING BASELINE');
     });
 
     it('returns raw string for unknown status', () => {

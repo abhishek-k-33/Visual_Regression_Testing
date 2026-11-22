@@ -88,6 +88,8 @@ program
   .option('-u, --base-url <url>', 'Override target baseUrl')
   .option('--update-baselines', 'Promote all current screenshots to baseline images')
   .option('-s, --summary-file <path>', 'Custom file name or relative path for markdown summary')
+  .option('--strict', 'Fail on missing baselines instead of creating them (default when CI=true)')
+  .option('--no-strict', 'Create missing baselines from the current screenshots, even in CI')
   .action(async (options) => {
     try {
       const overrides = {};
@@ -99,6 +101,7 @@ program
       const runId = options.runId || `run_${Date.now()}`;
       const baselinesDir = path.resolve(process.cwd(), config.storageDir, 'baselines');
       const runsDir = path.resolve(process.cwd(), config.storageDir, 'runs', runId);
+      const strict = options.strict ?? process.env.CI === 'true';
 
       console.log('──────────────────────────────────────────────────────');
       console.log('  Visual Regression Testing Tool: Compare & Test');
@@ -108,6 +111,7 @@ program
       console.log(`  Viewports       : ${config.viewports.map((v) => `${v.name} (${v.width}x${v.height})`).join(', ')}`);
       console.log(`  Threshold       : ${config.threshold * 100}%`);
       console.log(`  Run ID          : ${runId}`);
+      console.log(`  Missing baseline: ${strict ? 'fail (strict)' : 'create from current screenshot'}`);
       console.log('──────────────────────────────────────────────────────\n');
 
       const startTime = Date.now();
@@ -142,7 +146,8 @@ program
         const comp = compareSnapshot(snap, {
           baselinesDir,
           diffDir: runsDir,
-          allowedThreshold: config.threshold
+          allowedThreshold: config.threshold,
+          createMissingBaselines: !strict
         });
 
         results.push(comp);
@@ -150,6 +155,10 @@ program
         if (comp.status === 'NEW_BASELINE') {
           newBaselineCount++;
           console.log(`    [NEW BASELINE] ${comp.route} @ ${comp.viewport} -> Baseline created`);
+        } else if (comp.status === 'MISSING_BASELINE') {
+          failedCount++;
+          const rel = path.relative(process.cwd(), comp.baselinePath);
+          console.log(`    [FAIL] ${comp.route} @ ${comp.viewport} -> no baseline at ${rel} (create it with --update-baselines and commit it)`);
         } else if (comp.status === 'MATCH') {
           passedCount++;
           console.log(`    [PASS] ${comp.route} @ ${comp.viewport} (${comp.mismatchPercentage.toFixed(2)}% mismatch)`);

@@ -65,7 +65,8 @@ router.get('/runs/:id', (req, res) => {
     // Normalize image paths for web serving (mount storage at /storage)
     const normalizedSnapshots = snapshots.map((s) => ({
       ...s,
-      baselineUrl: toWebUrl(s.baseline_path),
+      // MISSING_BASELINE records where the baseline *would* go; there is no file to show
+      baselineUrl: s.status === 'MISSING_BASELINE' ? null : toWebUrl(s.baseline_path),
       currentUrl: toWebUrl(s.current_path),
       diffUrl: toWebUrl(s.diff_path)
     }));

@@ -54,8 +54,11 @@ assert(workflowContent.includes('actions/setup-node@v4'), 'Uses actions/setup-no
 assert(workflowContent.includes('node-version: 22'), 'Configures Node.js 22 runtime');
 assert(workflowContent.includes('npm ci'), 'Executes clean dependency install (npm ci)');
 assert(workflowContent.includes('npx playwright install --with-deps chromium'), 'Installs Playwright Chromium with system dependencies');
-assert(workflowContent.includes('storage/baselines'), 'Caches golden baselines (storage/baselines)');
-assert(workflowContent.includes('npm run test:visual'), 'Executes visual regression test suite');
+assert(!/path:\s*storage\/baselines/.test(workflowContent), 'Baselines come from the git checkout, not an Actions cache');
+assert(workflowContent.includes('docker build -t visual-ci .'), 'Builds the same Docker image used to create baselines');
+assert(workflowContent.includes('node scripts/serve-demo.js'), 'Tests the bundled demo site, not an external URL');
+assert(workflowContent.includes('src/cli/index.js test --strict'), 'Runs visual tests in strict mode (missing baseline fails)');
+assert(workflowContent.includes('npm test'), 'Runs the unit & integration test suite');
 assert(workflowContent.includes('actions/upload-artifact@v4'), 'Uses actions/upload-artifact@v4 for diff archiving');
 assert(workflowContent.includes('storage/runs/'), 'Archives runs directory (storage/runs/)');
 assert(workflowContent.includes('if: failure()'), 'Only uploads diff artifacts on test failure');
@@ -133,6 +136,7 @@ fs.rmSync(tmpDir, { recursive: true, force: true });
 const helpOutput = execSync('node src/cli/index.js test --help', { encoding: 'utf8' });
 assert(helpOutput.includes('--summary-file'), 'CLI test command includes --summary-file option');
 assert(helpOutput.includes('--update-baselines'), 'CLI test command includes --update-baselines option');
+assert(helpOutput.includes('--strict'), 'CLI test command includes --strict option');
 
 console.log('\n──────────────────────────────────────────────────────');
 console.log(`  Phase 5 Verification: ${passedChecks}/${totalChecks} Checks Passed`);

@@ -6,6 +6,7 @@ coverage/
 # Local database & transient runs
 storage/runs/*
 !storage/runs/.gitkeep
+storage/baselines/*
 storage/*.sqlite*
 storage/*.db*
 *.sqlite*
