@@ -41,7 +41,7 @@ if (composeExists) {
   const content = fs.readFileSync(composePath, 'utf8');
   check('docker-compose defines "dashboard" service', content.includes('dashboard:'), 'Missing dashboard service');
   check('docker-compose defines "runner" service', content.includes('runner:'), 'Missing runner service');
-  check('docker-compose binds port 4000:4000', content.includes('"4000:4000"'), 'Missing port mapping 4000:4000');
+  check('docker-compose binds port 4000 on host loopback', content.includes('"127.0.0.1:4000:4000"'), 'Missing port mapping 127.0.0.1:4000:4000');
   check('docker-compose mounts ./storage volume', content.includes('./storage:/app/storage'), 'Missing ./storage volume mount');
   check('docker-compose mounts visual.config.json for runner', content.includes('./visual.config.json:/app/visual.config.json'), 'Missing visual.config.json volume mount');
   check('docker-compose configures network_mode host for runner', content.includes('network_mode: "host"'), 'Missing network_mode: host for runner');

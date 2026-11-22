@@ -1,27 +1,48 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import app from '../src/server/app.js';
-import { initDb, closeDb } from '../src/server/db.js';
+import { initDb, closeDb, createTestRun, createSnapshot } from '../src/server/db.js';
 
 describe('Express Review Dashboard & REST API', () => {
   let server;
   let baseUrl;
+  let previousStorageEnv;
   const testTmpDir = path.resolve(process.cwd(), 'tests/.tmp_server');
+  const storageRoot = path.join(testTmpDir, 'storage');
   const dbPath = path.join(testTmpDir, 'server_test.sqlite');
+  const baselineFile = path.join(storageRoot, 'baselines', 'index-desktop.png');
+  const currentFile = path.join(storageRoot, 'runs', 'api-run-1', 'index-desktop.png');
+  let snapshotId;
 
   beforeAll(async () => {
-    fs.mkdirSync(testTmpDir, { recursive: true });
-    if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+    fs.rmSync(testTmpDir, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(baselineFile), { recursive: true });
+    fs.mkdirSync(path.dirname(currentFile), { recursive: true });
 
-    // Initialize test database
-    initDb(dbPath);
+    // Point the server's storage at the temp dir so tests never touch real storage/
+    previousStorageEnv = process.env.VISUAL_STORAGE_DIR;
+    process.env.VISUAL_STORAGE_DIR = storageRoot;
 
-    // Bind Express server to ephemeral port
+    const db = initDb(dbPath);
+
+    // Seed data the way the CLI does: direct DB writes
+    createTestRun({ id: 'api-run-1', commit_hash: 'c0ffee1', branch: 'feature/nav', status: 'FAILED' }, db);
+    snapshotId = createSnapshot({
+      run_id: 'api-run-1',
+      route: '/',
+      viewport: 'desktop',
+      baseline_path: baselineFile,
+      current_path: currentFile,
+      diff_path: path.join(storageRoot, 'runs', 'api-run-1', 'index-desktop-diff.png'),
+      mismatch_percentage: 1.5,
+      status: 'DIFF'
+    }, db).id;
+
     await new Promise((resolve) => {
       server = app.listen(0, '127.0.0.1', () => {
-        const port = server.address().port;
-        baseUrl = `http://127.0.0.1:${port}`;
+        baseUrl = `http://127.0.0.1:${server.address().port}`;
         resolve();
       });
     });
@@ -32,9 +53,9 @@ describe('Express Review Dashboard & REST API', () => {
       await new Promise((resolve) => server.close(resolve));
     }
     closeDb();
-    if (fs.existsSync(testTmpDir)) {
-      fs.rmSync(testTmpDir, { recursive: true, force: true });
-    }
+    if (previousStorageEnv === undefined) delete process.env.VISUAL_STORAGE_DIR;
+    else process.env.VISUAL_STORAGE_DIR = previousStorageEnv;
+    fs.rmSync(testTmpDir, { recursive: true, force: true });
   });
 
   it('GET / returns 200 and renders dashboard HTML', async () => {
@@ -45,36 +66,13 @@ describe('Express Review Dashboard & REST API', () => {
     expect(html).toContain('Dashboard');
   });
 
-  it('POST /api/runs registers a test run and its snapshots', async () => {
-    const payload = {
-      id: 'api-run-1',
-      commit_hash: 'c0ffee1',
-      branch: 'feature/nav',
-      status: 'FAILED',
-      snapshots: [
-        {
-          route: '/',
-          viewport: 'desktop',
-          baseline_path: path.join(testTmpDir, 'baseline.png'),
-          current_path: path.join(testTmpDir, 'current.png'),
-          diff_path: path.join(testTmpDir, 'diff.png'),
-          mismatch_percentage: 1.5,
-          status: 'DIFF'
-        }
-      ]
-    };
-
+  it('POST /api/runs no longer exists (clients cannot register file paths)', async () => {
     const res = await fetch(`${baseUrl}/api/runs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({ id: 'x', snapshots: [] })
     });
-
-    expect(res.status).toBe(201);
-    const data = await res.json();
-    expect(data.success).toBe(true);
-    expect(data.runId).toBe('api-run-1');
-    expect(data.snapshotsCount).toBe(1);
+    expect(res.status).toBe(404);
   });
 
   it('GET /api/runs returns list of runs', async () => {
@@ -105,30 +103,21 @@ describe('Express Review Dashboard & REST API', () => {
   });
 
   it('POST /api/snapshots/:id/approve promotes baseline and updates status to APPROVED', async () => {
-    // Setup dummy files for baseline promotion
-    const baselineFile = path.join(testTmpDir, 'baseline.png');
-    const currentFile = path.join(testTmpDir, 'current.png');
     fs.writeFileSync(baselineFile, 'OLD_IMAGE');
     fs.writeFileSync(currentFile, 'NEW_IMAGE');
 
-    const res = await fetch(`${baseUrl}/api/snapshots/1/approve`, {
-      method: 'POST'
-    });
+    const res = await fetch(`${baseUrl}/api/snapshots/${snapshotId}/approve`, { method: 'POST' });
 
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.success).toBe(true);
     expect(data.snapshot.status).toBe('APPROVED');
     expect(data.runStatus).toBe('APPROVED');
-
-    // Verify baseline file was overwritten on disk
     expect(fs.readFileSync(baselineFile, 'utf8')).toBe('NEW_IMAGE');
   });
 
   it('POST /api/snapshots/:id/reject updates status to REJECTED', async () => {
-    const res = await fetch(`${baseUrl}/api/snapshots/1/reject`, {
-      method: 'POST'
-    });
+    const res = await fetch(`${baseUrl}/api/snapshots/${snapshotId}/reject`, { method: 'POST' });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -137,10 +126,73 @@ describe('Express Review Dashboard & REST API', () => {
     expect(data.runStatus).toBe('REJECTED');
   });
 
-  it('blocks direct access to SQLite database files under /storage', async () => {
-    const res = await fetch(`${baseUrl}/storage/data.sqlite`);
-    expect(res.status).toBe(403);
-    const text = await res.text();
-    expect(text).toBe('Access denied');
+  it('serves PNG screenshots from storage/runs and storage/baselines', async () => {
+    const res = await fetch(`${baseUrl}/storage/runs/api-run-1/index-desktop.png`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('NEW_IMAGE');
+  });
+
+  it('refuses non-PNG and out-of-scope files under /storage', async () => {
+    fs.writeFileSync(path.join(storageRoot, 'data.sqlite'), 'DB');
+    fs.writeFileSync(path.join(storageRoot, 'runs', 'api-run-1', 'summary.md'), 'MD');
+    fs.writeFileSync(path.join(storageRoot, 'stray.png'), 'STRAY');
+
+    for (const p of [
+      '/storage/data.sqlite',
+      '/storage/data.sqlite-wal',
+      '/storage/runs/api-run-1/summary.md',
+      '/storage/stray.png'
+    ]) {
+      const res = await fetch(`${baseUrl}${p}`);
+      expect(res.status, p).toBe(403);
+      expect(await res.text(), p).toBe('Access denied');
+    }
+  });
+
+  it('refuses encoded traversal paths sent raw (bypassing client URL normalization)', async () => {
+    fs.writeFileSync(path.join(storageRoot, 'stray.png'), 'STRAY');
+    const { port } = server.address();
+    for (const rawPath of [
+      '/storage/runs/%2e%2e/%2e%2e/stray.png',
+      '/storage/runs/..%2f..%2fstray.png',
+      '/storage/baselines/..%2fstray.png'
+    ]) {
+      const status = await new Promise((resolve, reject) => {
+        http.get({ host: '127.0.0.1', port, path: rawPath }, (res) => {
+          res.resume();
+          resolve(res.statusCode);
+        }).on('error', reject);
+      });
+      expect(status, rawPath).toBe(403);
+    }
+  });
+
+  it('returns 404 for a missing screenshot', async () => {
+    const res = await fetch(`${baseUrl}/storage/runs/api-run-1/missing.png`);
+    expect(res.status).toBe(404);
+  });
+
+  it('regression: a snapshot pointing at a secrets file cannot be approved or downloaded', async () => {
+    // Simulate a malicious row (previously insertable via POST /api/runs)
+    const secretFile = path.join(testTmpDir, '.env');
+    fs.writeFileSync(secretFile, 'FAKE_SECRET=hunter2');
+    const leakTarget = path.join(storageRoot, 'baselines', 'leak.png');
+
+    createTestRun({ id: 'attack-run', status: 'FAILED' });
+    const evil = createSnapshot({
+      run_id: 'attack-run',
+      route: '/',
+      viewport: 'desktop',
+      baseline_path: leakTarget,
+      current_path: secretFile,
+      status: 'DIFF'
+    });
+
+    const approve = await fetch(`${baseUrl}/api/snapshots/${evil.id}/approve`, { method: 'POST' });
+    expect(approve.status).toBe(403);
+    expect(fs.existsSync(leakTarget)).toBe(false);
+
+    const download = await fetch(`${baseUrl}/storage/baselines/leak.png`);
+    expect(download.status).toBe(404);
   });
 });

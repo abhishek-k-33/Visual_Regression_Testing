@@ -11,9 +11,11 @@ services:
     container_name: visual-ci-dashboard
     restart: unless-stopped
     ports:
-      - "4000:4000"
+      # Published on the host loopback only; change to "4000:4000" to expose on your network
+      - "127.0.0.1:4000:4000"
     environment:
       - PORT=4000
+      - HOST=0.0.0.0
       - NODE_ENV=production
     volumes:
       # Mount host storage directory for baseline images, test runs, and SQLite DB

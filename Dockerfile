@@ -33,6 +33,8 @@ RUN mkdir -p /app/storage/baselines /app/storage/runs
 # Environment defaults
 ENV NODE_ENV=production
 ENV PORT=4000
+# Listen on all interfaces inside the container so the published port works
+ENV HOST=0.0.0.0
 
 # Expose Web Review Dashboard port
 EXPOSE 4000

@@ -19,21 +19,22 @@ Following security and QA audits by autonomous subagents (`Diff Auditor & Securi
 - **Schema & WAL Mode**: Initialized `test_runs` and `snapshots` tables linked via foreign key cascading deletes (`ON DELETE CASCADE`). Enabled `journal_mode = WAL` and `foreign_keys = ON` for high-concurrency non-blocking reads and writes.
 - **Query Helper Functions**: `createTestRun`, `createSnapshot`, `getAllTestRuns`, `getTestRunById`, `getSnapshotsByRunId`, `getSnapshotById`, `recalculateRunStatus`, `approveSnapshot`, and `rejectSnapshot`.
 - **Dynamic Status Recalculation**: `recalculateRunStatus` dynamically transitions parent test run status (`PASSED`, `FAILED`, `APPROVED`, `REJECTED`) based on child snapshot states.
-- **Security Hardening (`approveSnapshot`)**:
-  - Enforced path traversal jail: Replaced simple string prefix matching with strict `path.relative()` evaluation, guaranteeing destination paths cannot escape `process.cwd()`.
-  - Protected root blacklist: Prevents baseline copies from targeting `.git`, `node_modules`, `src`, `.antigravity`, or `package.json`.
-  - Extension whitelist: Restricts baseline promotion targets to valid image extensions (`.png`, `.jpg`, `.jpeg`, `.webp`).
+- **Security Hardening (`approveSnapshot`, `src/server/paths.js`)**:
+  - Path allowlist: the source must be a `.png` inside `storage/runs/` and the target a `.png` inside `storage/baselines/`. Anything else is refused with `Access denied` (HTTP 403).
+  - Paths are resolved with `fs.realpathSync`, so symlinks cannot point outside those directories, and an existing baseline symlink cannot be used to write elsewhere.
+  - Containment is checked by path segment (`path.relative`), so a sibling such as `storage-evil/` is not treated as inside `storage/`.
+  - *(2026-11-22)* This replaced an earlier denylist that only checked the destination, which allowed any workspace file (e.g. `.env`) to be copied into `storage/` and downloaded.
 
 ### 2. Express Web Review Dashboard & REST API (`src/server/app.js`, `src/server/routes/api.js`, `src/server/routes/views.js`)
 - **REST API Endpoints (`/api`)**:
   - `GET /api/runs`: Returns all test runs with summary metrics (match counts, diff counts, commit hashes, branches, timestamps).
   - `GET /api/runs/:id`: Returns detailed run payload with all associated child snapshots.
-  - `POST /api/runs`: Persists CLI execution batches and snapshot metrics (validates payload, checks 409 conflicts).
+  - *(Removed 2026-11-22)* `POST /api/runs` accepted client-chosen file paths and was unused: the CLI records runs by writing to SQLite directly.
   - `POST /api/snapshots/:id/approve`: Promotes current screenshot to baseline on disk and triggers parent run recalculation.
   - `POST /api/snapshots/:id/reject`: Marks visual diff as rejected.
 - **Static Asset & Database Route Guard**:
-  - Serves screenshots directly at `/storage`.
-  - Installed path guard middleware on `/storage` intercepting requests for database binaries (`/\.(sqlite|db)(-.*)?$/i`) and returning HTTP 403 Forbidden to prevent unauthorized database disclosure over HTTP.
+  - Serves screenshots at `/storage` using an allowlist: only `.png` files under `storage/runs/` or `storage/baselines/` are served. Everything else (SQLite files, `summary.md`, stray files, encoded traversal) returns HTTP 403.
+- **Network Binding**: The server listens on `127.0.0.1` by default. Set `HOST=0.0.0.0` to expose it on the network (the Docker image does this, and `docker-compose.yml` publishes the port on host loopback only).
 - **Template & XSS Security**:
   - EJS templates utilize HTML-escaped output tags (`<%= ... %>`) for dynamic variables.
   - Sanitized error messages in `src/server/routes/views.js` using `escapeHtml()` prior to error layout rendering.
