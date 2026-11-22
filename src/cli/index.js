@@ -6,20 +6,21 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadConfig } from './config.js';
 import { captureScreenshots, getSnapshotFilename } from './capture.js';
-import { compareSnapshot, sha256 } from './compare.js';
+import { compareSnapshot, sha256, DEFAULT_PIXELMATCH_THRESHOLD } from './compare.js';
+import { buildRunManifest, writeRunManifest, toSqliteTimestamp, getToolVersion, MANIFEST_FILENAME } from './manifest.js';
 import { createTestRun, createSnapshot, getDb } from '../server/db.js';
 import { resolveStorageRoot } from '../server/paths.js';
 import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
 
 function getGitContext() {
   const envBranch = process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME;
-  const envSha = process.env.GITHUB_SHA ? process.env.GITHUB_SHA.substring(0, 7) : null;
+  const envFullSha = process.env.GITHUB_SHA || null;
   try {
     const branch = envBranch || execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    const commit_hash = envSha || execSync('git rev-parse --short HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    return { branch, commit_hash };
+    const commit_sha = envFullSha || execSync('git rev-parse HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return { branch, commit_sha, commit_hash: commit_sha.substring(0, 7) };
   } catch {
-    return { branch: envBranch || null, commit_hash: envSha || null };
+    return { branch: envBranch || null, commit_sha: envFullSha, commit_hash: envFullSha ? envFullSha.substring(0, 7) : null };
   }
 }
 
@@ -30,7 +31,7 @@ const program = new Command();
 program
   .name('visual-ci')
   .description('Visual Regression Testing Engine & CI Tool')
-  .version('1.0.0');
+  .version(getToolVersion());
 
 program
   .command('capture')
@@ -106,6 +107,9 @@ program
       const baselinesDir = path.join(storageRoot, 'baselines');
       const runsDir = path.join(storageRoot, 'runs', runId);
       const strict = options.strict ?? process.env.CI === 'true';
+      if (options.summaryFile && path.resolve(runsDir, options.summaryFile) === path.join(runsDir, MANIFEST_FILENAME)) {
+        throw new Error(`--summary-file cannot be "${options.summaryFile}": that is the run's ${MANIFEST_FILENAME}`);
+      }
 
       console.log('──────────────────────────────────────────────────────');
       console.log('  Visual Regression Testing Tool: Compare & Test');
@@ -163,7 +167,7 @@ program
           createMissingBaselines: !strict
         });
 
-        results.push(comp);
+        results.push({ ...comp, width: snap.width, height: snap.height });
 
         if (comp.status === 'NEW_BASELINE') {
           newBaselineCount++;
@@ -182,17 +186,38 @@ program
       }
 
       const gitInfo = getGitContext();
+      const overallStatus = failedCount > 0 ? 'FAILED' : 'PASSED';
+      const createdAt = new Date();
+
+      // Machine-readable run record next to the screenshots (travels with CI artifacts).
+      // Written before the database so a DB failure can't lose it.
+      try {
+        writeRunManifest(buildRunManifest({
+          runId,
+          createdAt,
+          gitInfo,
+          status: overallStatus,
+          threshold: config.threshold,
+          pixelmatchThreshold: DEFAULT_PIXELMATCH_THRESHOLD,
+          strict,
+          mode: options.updateBaselines ? 'update-baselines' : 'compare',
+          runDir: runsDir,
+          baselinesDir,
+          results
+        }), runsDir);
+      } catch (manifestErr) {
+        console.warn(`  [WARN] Failed to write run.json: ${manifestErr.message}`);
+      }
 
       // Record test run & snapshots in SQLite database for web review dashboard
       try {
-        const overallStatus = failedCount > 0 ? 'FAILED' : 'PASSED';
-
         const db = getDb(path.join(storageRoot, 'data.sqlite'));
         createTestRun({
           id: runId,
           commit_hash: gitInfo.commit_hash,
           branch: gitInfo.branch,
-          status: overallStatus
+          status: overallStatus,
+          created_at: toSqliteTimestamp(createdAt)
         }, db);
 
         for (const r of results) {

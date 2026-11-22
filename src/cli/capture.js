@@ -3,34 +3,8 @@ import path from 'node:path';// import node path
 import { chromium, errors as playwrightErrors } from 'playwright';// chromium is the engine on which google chrome is based on. Our robot will directly bypass the
 // chrome or other browser and use the chromium engine instead which is a lot lighter and faster. 
 
-/**
- * Creates a clean filesystem-friendly slug from a URL route.
- *
- * @param {string} route - The route path (e.g. "/" or "/blog/post-1")
- * @returns {string} Clean file slug
- */
-export function getRouteSlug(route) {// converts a web address into a safe legal framework on our computer 
-  // what this function does is that if removes / from page names so that it can be saved as a file
-  if (!route || route === '/') {
-    return 'index'; // returns the name of the homepage which is generally named index.html
-  }
-  return route
-    .replace(/^\/+/, '')// replaces the slashes at the very front of the address. ^ means at the beginning 
-    .replace(/\/+$/, '')// replaces the slashes at the very last of the address ,$ means attthe end
-    .replace(/[^a-zA-Z0-9_-]/g, '_');// ^ means anything except. replaces anything except atoz and 0to9 ,_,-with _
-}
-
-/**
- * Generates standard screenshot filename.
- *
- * @param {string} route - URL route
- * @param {string} viewportName - Viewport identifier
- * @returns {string} Filename (e.g. "index-desktop.png")
- */
-export function getSnapshotFilename(route, viewportName) {
-  const slug = getRouteSlug(route); // saves the slug of the address to slug variable 
-  return `${slug}-${viewportName}.png`; // combines the slug the viewport name and the .png extension to form a clean organized filename
-}
+export { getRouteSlug, getSnapshotFilename } from './naming.js';
+import { getSnapshotFilename } from './naming.js';
 
 /**
  * CSS injected into every page to ensure deterministic captures:
