@@ -1,16 +1,22 @@
 import express from 'express';
 import {
-  createTestRun,
-  createSnapshot,
   getAllTestRuns,
   getTestRunById,
   getSnapshotsByRunId,
-  getSnapshotById,
   approveSnapshot,
   rejectSnapshot
 } from '../db.js';
 
 const router = express.Router();
+
+// Runs are recorded by the CLI writing to SQLite directly; there is deliberately
+// no endpoint for creating runs, since that would let clients choose file paths.
+
+function errorStatus(err) {
+  if (err.message.startsWith('Access denied')) return 403;
+  if (err.message.includes('not found')) return 404;
+  return 500;
+}
 
 /**
  * GET /api/runs
@@ -43,59 +49,6 @@ router.get('/runs/:id', (req, res) => {
 });
 
 /**
- * POST /api/runs
- * Receives test run results from the CLI and records them in SQLite.
- * Body: { id, commit_hash, branch, status, snapshots: [...] }
- */
-router.post('/runs', (req, res) => {
-  try {
-    const { id, commit_hash, branch, status, snapshots } = req.body;
-
-    if (!id || typeof id !== 'string') {
-      return res.status(400).json({ success: false, error: 'Run "id" is required.' });
-    }
-
-    // Check if run already exists
-    const existing = getTestRunById(id);
-    if (existing) {
-      return res.status(409).json({ success: false, error: `Run with id "${id}" already exists.` });
-    }
-
-    createTestRun({
-      id,
-      commit_hash: commit_hash || null,
-      branch: branch || null,
-      status: status || 'PASSED'
-    });
-
-    const createdSnapshots = [];
-    if (Array.isArray(snapshots)) {
-      for (const snap of snapshots) {
-        const created = createSnapshot({
-          run_id: id,
-          route: snap.route,
-          viewport: snap.viewport,
-          baseline_path: snap.baseline_path || snap.baselinePath || null,
-          current_path: snap.current_path || snap.currentPath || snap.filepath,
-          diff_path: snap.diff_path || snap.diffPath || null,
-          mismatch_percentage: snap.mismatch_percentage !== undefined ? snap.mismatch_percentage : snap.mismatchPercentage,
-          status: snap.status || 'MATCH'
-        });
-        createdSnapshots.push(created);
-      }
-    }
-
-    res.status(201).json({
-      success: true,
-      runId: id,
-      snapshotsCount: createdSnapshots.length
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
  * POST /api/snapshots/:id/approve
  * Approves a snapshot: copies current screenshot over baseline and updates status.
  */
@@ -114,7 +67,7 @@ router.post('/snapshots/:id/approve', (req, res) => {
       runStatus: result.runStatus
     });
   } catch (err) {
-    const statusCode = err.message.includes('not found') ? 404 : 500;
+    const statusCode = errorStatus(err);
     res.status(statusCode).json({ success: false, error: err.message });
   }
 });
@@ -138,7 +91,7 @@ router.post('/snapshots/:id/reject', (req, res) => {
       runStatus: result.runStatus
     });
   } catch (err) {
-    const statusCode = err.message.includes('not found') ? 404 : 500;
+    const statusCode = errorStatus(err);
     res.status(statusCode).json({ success: false, error: err.message });
   }
 });

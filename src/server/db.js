@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import { getStorageRoot, resolvePngInside } from './paths.js';
 
 /**
  * Default database path within storage directory.
@@ -268,50 +269,23 @@ export function recalculateRunStatus(runId, db = getDb()) {
  *
  * @param {number|string} snapshotId - Snapshot ID
  * @param {Database.Database} [db] - Optional DB instance
+ * @param {object} [options]
+ * @param {string} [options.storageRoot] - Storage root (defaults to getStorageRoot())
  * @returns {object} Updated snapshot and new parent run status
  */
-export function approveSnapshot(snapshotId, db = getDb()) {
+export function approveSnapshot(snapshotId, db = getDb(), options = {}) {
   const snapshot = getSnapshotById(snapshotId, db);
   if (!snapshot) {
     throw new Error(`Snapshot with id ${snapshotId} not found.`);
   }
 
-  // Promote current image to baseline on disk
+  // Promote current image to baseline on disk.
+  // Allowlist: copy only a .png from <storage>/runs/ to a .png in <storage>/baselines/.
   if (snapshot.baseline_path && snapshot.current_path) {
-    const projectRoot = path.resolve(process.cwd());
-    const resolvedBaseline = path.resolve(projectRoot, snapshot.baseline_path);
-    const resolvedCurrent = path.resolve(projectRoot, snapshot.current_path);
-
-    const relBaseline = path.relative(projectRoot, resolvedBaseline);
-    const relCurrent = path.relative(projectRoot, resolvedCurrent);
-
-    // Defense-in-depth: ensure paths strictly reside within workspace without escaping
-    if (
-      relBaseline.startsWith('..') ||
-      path.isAbsolute(relBaseline) ||
-      relCurrent.startsWith('..') ||
-      path.isAbsolute(relCurrent)
-    ) {
-      throw new Error('Access denied: Snapshot filepaths must reside within workspace.');
-    }
-
-    // Protect critical project files and directories from accidental overwrite
-    const protectedRoots = ['.git', 'node_modules', 'src', '.antigravity'];
-    const firstSegment = relBaseline.split(path.sep)[0];
-    if (protectedRoots.includes(firstSegment) || relBaseline === 'package.json' || relBaseline === 'package-lock.json') {
-      throw new Error('Access denied: Baseline path cannot target protected source or configuration files.');
-    }
-
-    // Ensure baseline target is an image file
-    const ext = path.extname(resolvedBaseline).toLowerCase();
-    if (!['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
-      throw new Error('Access denied: Baseline target must be a valid image file (.png, .jpg, .jpeg, .webp).');
-    }
-
-    fs.mkdirSync(path.dirname(resolvedBaseline), { recursive: true });
-    if (fs.existsSync(resolvedCurrent)) {
-      fs.copyFileSync(resolvedCurrent, resolvedBaseline);
-    }
+    const storageRoot = options.storageRoot || getStorageRoot();
+    const source = resolvePngInside(snapshot.current_path, path.join(storageRoot, 'runs'));
+    const target = resolvePngInside(snapshot.baseline_path, path.join(storageRoot, 'baselines'), { mustExist: false });
+    fs.copyFileSync(source, target);
   }
 
   // Update snapshot status in database

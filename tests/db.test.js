@@ -116,8 +116,11 @@ describe('SQLite Storage Layer (db.js)', () => {
   it('approves a snapshot, copies file over baseline, and recalculates run status', () => {
     createTestRun({ id: 'run-104', status: 'FAILED' }, db);
 
-    const currentImg = path.join(testTmpDir, 'current.png');
-    const baselineImg = path.join(testTmpDir, 'baseline.png');
+    const storageRoot = path.join(testTmpDir, 'storage');
+    const currentImg = path.join(storageRoot, 'runs', 'run-104', 'about-desktop.png');
+    const baselineImg = path.join(storageRoot, 'baselines', 'about-desktop.png');
+    fs.mkdirSync(path.dirname(currentImg), { recursive: true });
+    fs.mkdirSync(path.dirname(baselineImg), { recursive: true });
     fs.writeFileSync(currentImg, 'NEW_IMAGE_CONTENT');
     fs.writeFileSync(baselineImg, 'OLD_IMAGE_CONTENT');
 
@@ -130,7 +133,7 @@ describe('SQLite Storage Layer (db.js)', () => {
       status: 'DIFF'
     }, db);
 
-    const { snapshot: approvedSnap, runStatus } = approveSnapshot(snap.id, db);
+    const { snapshot: approvedSnap, runStatus } = approveSnapshot(snap.id, db, { storageRoot });
 
     expect(approvedSnap.status).toBe('APPROVED');
     expect(runStatus).toBe('APPROVED');
@@ -157,40 +160,92 @@ describe('SQLite Storage Layer (db.js)', () => {
     expect(run.status).toBe('REJECTED');
   });
 
-  it('prevents path traversal or overwriting protected files during approveSnapshot', () => {
-    createTestRun({ id: 'run-sec', status: 'FAILED' }, db);
+  describe('approveSnapshot path allowlist', () => {
+    let storageRoot;
+    let goodCurrent;
+    let goodBaseline;
+    let n = 0;
 
-    // Test 1: path escaping outside workspace
-    const snapOutside = createSnapshot({
-      run_id: 'run-sec',
-      route: '/exploit1',
-      viewport: 'desktop',
-      baseline_path: '../../../etc/passwd.png',
-      current_path: path.join(testTmpDir, 'foo.png'),
-      status: 'DIFF'
-    }, db);
-    expect(() => approveSnapshot(snapOutside.id, db)).toThrow(/Access denied/);
+    beforeEach(() => {
+      storageRoot = path.join(testTmpDir, 'storage');
+      goodCurrent = path.join(storageRoot, 'runs', 'run-sec', 'index-desktop.png');
+      goodBaseline = path.join(storageRoot, 'baselines', 'index-desktop.png');
+      fs.mkdirSync(path.dirname(goodCurrent), { recursive: true });
+      fs.mkdirSync(path.dirname(goodBaseline), { recursive: true });
+      fs.writeFileSync(goodCurrent, 'NEW');
+      fs.writeFileSync(goodBaseline, 'OLD');
+      createTestRun({ id: 'run-sec', status: 'FAILED' }, db);
+    });
 
-    // Test 2: targeting protected source directory (e.g. src/index.js)
-    const snapProtected = createSnapshot({
-      run_id: 'run-sec',
-      route: '/exploit2',
-      viewport: 'desktop',
-      baseline_path: 'src/server/db.png',
-      current_path: path.join(testTmpDir, 'foo.png'),
-      status: 'DIFF'
-    }, db);
-    expect(() => approveSnapshot(snapProtected.id, db)).toThrow(/protected source or configuration files/);
+    function approveWith(current_path, baseline_path) {
+      const snap = createSnapshot({
+        run_id: 'run-sec', route: `/case${n++}`, viewport: 'desktop',
+        current_path, baseline_path, status: 'DIFF'
+      }, db);
+      return () => approveSnapshot(snap.id, db, { storageRoot });
+    }
 
-    // Test 3: targeting non-image file
-    const snapNonImage = createSnapshot({
-      run_id: 'run-sec',
-      route: '/exploit3',
-      viewport: 'desktop',
-      baseline_path: 'tests/.tmp_db/exploit.sh',
-      current_path: path.join(testTmpDir, 'foo.png'),
-      status: 'DIFF'
-    }, db);
-    expect(() => approveSnapshot(snapNonImage.id, db)).toThrow(/valid image file/);
+    it('refuses to copy a source outside storage/runs (e.g. a secrets file)', () => {
+      const secret = path.join(testTmpDir, '.env');
+      fs.writeFileSync(secret, 'FAKE_SECRET=1');
+      expect(approveWith(secret, goodBaseline)).toThrow(/Access denied/);
+      expect(fs.readFileSync(goodBaseline, 'utf8')).toBe('OLD');
+    });
+
+    it('refuses a .png source that lives outside storage/runs', () => {
+      const outside = path.join(testTmpDir, 'outside.png');
+      fs.writeFileSync(outside, 'X');
+      expect(approveWith(outside, goodBaseline)).toThrow(/Access denied/);
+    });
+
+    it('refuses a target outside storage/baselines', () => {
+      expect(approveWith(goodCurrent, path.join(storageRoot, 'runs', 'evil.png'))).toThrow(/Access denied/);
+      expect(approveWith(goodCurrent, '../../../etc/passwd.png')).toThrow(/Access denied/);
+      expect(approveWith(goodCurrent, 'src/server/db.png')).toThrow(/Access denied/);
+    });
+
+    it('refuses traversal that climbs out of storage/runs', () => {
+      const sneaky = path.join(storageRoot, 'runs', '..', '..', 'outside.png');
+      fs.writeFileSync(path.join(testTmpDir, 'outside.png'), 'X');
+      expect(approveWith(sneaky, goodBaseline)).toThrow(/Access denied/);
+    });
+
+    it('refuses non-PNG source and target files', () => {
+      const txt = path.join(storageRoot, 'runs', 'run-sec', 'notes.txt');
+      fs.writeFileSync(txt, 'X');
+      expect(approveWith(txt, goodBaseline)).toThrow(/Access denied/);
+      expect(approveWith(goodCurrent, path.join(storageRoot, 'baselines', 'exploit.sh'))).toThrow(/Access denied/);
+    });
+
+    it('refuses a symlink in storage/runs that points outside', () => {
+      const secret = path.join(testTmpDir, 'secret.png');
+      fs.writeFileSync(secret, 'SECRET');
+      const link = path.join(storageRoot, 'runs', 'run-sec', 'link.png');
+      fs.symlinkSync(secret, link);
+      expect(approveWith(link, goodBaseline)).toThrow(/Access denied/);
+      expect(fs.readFileSync(goodBaseline, 'utf8')).toBe('OLD');
+    });
+
+    it('refuses a baseline symlink that points outside (no write-through)', () => {
+      const victim = path.join(testTmpDir, 'victim.png');
+      fs.writeFileSync(victim, 'ORIGINAL');
+      const link = path.join(storageRoot, 'baselines', 'link.png');
+      fs.symlinkSync(victim, link);
+      expect(approveWith(goodCurrent, link)).toThrow(/Access denied/);
+      expect(fs.readFileSync(victim, 'utf8')).toBe('ORIGINAL');
+    });
+
+    it('refuses a sibling directory whose name shares the storage prefix', () => {
+      const sibling = path.join(testTmpDir, 'storage-evil', 'runs', 'x.png');
+      fs.mkdirSync(path.dirname(sibling), { recursive: true });
+      fs.writeFileSync(sibling, 'X');
+      expect(approveWith(sibling, goodBaseline)).toThrow(/Access denied/);
+    });
+
+    it('creates a new baseline file inside storage/baselines when none exists yet', () => {
+      const fresh = path.join(storageRoot, 'baselines', 'fresh-desktop.png');
+      approveWith(goodCurrent, fresh)();
+      expect(fs.readFileSync(fresh, 'utf8')).toBe('NEW');
+    });
   });
 });

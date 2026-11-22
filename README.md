@@ -11,7 +11,7 @@ An open-source, self-hosted visual regression testing engine and interactive rev
 - 🗄️ **High-Performance SQLite Persistence**: Embedded SQLite storage (`better-sqlite3`) with Write-Ahead Logging (WAL) mode for fast, concurrent run tracking, Git commit/branch context, and snapshot history.
 - 🖥️ **Linear/Vercel-Inspired Review Dashboard**: Full-width dark developer dashboard featuring real-time search, status filtering, pagination, Side-by-Side comparison, Draggable Split Sliders, and Diff Highlight visualizers.
 - 🔄 **One-Click Baseline Promotion**: Promote approved visual regressions to new golden baselines on disk directly from the web interface.
-- 🔒 **Enterprise-Grade Security**: Path traversal jails on baseline file writes, static file guards preventing SQLite database exposure, and parameterized SQL queries.
+- 🔒 **Security Basics**: Baseline promotion restricted to PNGs inside `storage/runs/` → `storage/baselines/` (symlink-aware), `/storage` serves only screenshot PNGs, localhost-only binding by default, and parameterized SQL queries.
 
 ---
 
@@ -80,7 +80,8 @@ Visual Regression Testing Project/
 │   │   └── reporter.js            # Markdown report generator & GITHUB_STEP_SUMMARY
 │   └── server/                    # Web review dashboard & REST API
 │       ├── app.js                 # Express server configuration
-│       ├── db.js                  # SQLite schema, queries, and path security
+│       ├── db.js                  # SQLite schema and queries
+│       ├── paths.js               # Storage root and PNG path allowlist checks
 │       ├── routes/                # Express routers (`/api`, `/`)
 │       │   ├── api.js             # REST API for runs and snapshot approval
 │       │   └── views.js           # HTML views for dashboard and run details
@@ -220,6 +221,8 @@ npm start
 
 *Access the dashboard at:* **[http://localhost:4000](http://localhost:4000)**
 
+The server listens on `127.0.0.1` only. To reach it from other machines, start it with `HOST=0.0.0.0 npm start`. The dashboard has no authentication, so only do this on a trusted network.
+
 ### 4. Run Inside Docker (Cross-OS Rendering Consistency)
 To eliminate font and sub-pixel antialiasing differences across macOS, Windows, and Linux:
 
@@ -274,7 +277,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 62 Vitest unit & integration tests
+# Run all 74 Vitest unit & integration tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -299,12 +302,12 @@ node tests/verify-phase-5.js
  ✓ tests/capture.test.js (9 tests)
  ✓ tests/compare.test.js (10 tests)
  ✓ tests/capture-integration.test.js (1 test)
- ✓ tests/db.test.js (7 tests)
- ✓ tests/server.test.js (8 tests)
+ ✓ tests/db.test.js (15 tests)
+ ✓ tests/server.test.js (12 tests)
  ✓ tests/reporter.test.js (10 tests)
 
  Test Files  7 passed (7)
-      Tests  62 passed (62)
+      Tests  74 passed (74)
 ```
 
 ---
