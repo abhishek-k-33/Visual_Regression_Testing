@@ -1,5 +1,7 @@
 import express from 'express';
 import { getAllTestRuns, getTestRunById, getSnapshotsByRunId } from '../db.js';
+import path from 'node:path';
+import { getStorageRoot } from '../paths.js';
 
 function escapeHtml(str) {
   return String(str || '')
@@ -11,6 +13,15 @@ function escapeHtml(str) {
 }
 
 const router = express.Router();
+
+// runs/<id>/<file>, runs/<id>/baselines/<file> or baselines/<file>, taken from the end
+function knownStorageTail(parts) {
+  const n = parts.length;
+  if (n >= 4 && parts[n - 4] === 'runs' && parts[n - 2] === 'baselines') return parts.slice(n - 4);
+  if (n >= 3 && parts[n - 3] === 'runs') return parts.slice(n - 3);
+  if (n >= 2 && parts[n - 2] === 'baselines') return parts.slice(n - 2);
+  return null;
+}
 
 /**
  * GET /
@@ -48,18 +59,23 @@ router.get('/runs/:id', (req, res) => {
 
     const snapshots = getSnapshotsByRunId(req.params.id);
 
-    // Helper to normalize file system paths to web-accessible URLs mounted at /storage
+    // Map a stored file path to its /storage URL, relative to the storage root.
+    // (Searching the path for "/storage/" broke with a custom storageDir, or when the
+    // project itself lives under a folder named "storage".)
+    const storageRoot = getStorageRoot();
     const toWebUrl = (filePath) => {
       if (!filePath) return null;
-      const normalized = filePath.replace(/\\/g, '/');
-      const storageIndex = normalized.indexOf('/storage/');
-      if (storageIndex !== -1) {
-        return normalized.slice(storageIndex);
+      let segments;
+      const rel = path.relative(storageRoot, path.resolve(filePath));
+      if (rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)) {
+        segments = rel.split(path.sep);
+      } else {
+        // Recorded under another root (e.g. /app/storage inside Docker, viewed on the
+        // host): keep the trailing runs/... or baselines/... part. The /storage
+        // middleware still allowlists whatever this produces.
+        segments = knownStorageTail(filePath.split(/[\\/]/));
       }
-      if (normalized.startsWith('storage/')) {
-        return `/${normalized}`;
-      }
-      return normalized.startsWith('/') ? normalized : `/${normalized}`;
+      return segments ? `/storage/${segments.map(encodeURIComponent).join('/')}` : null;
     };
 
     // Normalize image paths for web serving (mount storage at /storage)

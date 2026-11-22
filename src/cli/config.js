@@ -119,15 +119,7 @@ export function validateConfig(config) {// when we use the export function that 
   }
 
   // 6. Optional storageDir
-  const storageDir = typeof config.storageDir === 'string' && config.storageDir.trim() !== ''// ternary operator checks the storage 
-  // directory name type and if there is really a name at all
-    ? config.storageDir.trim()// if name exist then the trimmed version is returned
-    : 'storage';// if it does not exist we fall back to our previous storage 
-
-  const resolvedStorage = path.resolve(process.cwd(), storageDir);
-  if (!resolvedStorage.startsWith(process.cwd())) {
-    throw new Error('Invalid configuration: "storageDir" must be located inside the project workspace.');
-  } 
+  const storageDir = validateStorageDir(config.storageDir);
 
   return {
     baseUrl: normalizedBaseUrl,
@@ -137,6 +129,27 @@ export function validateConfig(config) {// when we use the export function that 
     threshold: normalizedThreshold,
     storageDir
   };
+}
+
+/**
+ * Validates the optional storageDir and returns it (default "storage").
+ * It must be a subdirectory of the project (cwd).
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function validateStorageDir(value) {
+  const storageDir = typeof value === 'string' && value.trim() !== '' ? value.trim() : 'storage';
+
+  // Compare path segments: a prefix check would accept "/proj-evil" for "/proj".
+  const relativeStorage = path.relative(process.cwd(), path.resolve(process.cwd(), storageDir));
+  if (relativeStorage === '') {
+    throw new Error('Invalid configuration: "storageDir" must be a subdirectory, not the project root itself.');
+  }
+  if (relativeStorage === '..' || relativeStorage.startsWith(`..${path.sep}`) || path.isAbsolute(relativeStorage)) {
+    throw new Error('Invalid configuration: "storageDir" must be located inside the project workspace.');
+  }
+  return storageDir;
 }
 
 /**
@@ -170,15 +183,15 @@ export function stripJsonComments(jsonString) {
         insideString = true;
         result += char;
       } else if (char === '/' && nextChar === '/') {
-        while (i < jsonString.length && jsonString[i] !== '\n' && jsonString[i] !== '\r') {
+        while (i < sanitizedInput.length && sanitizedInput[i] !== '\n' && sanitizedInput[i] !== '\r') {
           i++;
         }
-        if (i < jsonString.length) {
-          result += jsonString[i];
+        if (i < sanitizedInput.length) {
+          result += sanitizedInput[i];
         }
       } else if (char === '/' && nextChar === '*') {
         i += 2;
-        while (i < jsonString.length - 1 && !(jsonString[i] === '*' && jsonString[i + 1] === '/')) {
+        while (i < sanitizedInput.length - 1 && !(sanitizedInput[i] === '*' && sanitizedInput[i + 1] === '/')) {
           i++;
         }
         i++;

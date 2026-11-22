@@ -208,7 +208,13 @@
             <div class="image-preview-container">
               <div class="image-preview-label">Current Test Execution</div>
               <div class="image-frame">
-                <img src="<%= snap.currentUrl %>" alt="Current screenshot">
+                <% if (snap.currentUrl) { %>
+                  <img src="<%= snap.currentUrl %>" alt="Current screenshot">
+                <% } else { %>
+                  <div style="padding: 48px; text-align: center; color: var(--text-muted); font-size: 13px;">
+                    Screenshot is not in this dashboard's storage folder.
+                  </div>
+                <% } %>
               </div>
             </div>
           </div>

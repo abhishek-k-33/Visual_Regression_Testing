@@ -19,7 +19,14 @@ describe('Capture Engine Integration', () => {
     // Loads fine, then holds a fetch open forever: never reaches network idle
     '/long-polling': html('<h1>Live feed</h1><script>fetch("/hang")</script>'),
     // The image never arrives, so the load event never fires
-    '/never-loads': html('<h1>Broken</h1><img src="/hang">')
+    '/never-loads': html('<h1>Broken</h1><img src="/hang">'),
+    // Two red boxes to mask; the second has an inline style a CSS-only mask can't override
+    '/masked': html(
+      '<div class="ad" style="position:absolute;left:20px;top:20px;width:100px;height:60px;background:red"></div>' +
+      '<div class="clock" style="position:absolute;left:200px;top:20px;width:100px;height:60px;background:red;' +
+      'visibility:visible !important"></div>' +
+      '<div style="position:absolute;left:20px;top:200px;width:100px;height:60px;background:red"></div>'
+    )
   };
 
   const configFor = (route, overrides = {}) => ({
@@ -112,6 +119,27 @@ describe('Capture Engine Integration', () => {
     expect(png.width).toBe(800);
     // One navigation plus the idle budget, not a second full page load
     expect(Date.now() - started).toBeLessThan(8000);
+  }, 20000);
+
+  it('paints masked elements as solid black boxes and leaves the rest alone', async () => {
+    const [result] = await captureScreenshots(
+      configFor('/masked', { maskSelectors: ['.ad', '.clock'] }),
+      { runId: 'masked', outputDir }
+    );
+    const png = PNG.sync.read(fs.readFileSync(result.filepath));
+    const pixel = (x, y) => {
+      const i = (png.width * y + x) * 4;
+      return [png.data[i], png.data[i + 1], png.data[i + 2]];
+    };
+    expect(pixel(70, 50)).toEqual([0, 0, 0]); // .ad
+    expect(pixel(250, 50)).toEqual([0, 0, 0]); // .clock despite its inline !important style
+    expect(pixel(70, 230)).toEqual([255, 0, 0]); // unmasked box untouched
+  }, 20000);
+
+  it('rejects an invalid mask selector with an error naming it', async () => {
+    await expect(
+      captureScreenshots(configFor('/masked', { maskSelectors: ['.ad', 'div[[bad'] }), { runId: 'bad_mask', outputDir })
+    ).rejects.toThrow(/^maskSelectors\[1\] "div\[\[bad" is not a valid selector/);
   }, 20000);
 
   it('still fails when the page never finishes loading', async () => {

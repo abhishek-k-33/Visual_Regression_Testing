@@ -27,6 +27,13 @@ describe('JSON Comment Stripper (stripJsonComments)', () => {
   });
 });
 
+it('regression: keeps the character after a block comment when the file has a UTF-8 BOM', () => {
+  // Used to index the BOM-stripped and original strings interchangeably, so the
+  // character right after "*/" was dropped ("0.01" became ".01", invalid JSON).
+  const raw = '\uFEFF{\n  // ratio\n  "threshold": /* 1% */0.01, "routes": ["/"]\n}';
+  expect(JSON.parse(stripJsonComments(raw))).toEqual({ threshold: 0.01, routes: ['/'] });
+});
+
 describe('Configuration Validator (validateConfig)', () => {
   const validBaseConfig = {
     baseUrl: 'https://example.com',
@@ -125,6 +132,21 @@ describe('Configuration Validator (validateConfig)', () => {
     expect(() => validateConfig({ ...validBaseConfig, threshold: 1.05 })).toThrow('"threshold" must be a number between 0 and 1');
     expect(() => validateConfig({ ...validBaseConfig, threshold: '0.05' })).toThrow('"threshold" must be a number between 0 and 1');
     expect(() => validateConfig({ ...validBaseConfig, threshold: NaN })).toThrow('"threshold" must be a number between 0 and 1');
+  });
+
+  it('rejects a sibling directory whose name merely starts with the project name', () => {
+    const sibling = `../${path.basename(process.cwd())}-evil/storage`;
+    expect(() => validateConfig({ ...validBaseConfig, storageDir: sibling }))
+      .toThrow('"storageDir" must be located inside the project workspace.');
+  });
+
+  it('rejects storageDir "." with a specific message', () => {
+    expect(() => validateConfig({ ...validBaseConfig, storageDir: '.' }))
+      .toThrow('"storageDir" must be a subdirectory, not the project root itself.');
+  });
+
+  it('accepts a nested storageDir inside the project', () => {
+    expect(validateConfig({ ...validBaseConfig, storageDir: 'data/visual' }).storageDir).toBe('data/visual');
   });
 
   it('rejects storageDir that attempts to escape the project workspace', () => {
