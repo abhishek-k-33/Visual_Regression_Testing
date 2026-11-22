@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import pixelmatch from 'pixelmatch';
@@ -81,6 +82,20 @@ export function compareImages(baselineBuffer, currentBuffer, options = {}) {
 }
 
 /**
+ * Recorded as baseline_sha256 when a run found no baseline at all, so approval can
+ * later require that there still is none (independent of the snapshot's status).
+ */
+export const NO_BASELINE = 'none';
+
+/**
+ * @param {Buffer} buffer
+ * @returns {string} Hex SHA-256 digest
+ */
+export function sha256(buffer) {
+  return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+/**
  * Compares a single captured snapshot against its baseline master.
  * Handles initial baseline promotion if no baseline exists yet.
  *
@@ -95,7 +110,8 @@ export function compareImages(baselineBuffer, currentBuffer, options = {}) {
  * @param {number} [options.pixelmatchThreshold=0.1] - Color sensitivity for pixelmatch
  * @param {boolean} [options.createMissingBaselines=true] - When false (strict/CI mode), a missing
  *   baseline is reported as MISSING_BASELINE instead of being created from the current screenshot
- * @returns {object} Snapshot comparison record
+ * @returns {object} Snapshot comparison record. baselineSnapshotPath is a per-run copy of the
+ *   compared baseline; baselineSha256 lets approval detect that the shared baseline moved on.
  */
 export function compareSnapshot(snapshot, options) {
   const { route, viewport, filepath: currentPath } = snapshot;
@@ -111,6 +127,10 @@ export function compareSnapshot(snapshot, options) {
   const baselinePath = path.join(baselinesDir, filename);
   const diffFilename = `${path.parse(filename).name}-diff.png`;
   const diffPath = path.join(diffDir, diffFilename);
+  // Copy of the exact baseline this run compared against. storage/baselines/ keeps
+  // changing as later runs are approved; the run's own record must not.
+  // Kept in a subfolder so it can't collide with another viewport's screenshot.
+  const baselineSnapshotPath = path.join(diffDir, 'baselines', filename);
 
   // No baseline yet: either adopt the current screenshot (local first run) or,
   // in strict mode, fail so CI can never "pass" by comparing a page to itself.
@@ -118,6 +138,9 @@ export function compareSnapshot(snapshot, options) {
     const createBaseline = options.createMissingBaselines !== false;
     if (createBaseline) fs.copyFileSync(currentPath, baselinePath);
     return {
+      // NEW_BASELINE: the baseline *is* this run's screenshot. MISSING: there is none.
+      baselineSnapshotPath: createBaseline ? currentPath : null,
+      baselineSha256: createBaseline ? sha256(fs.readFileSync(currentPath)) : NO_BASELINE,
       route,
       viewport,
       baselinePath,
@@ -133,6 +156,8 @@ export function compareSnapshot(snapshot, options) {
 
   // Baseline exists: execute pixel-by-pixel comparison
   const baselineBuffer = fs.readFileSync(baselinePath);
+  fs.mkdirSync(path.dirname(baselineSnapshotPath), { recursive: true });
+  fs.writeFileSync(baselineSnapshotPath, baselineBuffer);
   const currentBuffer = fs.readFileSync(currentPath);
 
   const comparison = compareImages(baselineBuffer, currentBuffer, {
@@ -149,6 +174,8 @@ export function compareSnapshot(snapshot, options) {
     route,
     viewport,
     baselinePath,
+    baselineSnapshotPath,
+    baselineSha256: sha256(baselineBuffer),
     currentPath,
     diffPath,
     mismatchedPixels: comparison.mismatchedPixels,

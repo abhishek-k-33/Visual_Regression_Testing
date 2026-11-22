@@ -65,8 +65,13 @@ router.get('/runs/:id', (req, res) => {
     // Normalize image paths for web serving (mount storage at /storage)
     const normalizedSnapshots = snapshots.map((s) => ({
       ...s,
-      // MISSING_BASELINE records where the baseline *would* go; there is no file to show
-      baselineUrl: s.status === 'MISSING_BASELINE' ? null : toWebUrl(s.baseline_path),
+      // Show the baseline this run was compared against (its own copy), not today's
+      // shared file. Older rows have no copy and fall back to the shared baseline.
+      // Runs that found no baseline ('none', or legacy MISSING_BASELINE rows) have none to show,
+      // even after being approved or rejected.
+      baselineUrl: s.baseline_sha256 === 'none' || s.status === 'MISSING_BASELINE'
+        ? null
+        : toWebUrl(s.baseline_snapshot_path || s.baseline_path),
       currentUrl: toWebUrl(s.current_path),
       diffUrl: toWebUrl(s.diff_path)
     }));

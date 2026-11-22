@@ -102,12 +102,13 @@ Visual Regression Testing Project/
 │   └── demo.config.json           # Demo-only config (route /__vrt_demo), never touches committed baselines
 ├── storage/                       # Local artifacts directory
 │   ├── baselines/                 # Golden-master baselines (committed to git, reviewed in PRs)
-│   ├── runs/                      # Per-run current and diff screenshots (git-ignored)
+│   ├── runs/                      # Per-run current, diff and compared-baseline screenshots (git-ignored)
 │   └── data.sqlite                # SQLite database file (git-ignored)
 └── tests/                         # Vitest unit and integration test suites
     ├── capture.test.js            # Capture engine unit tests
     ├── capture-integration.test.js# Deterministic capture integration tests
     ├── cli-strict.test.js         # CLI strict mode: missing baselines fail in CI
+    ├── per-run-baselines.test.js  # Per-run baseline copies, stale-approval conflicts, DB migration
     ├── compare.test.js            # Pixel comparison and padding tests
     ├── config.test.js             # Config validation and path traversal tests
     ├── db.test.js                 # SQLite queries and path jail tests
@@ -285,10 +286,10 @@ The dashboard provides a **Linear/Vercel-inspired developer interface**:
 
 ### Run Detail Studio (`GET /runs/:id`)
 For every route and viewport, three interactive visual tabs are available:
-1. **Side-by-Side View**: Compares approved baseline and current execution in aligned frames.
+1. **Side-by-Side View**: Compares the baseline *as it was when the run happened* with the current execution in aligned frames. Each run keeps a copy of the baseline it compared against in `runs/<id>/baselines/`, so later approvals don't change what an old run shows. (Runs recorded before this was added show the current baseline instead.)
 2. **Interactive Overlay Slider**: Draggable vertical divider (mouse and touch enabled) to wipe between before and after images in real time.
 3. **Diff Highlight View**: Full-resolution image canvas with differing pixels painted in bright neon red alongside exact mismatch percentages.
-4. **One-Click Baseline Promotion**: Clicking **"Approve & Update Baseline"** copies the current screenshot over the baseline file on disk and transitions the status to `APPROVED`.
+4. **One-Click Baseline Promotion**: Clicking **"Approve & Update Baseline"** copies the current screenshot over the baseline file on disk and transitions the status to `APPROVED`. If the baseline has changed since the run (e.g. a newer run was approved first), approval is refused with `409 Conflict` rather than silently reverting the newer baseline; re-run the tests and review the fresh result. Approving is still allowed when the baseline already equals the run's screenshot. Runs recorded before this check existed are not protected.
 
 ---
 
@@ -311,7 +312,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 96 Vitest unit & integration tests
+# Run all 109 Vitest unit & integration tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -336,14 +337,15 @@ node tests/verify-phase-5.js
  ✓ tests/capture.test.js (9 tests)
  ✓ tests/compare.test.js (11 tests)
  ✓ tests/capture-integration.test.js (4 tests)
- ✓ tests/cli-strict.test.js (4 tests)
+ ✓ tests/cli-strict.test.js (5 tests)
  ✓ tests/db.test.js (16 tests)
  ✓ tests/docker.test.js (3 tests)
- ✓ tests/server.test.js (21 tests)
+ ✓ tests/per-run-baselines.test.js (11 tests)
+ ✓ tests/server.test.js (22 tests)
  ✓ tests/reporter.test.js (11 tests)
 
- Test Files  9 passed (9)
-      Tests  96 passed (96)
+ Test Files  10 passed (10)
+      Tests  109 passed (109)
 ```
 
 ---

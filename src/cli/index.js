@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadConfig } from './config.js';
 import { captureScreenshots, getSnapshotFilename } from './capture.js';
-import { compareSnapshot } from './compare.js';
+import { compareSnapshot, sha256 } from './compare.js';
 import { createTestRun, createSnapshot } from '../server/db.js';
 import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
 
@@ -139,7 +139,14 @@ program
           fs.copyFileSync(snap.filepath, baselinePath);
           console.log(`    [UPDATED BASELINE] ${snap.route} @ ${snap.viewport}`);
           newBaselineCount++;
-          results.push({ ...snap, status: 'NEW_BASELINE', mismatchPercentage: 0, baselinePath });
+          results.push({
+            ...snap,
+            status: 'NEW_BASELINE',
+            mismatchPercentage: 0,
+            baselinePath,
+            baselineSnapshotPath: snap.filepath,
+            baselineSha256: sha256(fs.readFileSync(baselinePath))
+          });
           continue;
         }
 
@@ -187,6 +194,8 @@ program
             route: r.route,
             viewport: r.viewport,
             baseline_path: r.baselinePath || null,
+            baseline_snapshot_path: r.baselineSnapshotPath || null,
+            baseline_sha256: r.baselineSha256 || null,
             current_path: r.currentPath || r.filepath,
             diff_path: r.diffPath || null,
             mismatch_percentage: r.mismatchPercentage || 0,
