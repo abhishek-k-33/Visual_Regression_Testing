@@ -22,6 +22,8 @@ function getGitContext() {
   }
 }
 
+const NOT_IDLE_NOTE = '      (page never went network-idle, e.g. analytics or long-polling; captured after the load event)';
+
 const program = new Command();
 
 program
@@ -64,6 +66,7 @@ program
         onProgress: (snap) => {
           const relPath = path.relative(process.cwd(), snap.filepath);
           console.log(`  [OK] ${snap.route} @ ${snap.viewport} (${snap.width}x${snap.height}) -> ${relPath}`);
+          if (!snap.networkIdle) console.log(NOT_IDLE_NOTE);
         }
       });
 
@@ -114,6 +117,7 @@ program
         runId,
         onProgress: (snap) => {
           console.log(`    📸 Captured ${snap.route} @ ${snap.viewport}`);
+          if (!snap.networkIdle) console.log(NOT_IDLE_NOTE);
         }
       });
 

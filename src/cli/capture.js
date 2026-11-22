@@ -1,6 +1,6 @@
 import fs from 'node:fs'; // import node file system
 import path from 'node:path';// import node path
-import { chromium } from 'playwright';// chromium is the engine on which google chrome is based on. Our robot will directly bypass the
+import { chromium, errors as playwrightErrors } from 'playwright';// chromium is the engine on which google chrome is based on. Our robot will directly bypass the
 // chrome or other browser and use the chromium engine instead which is a lot lighter and faster. 
 
 /**
@@ -80,6 +80,8 @@ export function buildDeterministicStyle(maskSelectors = []) {// this function mu
  * @param {string} [options.runId] - Run ID folder name (defaults to "run_<timestamp>")
  * @param {string} [options.outputDir] - Base output directory (defaults to config.storageDir/runs)
  * @param {Function} [options.onProgress] - Callback invoked after each screenshot
+ * @param {number} [options.navigationTimeout=30000] - Max ms for the page's load event (failing this aborts the capture)
+ * @param {number} [options.networkIdleTimeout=10000] - Max ms to additionally wait for network idle (best effort)
  * @returns {Promise<Array<object>>} Array of captured snapshot results
  */
 export async function captureScreenshots(config, options = {}) {
@@ -88,6 +90,8 @@ export async function captureScreenshots(config, options = {}) {
     throw new Error(`Invalid runId "${rawRunId}": must contain only alphanumeric characters, dashes, and underscores.`);
   }
   const runId = rawRunId;
+  const navigationTimeout = options.navigationTimeout ?? 30000;
+  const networkIdleTimeout = options.networkIdleTimeout ?? 10000;
   const baseStorage = options.outputDir || path.resolve(process.cwd(), config.storageDir || 'storage', 'runs');
   const targetDir = path.resolve(baseStorage, runId);
 
@@ -113,16 +117,17 @@ export async function captureScreenshots(config, options = {}) {
         const page = await context.newPage();
 
         try {
-          // Navigate with networkidle synchronization
+          // The load event is required: a page that can't load is a real failure.
+          await page.goto(fullUrl, { waitUntil: 'load', timeout: navigationTimeout });
+
+          // Network idle is best effort. Pages with analytics beacons, long-polling or
+          // websockets never go idle; for those, capture the already-loaded page.
+          let networkIdle = true;
           try {
-            await page.goto(fullUrl, { waitUntil: 'networkidle', timeout: 30000 });
-          } catch (navErr) {
-            // Fallback to 'load' if networkidle times out (e.g. analytics or long-polling)
-            if (navErr.message.includes('timeout')) {
-              await page.goto(fullUrl, { waitUntil: 'load', timeout: 15000 });
-            } else {
-              throw navErr;
-            }
+            await page.waitForLoadState('networkidle', { timeout: networkIdleTimeout });
+          } catch (idleErr) {
+            if (!(idleErr instanceof playwrightErrors.TimeoutError)) throw idleErr;
+            networkIdle = false;
           }
 
           // Inject deterministic styles to freeze animations and mask dynamic elements
@@ -148,7 +153,8 @@ export async function captureScreenshots(config, options = {}) {
             height: viewport.height,
             filepath,
             filename,
-            url: fullUrl
+            url: fullUrl,
+            networkIdle
           };
 
           results.push(snapshotResult);
