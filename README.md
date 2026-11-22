@@ -82,6 +82,7 @@ Visual Regression Testing Project/
 │       ├── app.js                 # Express server configuration
 │       ├── db.js                  # SQLite schema and queries
 │       ├── paths.js               # Storage root and PNG path allowlist checks
+│       ├── security.js            # Host allowlist + CSRF checks for the unauthenticated dashboard
 │       ├── routes/                # Express routers (`/api`, `/`)
 │       │   ├── api.js             # REST API for runs and snapshot approval
 │       │   └── views.js           # HTML views for dashboard and run details
@@ -222,6 +223,12 @@ npm start
 *Access the dashboard at:* **[http://localhost:4000](http://localhost:4000)**
 
 The server listens on `127.0.0.1` only. To reach it from other machines, start it with `HOST=0.0.0.0 npm start`. The dashboard has no authentication, so only do this on a trusted network.
+
+**Cross-site protection.** Because the dashboard has no login, the server defends against other websites driving it through your browser:
+
+- **CSRF:** `POST` requests to `/api` must carry an `X-Requested-With` header, and are refused if the browser reports a cross-site `Origin` or `Sec-Fetch-Site`. Scripts calling the API need to send the header, e.g. `curl -X POST -H 'X-Requested-With: cli' http://localhost:4000/api/snapshots/42/approve`.
+- **DNS rebinding:** requests are only served when the `Host` header is `localhost` or an IP address. If you reach the dashboard through a hostname (e.g. `ci-box.internal` or a reverse proxy), list it: `ALLOWED_HOSTS=ci-box.internal npm start` (comma-separated).
+- **Behind a reverse proxy:** the proxy must forward the browser's original `Host` header unchanged, including any port (e.g. nginx `proxy_set_header Host $http_host;`; Caddy and Traefik do this by default). Otherwise approve/reject is refused with *"Origin does not match Host"*, and rebinding protection for reads is weakened.
 
 ### 4. Run Inside Docker (Cross-OS Rendering Consistency)
 To eliminate font and sub-pixel antialiasing differences across macOS, Windows, and Linux:

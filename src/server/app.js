@@ -6,6 +6,7 @@ import apiRouter from './routes/api.js';
 import viewRouter from './routes/views.js';
 import { getDb } from './db.js';
 import { getStorageRoot, resolvePngInside } from './paths.js';
+import { hostAllowlist, requireSameOriginForWrites } from './security.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +15,9 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 // Loopback only by default; set HOST=0.0.0.0 to expose on the network (Docker does this).
 const HOST = process.env.HOST || '127.0.0.1';
+
+// Reject requests whose Host header isn't localhost, an IP, or in ALLOWED_HOSTS (DNS rebinding)
+app.use(hostAllowlist);
 
 // View engine setup
 app.set('view engine', 'ejs');
@@ -58,7 +62,7 @@ app.use('/storage', (req, res, next) => {
 });
 
 // Route mounting
-app.use('/api', apiRouter);
+app.use('/api', requireSameOriginForWrites, apiRouter);
 app.use('/', viewRouter);
 
 // Start server if executed directly

@@ -12,6 +12,7 @@ services:
     restart: unless-stopped
     ports:
       # Published on the host loopback only; change to "4000:4000" to expose on your network
+      # (if you then browse to it by hostname rather than IP, add ALLOWED_HOSTS=<hostname> below)
       - "127.0.0.1:4000:4000"
     environment:
       - PORT=4000
