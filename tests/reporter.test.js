@@ -47,6 +47,12 @@ describe('Reporter Module (Phase 5)', () => {
       expect(badge).toContain('NEW BASELINE');
     });
 
+    it('returns red badge for MISSING_BASELINE', () => {
+      const badge = formatStatusBadge('MISSING_BASELINE');
+      expect(badge).toContain('🔴');
+      expect(badge).toContain('MISSING BASELINE');
+    });
+
     it('returns raw string for unknown status', () => {
       expect(formatStatusBadge('UNKNOWN_STATUS')).toBe('UNKNOWN_STATUS');
     });

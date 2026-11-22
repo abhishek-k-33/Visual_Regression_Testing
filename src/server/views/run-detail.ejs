@@ -125,6 +125,10 @@
                   </svg>
                   <span><%= snap.mismatch_percentage.toFixed(2) %>% Mismatch</span>
                 </span>
+              <% } else if (snap.status === 'MISSING_BASELINE') { %>
+                <span class="status-pill status-pill-failed">
+                  <span>MISSING BASELINE</span>
+                </span>
               <% } else if (snap.status === 'NEW_BASELINE') { %>
                 <span class="status-pill status-pill-new">
                   <span>NEW BASELINE</span>
@@ -145,7 +149,7 @@
           </div>
 
           <div class="snapshot-actions">
-            <% if (snap.status === 'DIFF') { %>
+            <% if (snap.status === 'DIFF' || snap.status === 'MISSING_BASELINE') { %>
               <button class="btn btn-approve" data-id="<%= snap.id %>">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                   <polyline points="20 6 9 17 4 12"></polyline>
@@ -191,7 +195,11 @@
                   <img src="<%= snap.baselineUrl %>" alt="Baseline screenshot">
                 <% } else { %>
                   <div style="padding: 48px; text-align: center; color: var(--text-muted); font-size: 13px;">
-                    No prior baseline existed for this route. Current screenshot was promoted as initial golden master.
+                    <% if (snap.status === 'MISSING_BASELINE') { %>
+                      No baseline exists for this route. Approving will make the current screenshot its baseline.
+                    <% } else { %>
+                      No prior baseline existed for this route. Current screenshot was promoted as initial golden master.
+                    <% } %>
                   </div>
                 <% } %>
               </div>

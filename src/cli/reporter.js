@@ -14,6 +14,8 @@ export function formatStatusBadge(status) {
       return '🔴 **FAILED**';
     case 'NEW_BASELINE':
       return '🟡 **NEW BASELINE**';
+    case 'MISSING_BASELINE':
+      return '🔴 **MISSING BASELINE**';
     default:
       return status;
   }
@@ -91,6 +93,8 @@ export function generateSummaryMarkdown(options) {
       detailsCol = `Exceeded threshold (${thresholdPercent}%)`;
     } else if (r.status === 'NEW_BASELINE') {
       detailsCol = 'New baseline master initialized';
+    } else if (r.status === 'MISSING_BASELINE') {
+      detailsCol = 'No committed baseline (run with --update-baselines and commit it)';
     }
 
     lines.push(`| ${statusCol} | ${routeCol} | ${viewportCol} | ${mismatchCol} | ${detailsCol} |`);

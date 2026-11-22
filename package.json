@@ -13,9 +13,11 @@
     "capture": "node src/cli/index.js capture",
     "test:visual": "node src/cli/index.js test",
     "demo": "node scripts/demo.js",
+    "demo:serve": "node scripts/serve-demo.js",
     "docker:build": "docker compose build",
     "docker:dashboard": "docker compose up dashboard",
     "docker:test": "docker compose run --rm runner",
+    "docker:update-baselines": "docker compose run --rm runner node src/cli/index.js test --update-baselines",
     "test": "vitest run"
   },
   "keywords": [

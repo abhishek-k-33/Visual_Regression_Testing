@@ -16,8 +16,9 @@ yarn-error.log*
 # Visual Regression Tool storage & database
 storage/runs/*
 !storage/runs/.gitkeep
-storage/baselines/*
-!storage/baselines/.gitkeep
+# storage/baselines/ is committed: approved baselines are versioned and reviewed in PRs.
+# The interactive demo and verify scripts use their own routes, kept out of git.
+storage/baselines/__vrt_*.png
 storage/*.sqlite*
 *.sqlite*
 *.db*

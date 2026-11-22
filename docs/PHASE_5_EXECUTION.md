@@ -3,6 +3,8 @@
 **Date:** November 19, 2026  
 **Status:** Completed & Verified  
 
+> **Update (November 22, 2026):** The baseline caching described below was replaced. Restoring baselines from an Actions cache meant approved baselines never reached CI, and a cold cache made every run pass. Baselines are now committed in `storage/baselines/`. CI builds the project's Docker image, tests the bundled demo site instead of `example.com`, and runs in `--strict` mode, where a missing baseline fails the job. See the README sections *Managing Baselines* and *GitHub Actions CI Pipeline* for the current setup.
+
 ---
 
 ## 1. Executive Summary

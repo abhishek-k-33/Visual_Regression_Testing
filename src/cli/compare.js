@@ -93,6 +93,8 @@ export function compareImages(baselineBuffer, currentBuffer, options = {}) {
  * @param {string} options.diffDir - Directory where diff images should be saved
  * @param {number} [options.allowedThreshold=0.01] - Max allowed mismatch percentage ratio (0.01 = 1%)
  * @param {number} [options.pixelmatchThreshold=0.1] - Color sensitivity for pixelmatch
+ * @param {boolean} [options.createMissingBaselines=true] - When false (strict/CI mode), a missing
+ *   baseline is reported as MISSING_BASELINE instead of being created from the current screenshot
  * @returns {object} Snapshot comparison record
  */
 export function compareSnapshot(snapshot, options) {
@@ -110,9 +112,11 @@ export function compareSnapshot(snapshot, options) {
   const diffFilename = `${path.parse(filename).name}-diff.png`;
   const diffPath = path.join(diffDir, diffFilename);
 
-  // If no baseline exists, promote current screenshot as initial baseline
+  // No baseline yet: either adopt the current screenshot (local first run) or,
+  // in strict mode, fail so CI can never "pass" by comparing a page to itself.
   if (!fs.existsSync(baselinePath)) {
-    fs.copyFileSync(currentPath, baselinePath);
+    const createBaseline = options.createMissingBaselines !== false;
+    if (createBaseline) fs.copyFileSync(currentPath, baselinePath);
     return {
       route,
       viewport,
@@ -122,7 +126,7 @@ export function compareSnapshot(snapshot, options) {
       mismatchedPixels: 0,
       totalPixels: 0,
       mismatchPercentage: 0,
-      status: 'NEW_BASELINE',
+      status: createBaseline ? 'NEW_BASELINE' : 'MISSING_BASELINE',
       dimensions: null
     };
   }

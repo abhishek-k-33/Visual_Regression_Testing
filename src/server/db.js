@@ -55,7 +55,7 @@ export function initDb(customDbPath) {
       current_path TEXT NOT NULL,
       diff_path TEXT,
       mismatch_percentage REAL DEFAULT 0,
-      status TEXT NOT NULL, -- 'MATCH', 'DIFF', 'NEW_BASELINE', 'APPROVED', 'REJECTED'
+      status TEXT NOT NULL, -- 'MATCH', 'DIFF', 'NEW_BASELINE', 'MISSING_BASELINE', 'APPROVED', 'REJECTED'
       FOREIGN KEY (run_id) REFERENCES test_runs(id) ON DELETE CASCADE
     );
 
@@ -156,7 +156,7 @@ export function getAllTestRuns(db = getDb()) {
     SELECT 
       r.*,
       COUNT(s.id) as total_snapshots,
-      SUM(CASE WHEN s.status = 'DIFF' THEN 1 ELSE 0 END) as diff_count,
+      SUM(CASE WHEN s.status IN ('DIFF', 'MISSING_BASELINE') THEN 1 ELSE 0 END) as diff_count,
       SUM(CASE WHEN s.status = 'MATCH' THEN 1 ELSE 0 END) as match_count,
       SUM(CASE WHEN s.status = 'NEW_BASELINE' THEN 1 ELSE 0 END) as new_baseline_count,
       SUM(CASE WHEN s.status = 'APPROVED' THEN 1 ELSE 0 END) as approved_count
@@ -180,7 +180,7 @@ export function getTestRunById(id, db = getDb()) {
     SELECT 
       r.*,
       COUNT(s.id) as total_snapshots,
-      SUM(CASE WHEN s.status = 'DIFF' THEN 1 ELSE 0 END) as diff_count,
+      SUM(CASE WHEN s.status IN ('DIFF', 'MISSING_BASELINE') THEN 1 ELSE 0 END) as diff_count,
       SUM(CASE WHEN s.status = 'MATCH' THEN 1 ELSE 0 END) as match_count,
       SUM(CASE WHEN s.status = 'NEW_BASELINE' THEN 1 ELSE 0 END) as new_baseline_count,
       SUM(CASE WHEN s.status = 'APPROVED' THEN 1 ELSE 0 END) as approved_count
@@ -222,7 +222,7 @@ export function getSnapshotById(id, db = getDb()) {
 
 /**
  * Recalculates and updates the parent test_run status based on all its child snapshots:
- * - If any snapshot is 'DIFF', run is 'FAILED'
+ * - If any snapshot is 'DIFF' or 'MISSING_BASELINE', run is 'FAILED'
  * - If any snapshot is 'REJECTED', run is 'REJECTED'
  * - If all snapshots are 'APPROVED', 'MATCH', or 'NEW_BASELINE':
  *     - If at least one was 'APPROVED', run is 'APPROVED'
@@ -243,7 +243,7 @@ export function recalculateRunStatus(runId, db = getDb()) {
   let hasApproved = false;
 
   for (const s of snapshots) {
-    if (s.status === 'DIFF') hasDiff = true;
+    if (s.status === 'DIFF' || s.status === 'MISSING_BASELINE') hasDiff = true;
     if (s.status === 'REJECTED') hasRejected = true;
     if (s.status === 'APPROVED') hasApproved = true;
   }

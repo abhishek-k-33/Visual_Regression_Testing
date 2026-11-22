@@ -74,8 +74,8 @@ fixtureServer.listen(0, HOST, async () => {
       const cliPath = path.resolve(process.cwd(), 'src/cli/index.js');
 
       // Clear baseline files for a fresh test run
-      const desktopBaseline = path.join(baselinesDir, 'index-desktop.png');
-      const mobileBaseline = path.join(baselinesDir, 'index-mobile.png');
+      const desktopBaseline = path.join(baselinesDir, '__vrt_verify-desktop.png');
+      const mobileBaseline = path.join(baselinesDir, '__vrt_verify-mobile.png');
       if (fs.existsSync(desktopBaseline)) fs.unlinkSync(desktopBaseline);
       if (fs.existsSync(mobileBaseline)) fs.unlinkSync(mobileBaseline);
 
@@ -87,6 +87,8 @@ fixtureServer.listen(0, HOST, async () => {
       await execFileAsync('node', [
         cliPath,
         'test',
+        '--config', 'tests/fixtures/verify.config.json',
+        '--no-strict',
         '--run-id',
         runId1,
         '--base-url',
@@ -119,6 +121,8 @@ fixtureServer.listen(0, HOST, async () => {
         await execFileAsync('node', [
           cliPath,
           'test',
+          '--config', 'tests/fixtures/verify.config.json',
+          '--no-strict',
           '--run-id',
           runId2,
           '--base-url',
@@ -210,6 +214,8 @@ fixtureServer.listen(0, HOST, async () => {
       await execFileAsync('node', [
         cliPath,
         'test',
+        '--config', 'tests/fixtures/verify.config.json',
+        '--no-strict',
         '--run-id',
         runId3,
         '--base-url',
@@ -230,8 +236,8 @@ fixtureServer.listen(0, HOST, async () => {
       console.error('\n[FATAL ERROR during Phase 3 verification]:', err);
       process.exitCode = 1;
     } finally {
-      const desktopBaseline = path.join(baselinesDir, 'index-desktop.png');
-      const mobileBaseline = path.join(baselinesDir, 'index-mobile.png');
+      const desktopBaseline = path.join(baselinesDir, '__vrt_verify-desktop.png');
+      const mobileBaseline = path.join(baselinesDir, '__vrt_verify-mobile.png');
       if (fs.existsSync(desktopBaseline)) fs.unlinkSync(desktopBaseline);
       if (fs.existsSync(mobileBaseline)) fs.unlinkSync(mobileBaseline);
 

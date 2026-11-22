@@ -69,15 +69,17 @@ server.listen(0, HOST, async () => {
     // Step 1: Initial Run -> Should create NEW_BASELINE
     // ─────────────────────────────────────────────────────────────
     console.log('\n--- Step 1: Creating initial baseline ---');
-    // Clear existing baselines for index-desktop and index-mobile if present
-    const desktopBaseline = path.join(baselinesDir, 'index-desktop.png');
-    const mobileBaseline = path.join(baselinesDir, 'index-mobile.png');
+    // Clear this script's own baselines (route /__vrt_verify; committed baselines are untouched)
+    const desktopBaseline = path.join(baselinesDir, '__vrt_verify-desktop.png');
+    const mobileBaseline = path.join(baselinesDir, '__vrt_verify-mobile.png');
     if (fs.existsSync(desktopBaseline)) fs.unlinkSync(desktopBaseline);
     if (fs.existsSync(mobileBaseline)) fs.unlinkSync(mobileBaseline);
 
     const step1 = await execFileAsync('node', [
       cliPath,
       'test',
+      '--config', 'tests/fixtures/verify.config.json',
+      '--no-strict',
       '--run-id',
       'phase2-step1-init',
       '--base-url',
@@ -97,6 +99,8 @@ server.listen(0, HOST, async () => {
     const step2 = await execFileAsync('node', [
       cliPath,
       'test',
+      '--config', 'tests/fixtures/verify.config.json',
+      '--no-strict',
       '--run-id',
       'phase2-step2-identical',
       '--base-url',
@@ -122,6 +126,8 @@ server.listen(0, HOST, async () => {
       await execFileAsync('node', [
         cliPath,
         'test',
+        '--config', 'tests/fixtures/verify.config.json',
+        '--no-strict',
         '--run-id',
         'phase2-step3-regression',
         '--base-url',
@@ -143,7 +149,7 @@ server.listen(0, HOST, async () => {
     }
 
     // Verify diff.png exists and contains red pixels
-    const diffFile = path.resolve(runsDir, 'phase2-step3-regression', 'index-desktop-diff.png');
+    const diffFile = path.resolve(runsDir, 'phase2-step3-regression', '__vrt_verify-desktop-diff.png');
     if (!fs.existsSync(diffFile)) {
       throw new Error(`Diff image was not saved at: ${diffFile}`);
     }
@@ -169,8 +175,8 @@ server.listen(0, HOST, async () => {
     console.error('\n[VERIFY PHASE 2 ERROR]', err.message);
     process.exitCode = 1;
   } finally {
-    const desktopBaseline = path.join(baselinesDir, 'index-desktop.png');
-    const mobileBaseline = path.join(baselinesDir, 'index-mobile.png');
+    const desktopBaseline = path.join(baselinesDir, '__vrt_verify-desktop.png');
+    const mobileBaseline = path.join(baselinesDir, '__vrt_verify-mobile.png');
     if (fs.existsSync(desktopBaseline)) fs.unlinkSync(desktopBaseline);
     if (fs.existsSync(mobileBaseline)) fs.unlinkSync(mobileBaseline);
 

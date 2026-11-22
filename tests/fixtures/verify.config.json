@@ -1,0 +1,11 @@
+{
+  "//": "Used by tests/verify-phase-2.js and verify-phase-3.js. The unusual route keeps their baselines (__vrt_verify-*.png, git-ignored) away from the committed ones.",
+  "baseUrl": "http://127.0.0.1:1",
+  "routes": ["/__vrt_verify"],
+  "viewports": [
+    { "name": "desktop", "width": 1440, "height": 900 },
+    { "name": "mobile", "width": 375, "height": 812 }
+  ],
+  "maskSelectors": [".timestamp", ".dynamic-ad", "img.avatar"],
+  "threshold": 0.01
+}

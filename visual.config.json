@@ -1,5 +1,5 @@
 {
-  "baseUrl": "https://example.com",//this is the address of the website which we have to visit to test //
+  "baseUrl": "http://127.0.0.1:4567",//this is the address of the website which we have to visit to test. Points at the bundled demo site (npm run demo:serve); change it to your own app //
   "routes": [
     "/"
   ],//here we add addition pages or pages in the site which we have to test. Eg- home,about

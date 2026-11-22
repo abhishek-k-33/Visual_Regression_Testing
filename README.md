@@ -95,16 +95,23 @@ Visual Regression Testing Project/
 │           └── js/
 │               ├── dashboard.js   # Real-time search, filtering, and pagination
 │               └── slider.js      # Draggable split-slider and AJAX approval
-├── storage/                       # Local artifacts directory (git-ignored)
-│   ├── baselines/                 # Golden-master approved reference screenshots
-│   ├── runs/                      # Per-run current and diff screenshots
-│   └── data.sqlite                # SQLite database file
+├── scripts/
+│   ├── demo-app.js                # Static demo site (the visual CI target)
+│   ├── serve-demo.js              # Serves the demo site on :4567 (npm run demo:serve)
+│   ├── demo.js                    # Interactive regression demo (npm run demo)
+│   └── demo.config.json           # Demo-only config (route /__vrt_demo), never touches committed baselines
+├── storage/                       # Local artifacts directory
+│   ├── baselines/                 # Golden-master baselines (committed to git, reviewed in PRs)
+│   ├── runs/                      # Per-run current and diff screenshots (git-ignored)
+│   └── data.sqlite                # SQLite database file (git-ignored)
 └── tests/                         # Vitest unit and integration test suites
     ├── capture.test.js            # Capture engine unit tests
     ├── capture-integration.test.js# Deterministic capture integration tests
+    ├── cli-strict.test.js         # CLI strict mode: missing baselines fail in CI
     ├── compare.test.js            # Pixel comparison and padding tests
     ├── config.test.js             # Config validation and path traversal tests
     ├── db.test.js                 # SQLite queries and path jail tests
+    ├── docker.test.js             # Docker image tag matches the pinned Playwright version
     ├── server.test.js             # Express REST API and dashboard view tests
     ├── reporter.test.js           # Markdown reporter & CI step summary tests
     ├── verify-phase-1.js          # Phase 1 deliverable verification script
@@ -145,7 +152,7 @@ Configure your target URL, routes, viewports, and masking rules in `visual.confi
 
 ```json
 {
-  "baseUrl": "https://example.com",
+  "baseUrl": "http://127.0.0.1:4567",
   "routes": [
     "/",
     "/pricing",
@@ -189,9 +196,10 @@ Configure your target URL, routes, viewports, and masking rules in `visual.confi
 ## 📟 CLI Commands
 
 ### 1. Run Automated Visual Regression Tests
-Captures screenshots across all viewports, compares against golden baselines, records results in SQLite, and reports metrics:
+Captures screenshots across all viewports, compares against golden baselines, records results in SQLite, and reports metrics. The repo is configured against the bundled demo site, so start it first (or point `baseUrl` at your own app):
 
 ```bash
+npm run demo:serve      # in another terminal
 npm run test:visual
 ```
 *Or using the CLI directly:*
@@ -205,6 +213,7 @@ node src/cli/index.js test
 - `-u, --base-url <url>`: Override the `baseUrl` (useful for staging/preview environments).
 - `-s, --summary-file <path>`: Custom file name or path for the markdown test report.
 - `--update-baselines`: Automatically promote all current screenshots to golden master baselines.
+- `--strict` / `--no-strict`: In strict mode a route with no baseline **fails** (`MISSING_BASELINE`) instead of adopting the current screenshot as its baseline. Strict is the default when `CI=true`, so CI can never pass by comparing a page to itself.
 
 ### 2. Capture Screenshots Only
 Capture deterministic full-page screenshots without diffing:
@@ -244,6 +253,21 @@ npm run docker:test
 npm run docker:dashboard
 ```
 
+### 5. Managing Baselines
+Approved baselines live in `storage/baselines/` and are **committed to git**. That keeps them in sync with the code on every branch, and GitHub shows the image diff when a PR changes one.
+
+Create or update them **inside the Docker image**, the same environment CI uses, so fonts and anti-aliasing match pixel for pixel:
+
+```bash
+npm run demo:serve                 # or start your own app
+npm run docker:update-baselines    # writes storage/baselines/*.png
+git add storage/baselines && git commit -m "test: update visual baselines"
+```
+
+Baselines captured outside the container (or approved in the dashboard after a non-Docker run) may differ slightly from CI's rendering. `npm run demo` and the `verify-phase-*` scripts use their own `__vrt_*.png` baselines, which are git-ignored.
+
+With rootful Docker on Linux, files the container writes into `storage/` are owned by root. Hand them back with `sudo chown -R "$(id -u):$(id -g)" storage` (not needed with Docker Desktop or rootless Podman).
+
 ---
 
 ## 🖥️ Web Review Dashboard
@@ -272,8 +296,11 @@ For every route and viewport, three interactive visual tabs are available:
 
 The project includes pre-configured automation for GitHub Actions (`.github/workflows/visual-ci.yml`):
 
-- **Automatic PR & Push Testing**: Runs visual regression checks whenever a PR or commit is pushed to `main`.
-- **Baseline Caching**: Automatically restores `storage/baselines` using GitHub Actions cache, falling back to the `main` branch.
+- **Automatic PR & Push Testing**: Runs the Vitest suite and the visual regression checks whenever a PR or commit is pushed to `main`.
+- **Tests a real target**: Serves the bundled demo site and captures it, rather than an external website that can change underneath the tests.
+- **Committed baselines**: Baselines come from the git checkout, so every commit is compared against the baselines approved for it.
+- **Same rendering as baselines**: Builds the project's Docker image and runs the tests inside it.
+- **Strict mode**: A missing baseline fails the job instead of silently passing.
 - **Rich Markdown Step Summaries**: Generates a formatted table of every tested route, viewport, mismatch percentage, and pass/fail badge directly in the GitHub Actions run summary (`GITHUB_STEP_SUMMARY`).
 - **Diff Artifact Downloads**: On any visual regression failure, all diff screenshots in `storage/runs/` are zipped and uploaded as a workflow artifact (`visual-regression-diffs`) for quick inspection.
 
@@ -284,7 +311,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 74 Vitest unit & integration tests
+# Run all 96 Vitest unit & integration tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -307,14 +334,16 @@ node tests/verify-phase-5.js
 ```text
  ✓ tests/config.test.js (17 tests)
  ✓ tests/capture.test.js (9 tests)
- ✓ tests/compare.test.js (10 tests)
- ✓ tests/capture-integration.test.js (1 test)
- ✓ tests/db.test.js (15 tests)
- ✓ tests/server.test.js (12 tests)
- ✓ tests/reporter.test.js (10 tests)
+ ✓ tests/compare.test.js (11 tests)
+ ✓ tests/capture-integration.test.js (4 tests)
+ ✓ tests/cli-strict.test.js (4 tests)
+ ✓ tests/db.test.js (16 tests)
+ ✓ tests/docker.test.js (3 tests)
+ ✓ tests/server.test.js (21 tests)
+ ✓ tests/reporter.test.js (11 tests)
 
- Test Files  7 passed (7)
-      Tests  74 passed (74)
+ Test Files  9 passed (9)
+      Tests  96 passed (96)
 ```
 
 ---
