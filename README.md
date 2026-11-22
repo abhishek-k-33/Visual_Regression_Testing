@@ -83,18 +83,24 @@ Visual Regression Testing Project/
 │       ├── db.js                  # SQLite schema and queries
 │       ├── paths.js               # Storage root and PNG path allowlist checks
 │       ├── security.js            # Host allowlist + CSRF checks for the unauthenticated dashboard
+│       ├── viewModels.js          # Shapes DB rows into what the templates render (incl. /storage URLs)
+│       ├── urls.js                # url()/pageLocals(): base-path handling so pages also work under a sub-path
 │       ├── routes/                # Express routers (`/api`, `/`)
 │       │   ├── api.js             # REST API for runs and snapshot approval
 │       │   └── views.js           # HTML views for dashboard and run details
 │       ├── views/                 # EJS templates (Linear/Vercel dark theme)
+│       │   ├── partials/          # Shared header (head + navbar) and footer (scripts)
 │       │   ├── index.ejs          # Main dashboard table with KPI cards
 │       │   ├── run-detail.ejs     # Inspection studio (Slider, Side-by-Side, Diff)
-│       │   └── layout.ejs         # Global HTML layout
-│       └── public/                # Static assets (CSS, client JS)
+│       │   └── layout.ejs         # Error page
+│       └── public/                # Static assets (CSS, client JS as ES modules)
 │           ├── css/styles.css     # Premium dark theme stylesheet
 │           └── js/
+│               ├── common.js      # Base path, API URL and screen-reader announce helpers
 │               ├── dashboard.js   # Real-time search, filtering, and pagination
-│               └── slider.js      # Draggable split-slider and AJAX approval
+│               ├── tabs.js        # Snapshot view tabs
+│               ├── slider.js      # Draggable split-slider
+│               └── review-actions.js # Approve / Reject buttons
 ├── scripts/
 │   ├── demo-app.js                # Static demo site (the visual CI target)
 │   ├── serve-demo.js              # Serves the demo site on :4567 (npm run demo:serve)
@@ -115,6 +121,8 @@ Visual Regression Testing Project/
     ├── docker.test.js             # Docker image tag matches the pinned Playwright version
     ├── server.test.js             # Express REST API and dashboard view tests
     ├── storage-dir.test.js        # Custom storageDir honoured by CLI and dashboard
+    ├── urls.test.js               # Base-path URL helpers
+    ├── viewModels.test.js         # Template data shaping and /storage URL mapping
     ├── reporter.test.js           # Markdown reporter & CI step summary tests
     ├── verify-phase-1.js          # Phase 1 deliverable verification script
     ├── verify-phase-2.js          # Phase 2 deliverable verification script
@@ -325,7 +333,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 118 Vitest unit & integration tests
+# Run all 140 Vitest unit & integration tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -351,15 +359,17 @@ node tests/verify-phase-5.js
  ✓ tests/compare.test.js (11 tests)
  ✓ tests/capture-integration.test.js (6 tests)
  ✓ tests/cli-strict.test.js (5 tests)
- ✓ tests/db.test.js (16 tests)
+ ✓ tests/db.test.js (17 tests)
  ✓ tests/docker.test.js (3 tests)
  ✓ tests/per-run-baselines.test.js (11 tests)
- ✓ tests/server.test.js (23 tests)
+ ✓ tests/server.test.js (29 tests)
  ✓ tests/storage-dir.test.js (3 tests)
+ ✓ tests/urls.test.js (3 tests)
+ ✓ tests/viewModels.test.js (12 tests)
  ✓ tests/reporter.test.js (11 tests)
 
- Test Files  11 passed (11)
-      Tests  118 passed (118)
+ Test Files  13 passed (13)
+      Tests  140 passed (140)
 ```
 
 ---

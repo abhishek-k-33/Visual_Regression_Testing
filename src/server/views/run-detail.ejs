@@ -1,42 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title><%= title %></title>
-  <link rel="stylesheet" href="/css/styles.css">
-</head>
-<body>
-  <!-- Header: Compact top navbar with breadcrumbs -->
-  <header class="navbar">
-    <div class="navbar-inner">
-      <div class="navbar-left">
-        <a href="/" class="navbar-brand">
-          <div class="navbar-brand-icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-              <circle cx="8.5" cy="8.5" r="1.5"></circle>
-              <polyline points="21 15 16 10 5 21"></polyline>
-            </svg>
-          </div>
-          <span>Visual CI</span>
-        </a>
-        <span class="breadcrumb-separator">/</span>
-        <a href="/" class="navbar-link" style="padding: 0; font-size: 14px;">Dashboard</a>
-        <span class="breadcrumb-separator">/</span>
-        <span class="breadcrumb-current" style="font-family: var(--font-mono); font-size: 13px;"><%= run.id %></span>
-      </div>
-
-      <div class="navbar-right">
-        <a href="/" class="navbar-link">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="15 18 9 12 15 6"></polyline>
-          </svg>
-          <span>Back to Runs</span>
-        </a>
-      </div>
-    </div>
-  </header>
+<%- include('partials/header', { navLink: 'back', crumbs: [{ label: 'Dashboard', href: '/' }, { label: run.id, mono: true }] }) %>
 
   <!-- Main Container -->
   <main class="container">
@@ -192,7 +154,7 @@
               <div class="image-preview-label">Approved Baseline</div>
               <div class="image-frame">
                 <% if (snap.baselineUrl) { %>
-                  <img src="<%= snap.baselineUrl %>" alt="Baseline screenshot">
+                  <img src="<%= url(snap.baselineUrl) %>" alt="Baseline screenshot">
                 <% } else { %>
                   <div style="padding: 48px; text-align: center; color: var(--text-muted); font-size: 13px;">
                     <% if (snap.status === 'MISSING_BASELINE') { %>
@@ -209,7 +171,7 @@
               <div class="image-preview-label">Current Test Execution</div>
               <div class="image-frame">
                 <% if (snap.currentUrl) { %>
-                  <img src="<%= snap.currentUrl %>" alt="Current screenshot">
+                  <img src="<%= url(snap.currentUrl) %>" alt="Current screenshot">
                 <% } else { %>
                   <div style="padding: 48px; text-align: center; color: var(--text-muted); font-size: 13px;">
                     Screenshot is not in this dashboard's storage folder.
@@ -229,11 +191,11 @@
             <div class="slider-view-container">
               <div class="slider-wrapper">
                 <!-- Under Image (Baseline) -->
-                <img src="<%= snap.baselineUrl %>" class="slider-img-under" alt="Baseline image">
+                <img src="<%= url(snap.baselineUrl) %>" class="slider-img-under" alt="Baseline image">
 
                 <!-- Over Image (Current) with responsive clipping -->
                 <div class="slider-img-over-wrapper">
-                  <img src="<%= snap.currentUrl %>" class="slider-img-over" alt="Current image">
+                  <img src="<%= url(snap.currentUrl) %>" class="slider-img-over" alt="Current image">
                 </div>
 
                 <!-- Draggable vertical divider -->
@@ -252,7 +214,7 @@
               Diff Highlight: Differing pixels are highlighted in bright neon red (<%= snap.mismatch_percentage.toFixed(2) %>% mismatch)
             </div>
             <div class="image-frame" style="max-width: 1200px; margin: 0 auto;">
-              <img src="<%= snap.diffUrl %>" alt="Diff image">
+              <img src="<%= url(snap.diffUrl) %>" alt="Diff image">
             </div>
           </div>
         <% } %>
@@ -260,6 +222,4 @@
     <% }) %>
   </main>
 
-  <script src="/js/slider.js"></script>
-</body>
-</html>
+<%- include('partials/footer', { scripts: ['/js/tabs.js', '/js/slider.js', '/js/review-actions.js'] }) %>
