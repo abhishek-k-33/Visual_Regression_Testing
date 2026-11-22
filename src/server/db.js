@@ -113,20 +113,24 @@ export function closeDb() {
  * @param {string} [run.commit_hash] - Git commit hash
  * @param {string} [run.branch] - Git branch
  * @param {string} run.status - 'PASSED', 'FAILED', 'APPROVED', 'REJECTED'
+ * @param {string} [run.created_at] - 'YYYY-MM-DD HH:MM:SS' UTC (defaults to now)
  * @param {Database.Database} [db] - Optional DB instance
  * @returns {object} The created run
  */
 export function createTestRun(run, db = getDb()) {
+  // created_at defaults to SQLite's CURRENT_TIMESTAMP ('YYYY-MM-DD HH:MM:SS', UTC);
+  // callers may pass the same format so the row matches the run's run.json.
   const stmt = db.prepare(`
-    INSERT INTO test_runs (id, commit_hash, branch, status)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO test_runs (id, commit_hash, branch, status, created_at)
+    VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
   `);
 
   stmt.run(
     run.id,
     run.commit_hash || null,
     run.branch || null,
-    run.status || 'PASSED'
+    run.status || 'PASSED',
+    run.created_at || null
   );
 
   return getTestRunById(run.id, db);

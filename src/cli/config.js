@@ -1,5 +1,6 @@
 import fs from 'node:fs'; // imports the node js file system
 import path from 'node:path';//helper function that glues folder names together correctly
+import { assertUniqueSnapshotFiles } from './naming.js';
 
 /**
  * Validates and normalizes visual regression test configuration.
@@ -89,6 +90,9 @@ export function validateConfig(config) {// when we use the export function that 
       height: vp.height
     };
   });
+
+  // Every route/viewport pair must get its own screenshot and diff file
+  assertUniqueSnapshotFiles(normalizedRoutes, normalizedViewports);
 
   // 4. Validate maskSelectors (optional, defaults to [])
   let normalizedMaskSelectors = [];// an empty list for the css selectors to hide. Default initialized so that If not specified by the user

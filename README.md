@@ -76,6 +76,8 @@ Visual Regression Testing Project/
 │   │   ├── index.js               # CLI entry point (`visual-ci capture`, `visual-ci test`)
 │   │   ├── capture.js             # Playwright multi-viewport capture engine
 │   │   ├── compare.js             # Pixel comparison and canvas dimension normalizer
+│   │   ├── manifest.js            # Writes run.json, the per-run record that travels with CI artifacts
+│   │   ├── naming.js              # Screenshot file names; rejects route/viewport pairs that would collide
 │   │   ├── config.js              # Config loader with comment-stripping parser
 │   │   └── reporter.js            # Markdown report generator & GITHUB_STEP_SUMMARY
 │   └── server/                    # Web review dashboard & REST API
@@ -108,7 +110,7 @@ Visual Regression Testing Project/
 │   └── demo.config.json           # Demo-only config (route /__vrt_demo), never touches committed baselines
 ├── storage/                       # Local artifacts directory
 │   ├── baselines/                 # Golden-master baselines (committed to git, reviewed in PRs)
-│   ├── runs/                      # Per-run current, diff and compared-baseline screenshots (git-ignored)
+│   ├── runs/                      # Per run: screenshots, diffs, compared-baseline copies and run.json (git-ignored)
 │   └── data.sqlite                # SQLite database file (git-ignored)
 └── tests/                         # Vitest unit and integration test suites
     ├── capture.test.js            # Capture engine unit tests
@@ -118,6 +120,7 @@ Visual Regression Testing Project/
     ├── compare.test.js            # Pixel comparison and padding tests
     ├── config.test.js             # Config validation and path traversal tests
     ├── db.test.js                 # SQLite queries and path jail tests
+    ├── manifest.test.js           # run.json written by the CLI for every test run
     ├── docker.test.js             # Docker image tag matches the pinned Playwright version
     ├── server.test.js             # Express REST API and dashboard view tests
     ├── storage-dir.test.js        # Custom storageDir honoured by CLI and dashboard
@@ -195,7 +198,7 @@ Configure your target URL, routes, viewports, and masking rules in `visual.confi
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `baseUrl` | `string` | *(Required)* | The base URL of the web application being tested. |
-| `routes` | `string[]` | `["/"]` | Array of relative routes to capture. |
+| `routes` | `string[]` | `["/"]` | Array of relative routes to capture. Each route/viewport pair must map to its own file name (e.g. `/a/b` and `/a_b` both become `a_b-<viewport>.png`), or the config is rejected. |
 | `viewports` | `object[]` | Desktop & Mobile | Viewport dimensions (`name`, `width`, `height`). |
 | `maskSelectors` | `string[]` | `[]` | Selectors whose elements are painted over with solid black boxes (`#000000`) in the screenshot, using Playwright's screenshot `mask`. CSS selectors work (Playwright selector syntax is also accepted); pseudo-elements such as `::after` are not supported, and an invalid entry fails the capture with an error naming it. |
 | `threshold` | `number` | `0.01` | Maximum allowable pixel mismatch ratio (0.01 = 1.0%). |
@@ -324,7 +327,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 - **Same rendering as baselines**: Builds the project's Docker image and runs the tests inside it.
 - **Strict mode**: A missing baseline fails the job instead of silently passing.
 - **Rich Markdown Step Summaries**: Generates a formatted table of every tested route, viewport, mismatch percentage, and pass/fail badge directly in the GitHub Actions run summary (`GITHUB_STEP_SUMMARY`).
-- **Diff Artifact Downloads**: On any visual regression failure, all diff screenshots in `storage/runs/` are zipped and uploaded as a workflow artifact (`visual-regression-diffs`) for quick inspection.
+- **Diff Artifact Downloads**: On any visual regression failure, `storage/runs/` is zipped and uploaded as a workflow artifact (`visual-regression-diffs`) for quick inspection. Each run folder includes `run.json`, a machine-readable record of the run (status, git info, and per snapshot: route, viewport, status, mismatch, file names and the compared baseline's hash), so a CI run can be re-created without its database.
 
 ---
 
@@ -333,7 +336,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 140 Vitest unit & integration tests
+# Run all 159 Vitest unit & integration tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -361,6 +364,7 @@ node tests/verify-phase-5.js
  ✓ tests/cli-strict.test.js (5 tests)
  ✓ tests/db.test.js (17 tests)
  ✓ tests/docker.test.js (3 tests)
+ ✓ tests/manifest.test.js (19 tests)
  ✓ tests/per-run-baselines.test.js (11 tests)
  ✓ tests/server.test.js (29 tests)
  ✓ tests/storage-dir.test.js (3 tests)
@@ -368,8 +372,8 @@ node tests/verify-phase-5.js
  ✓ tests/viewModels.test.js (12 tests)
  ✓ tests/reporter.test.js (11 tests)
 
- Test Files  13 passed (13)
-      Tests  140 passed (140)
+ Test Files  14 passed (14)
+      Tests  159 passed (159)
 ```
 
 ---

@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pixelmatch from 'pixelmatch';
 import { PNG } from 'pngjs';
-import { getSnapshotFilename } from './capture.js';
+import { getSnapshotFilename } from './naming.js';
+
+/** pixelmatch per-pixel colour sensitivity (0 = exact, 1 = lenient) used by default. */
+export const DEFAULT_PIXELMATCH_THRESHOLD = 0.1;
 
 /**
  * Pads a PNG image to target dimensions if it is smaller than maxWidth or maxHeight.
@@ -45,7 +48,7 @@ export function compareImages(baselineBuffer, currentBuffer, options = {}) {
   const padded2 = padImage(img2, maxWidth, maxHeight);
 
   const diff = new PNG({ width: maxWidth, height: maxHeight });
-  const pixelmatchThreshold = options.threshold !== undefined ? options.threshold : 0.1;
+  const pixelmatchThreshold = options.threshold !== undefined ? options.threshold : DEFAULT_PIXELMATCH_THRESHOLD;
 
   const mismatchedPixels = pixelmatch(
     padded1.data,
