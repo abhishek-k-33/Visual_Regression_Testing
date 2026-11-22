@@ -4,6 +4,23 @@ import http from 'node:http';
 import path from 'node:path';
 import app from '../src/server/app.js';
 import { initDb, closeDb, createTestRun, createSnapshot } from '../src/server/db.js';
+import { isAllowedHost } from '../src/server/security.js';
+
+const SAME_ORIGIN_WRITE = { method: 'POST', headers: { 'X-Requested-With': 'test' } };
+
+// Raw request so tests can set Host and other headers fetch() won't let us forge.
+function rawRequest(port, { method = 'GET', path: reqPath, headers = {} }) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, method, path: reqPath, headers }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
 
 describe('Express Review Dashboard & REST API', () => {
   let server;
@@ -69,7 +86,7 @@ describe('Express Review Dashboard & REST API', () => {
   it('POST /api/runs no longer exists (clients cannot register file paths)', async () => {
     const res = await fetch(`${baseUrl}/api/runs`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'test' },
       body: JSON.stringify({ id: 'x', snapshots: [] })
     });
     expect(res.status).toBe(404);
@@ -102,11 +119,120 @@ describe('Express Review Dashboard & REST API', () => {
     expect(html).toContain('Approve & Update Baseline');
   });
 
+  describe('cross-site request protection', () => {
+    async function expectSnapshotUntouched() {
+      expect(fs.readFileSync(baselineFile, 'utf8')).toBe('OLD_IMAGE');
+      const data = await (await fetch(`${baseUrl}/api/runs/api-run-1`)).json();
+      expect(data.snapshots[0].status).toBe('DIFF');
+    }
+
+    beforeAll(() => {
+      fs.writeFileSync(baselineFile, 'OLD_IMAGE');
+      fs.writeFileSync(currentFile, 'NEW_IMAGE');
+    });
+
+    it('blocks a plain cross-site form POST (no custom header)', async () => {
+      for (const action of ['approve', 'reject']) {
+        const res = await fetch(`${baseUrl}/api/snapshots/${snapshotId}/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: 'https://evil.example' },
+          body: ''
+        });
+        expect(res.status, action).toBe(403);
+        expect((await res.json()).error).toMatch(/Cross-site request blocked/);
+      }
+      await expectSnapshotUntouched();
+    });
+
+    it('blocks a POST without the custom header even with no Origin', async () => {
+      const res = await fetch(`${baseUrl}/api/snapshots/${snapshotId}/approve`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      await expectSnapshotUntouched();
+    });
+
+    it('blocks a POST whose Origin does not match the Host', async () => {
+      for (const origin of ['https://evil.example', 'http://localhost:1', 'null']) {
+        const res = await fetch(`${baseUrl}/api/snapshots/${snapshotId}/approve`, {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'x', Origin: origin }
+        });
+        expect(res.status, origin).toBe(403);
+      }
+      await expectSnapshotUntouched();
+    });
+
+    it('blocks a POST the browser marks as cross-site via Sec-Fetch-Site', async () => {
+      for (const site of ['cross-site', 'same-site']) {
+        const res = await fetch(`${baseUrl}/api/snapshots/${snapshotId}/approve`, {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'x', 'Sec-Fetch-Site': site }
+        });
+        expect(res.status, site).toBe(403);
+      }
+      await expectSnapshotUntouched();
+    });
+
+    it('allows a same-origin browser POST (matching Origin + Sec-Fetch-Site)', async () => {
+      const res = await fetch(`${baseUrl}/api/snapshots/999999/reject`, {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'x', Origin: baseUrl, 'Sec-Fetch-Site': 'same-origin' }
+      });
+      // Gets past the CSRF check to the route itself, which 404s on the unknown ID
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects DNS-rebinding requests with a foreign Host header, including reads', async () => {
+      const { port } = server.address();
+      const reads = ['/', '/api/runs', '/storage/runs/api-run-1/index-desktop.png'];
+      for (const reqPath of reads) {
+        const res = await rawRequest(port, { path: reqPath, headers: { Host: `evil.example:${port}` } });
+        expect(res.status, reqPath).toBe(403);
+      }
+      const write = await rawRequest(port, {
+        method: 'POST',
+        path: `/api/snapshots/${snapshotId}/approve`,
+        headers: { Host: `evil.example:${port}`, Origin: `http://evil.example:${port}`, 'X-Requested-With': 'x' }
+      });
+      expect(write.status).toBe(403);
+      await expectSnapshotUntouched();
+    });
+
+    it('accepts localhost, IP-literal hosts and ALLOWED_HOSTS entries', async () => {
+      const { port } = server.address();
+      for (const host of [`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`, `192.168.1.20:${port}`]) {
+        const res = await rawRequest(port, { path: '/api/runs', headers: { Host: host } });
+        expect(res.status, host).toBe(200);
+      }
+
+      const previous = process.env.ALLOWED_HOSTS;
+      process.env.ALLOWED_HOSTS = 'ci-box.internal, Review.Example.com';
+      try {
+        for (const host of [`ci-box.internal:${port}`, 'review.example.com']) {
+          const res = await rawRequest(port, { path: '/api/runs', headers: { Host: host } });
+          expect(res.status, host).toBe(200);
+        }
+      } finally {
+        if (previous === undefined) delete process.env.ALLOWED_HOSTS;
+        else process.env.ALLOWED_HOSTS = previous;
+      }
+    });
+
+    it('isAllowedHost handles edge cases', () => {
+      expect(isAllowedHost(undefined)).toBe(false);
+      expect(isAllowedHost('')).toBe(false);
+      expect(isAllowedHost('LOCALHOST:4000')).toBe(true);
+      expect(isAllowedHost('localhost.:4000')).toBe(true);
+      expect(isAllowedHost('localhost.evil.example')).toBe(false);
+      expect(isAllowedHost('127.0.0.1.nip.io')).toBe(false);
+      expect(isAllowedHost('not a host')).toBe(false);
+    });
+  });
+
   it('POST /api/snapshots/:id/approve promotes baseline and updates status to APPROVED', async () => {
     fs.writeFileSync(baselineFile, 'OLD_IMAGE');
     fs.writeFileSync(currentFile, 'NEW_IMAGE');
 
-    const res = await fetch(`${baseUrl}/api/snapshots/${snapshotId}/approve`, { method: 'POST' });
+    const res = await fetch(`${baseUrl}/api/snapshots/${snapshotId}/approve`, SAME_ORIGIN_WRITE);
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -117,7 +243,7 @@ describe('Express Review Dashboard & REST API', () => {
   });
 
   it('POST /api/snapshots/:id/reject updates status to REJECTED', async () => {
-    const res = await fetch(`${baseUrl}/api/snapshots/${snapshotId}/reject`, { method: 'POST' });
+    const res = await fetch(`${baseUrl}/api/snapshots/${snapshotId}/reject`, SAME_ORIGIN_WRITE);
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -188,7 +314,7 @@ describe('Express Review Dashboard & REST API', () => {
       status: 'DIFF'
     });
 
-    const approve = await fetch(`${baseUrl}/api/snapshots/${evil.id}/approve`, { method: 'POST' });
+    const approve = await fetch(`${baseUrl}/api/snapshots/${evil.id}/approve`, SAME_ORIGIN_WRITE);
     expect(approve.status).toBe(403);
     expect(fs.existsSync(leakTarget)).toBe(false);
 

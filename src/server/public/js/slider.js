@@ -122,7 +122,8 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const res = await fetch(`/api/snapshots/${snapId}/approve`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
+          // Required by the server's CSRF check (see src/server/security.js)
+          headers: { 'X-Requested-With': 'visual-ci-dashboard' }
         });
         const data = await res.json();
 
@@ -171,7 +172,8 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         const res = await fetch(`/api/snapshots/${snapId}/reject`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
+          // Required by the server's CSRF check (see src/server/security.js)
+          headers: { 'X-Requested-With': 'visual-ci-dashboard' }
         });
         const data = await res.json();
 

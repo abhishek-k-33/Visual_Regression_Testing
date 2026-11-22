@@ -168,7 +168,8 @@ fixtureServer.listen(0, HOST, async () => {
       console.log('\n--- Step 4: Approving Regression via REST API ---');
       const targetSnapshot = diffSnaps[0];
       const approveRes = await fetch(`${dashboardBaseUrl}/api/snapshots/${targetSnapshot.id}/approve`, {
-        method: 'POST'
+        method: 'POST',
+        headers: { 'X-Requested-With': 'verify-phase-3' }
       });
       const approveData = await approveRes.json();
       if (!approveData.success || approveData.snapshot.status !== 'APPROVED') {
@@ -187,7 +188,10 @@ fixtureServer.listen(0, HOST, async () => {
       // Also approve remaining diff snapshot if any (e.g. mobile)
       if (diffSnaps.length > 1) {
         for (let i = 1; i < diffSnaps.length; i++) {
-          await fetch(`${dashboardBaseUrl}/api/snapshots/${diffSnaps[i].id}/approve`, { method: 'POST' });
+          await fetch(`${dashboardBaseUrl}/api/snapshots/${diffSnaps[i].id}/approve`, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'verify-phase-3' }
+          });
         }
       }
 
