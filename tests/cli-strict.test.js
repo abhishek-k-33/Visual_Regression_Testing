@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { execFile } from 'node:child_process';
+import Database from 'better-sqlite3';
 
 const CLI = path.resolve('src/cli/index.js');
 
@@ -69,6 +70,17 @@ describe('CLI strict mode (missing baselines)', () => {
     expect(code).toBe(0);
     expect(out).toContain('[NEW BASELINE] / @ desktop');
     expect(fs.existsSync(baselineFile())).toBe(true);
+  }, 30000);
+
+  it('--update-baselines records the baseline hash and copy for the run', async () => {
+    const { code } = await runCli(workDir, ['--update-baselines', '-r', 'run_update'], { ci: true });
+    expect(code).toBe(0);
+    const db = new Database(path.join(workDir, 'storage', 'data.sqlite'), { readonly: true });
+    const row = db.prepare("SELECT * FROM snapshots WHERE run_id = 'run_update'").get();
+    db.close();
+    expect(row.status).toBe('NEW_BASELINE');
+    expect(row.baseline_snapshot_path).toBe(row.current_path);
+    expect(row.baseline_sha256).toMatch(/^[0-9a-f]{64}$/);
   }, 30000);
 
   it('strict passes once the baseline exists', async () => {

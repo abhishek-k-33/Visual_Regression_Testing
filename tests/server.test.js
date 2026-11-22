@@ -247,6 +247,39 @@ describe('Express Review Dashboard & REST API', () => {
     expect(html).not.toContain('data-tab="slider"');
   });
 
+  it('stale approval: shows the run own baseline copy and approve returns 409', async () => {
+    const runDir = path.join(storageRoot, 'runs', 'stale-run');
+    fs.mkdirSync(runDir, { recursive: true });
+    const staleBaseline = path.join(storageRoot, 'baselines', 'stale-desktop.png');
+    const runCopy = path.join(runDir, 'baselines', 'stale-desktop.png');
+    fs.mkdirSync(path.dirname(runCopy), { recursive: true });
+    const runCurrent = path.join(runDir, 'stale-desktop.png');
+    fs.writeFileSync(runCopy, 'BASELINE_AT_RUN_TIME');
+    fs.writeFileSync(runCurrent, 'STALE_CURRENT');
+    fs.writeFileSync(staleBaseline, 'NEWER_APPROVED_BASELINE');
+
+    createTestRun({ id: 'stale-run', status: 'FAILED' });
+    const snap = createSnapshot({
+      run_id: 'stale-run',
+      route: '/stale',
+      viewport: 'desktop',
+      baseline_path: staleBaseline,
+      baseline_snapshot_path: runCopy,
+      baseline_sha256: 'hash-of-the-baseline-at-run-time',
+      current_path: runCurrent,
+      status: 'DIFF'
+    });
+
+    const html = await (await fetch(`${baseUrl}/runs/stale-run`)).text();
+    expect(html).toContain('/storage/runs/stale-run/baselines/stale-desktop.png');
+    expect(html).not.toContain('/storage/baselines/stale-desktop.png');
+
+    const res = await fetch(`${baseUrl}/api/snapshots/${snap.id}/approve`, SAME_ORIGIN_WRITE);
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/^Conflict: the baseline has changed/);
+    expect(fs.readFileSync(staleBaseline, 'utf8')).toBe('NEWER_APPROVED_BASELINE');
+  });
+
   it('POST /api/snapshots/:id/approve promotes baseline and updates status to APPROVED', async () => {
     fs.writeFileSync(baselineFile, 'OLD_IMAGE');
     fs.writeFileSync(currentFile, 'NEW_IMAGE');

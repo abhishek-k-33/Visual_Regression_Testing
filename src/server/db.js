@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -51,7 +52,9 @@ export function initDb(customDbPath) {
       run_id TEXT NOT NULL,
       route TEXT NOT NULL,
       viewport TEXT NOT NULL,
-      baseline_path TEXT,
+      baseline_path TEXT,             -- shared baseline that approval promotes into
+      baseline_snapshot_path TEXT,    -- per-run copy of the baseline actually compared
+      baseline_sha256 TEXT,           -- hash of that baseline ('none' if there was none), to refuse stale approvals
       current_path TEXT NOT NULL,
       diff_path TEXT,
       mismatch_percentage REAL DEFAULT 0,
@@ -61,6 +64,15 @@ export function initDb(customDbPath) {
 
     CREATE INDEX IF NOT EXISTS idx_snapshots_run_id ON snapshots(run_id);
   `);
+
+  // Migrate databases created before per-run baselines existed. IMMEDIATE locking so a
+  // dashboard and CLI opening the same old database at once don't both add the columns.
+  db.transaction(() => {
+    const columns = new Set(db.prepare('PRAGMA table_info(snapshots)').all().map((c) => c.name));
+    for (const column of ['baseline_snapshot_path', 'baseline_sha256']) {
+      if (!columns.has(column)) db.exec(`ALTER TABLE snapshots ADD COLUMN ${column} TEXT`);
+    }
+  }).immediate();
 
   dbInstance = db;
   return db;
@@ -126,8 +138,9 @@ export function createTestRun(run, db = getDb()) {
 export function createSnapshot(snap, db = getDb()) {
   const stmt = db.prepare(`
     INSERT INTO snapshots (
-      run_id, route, viewport, baseline_path, current_path, diff_path, mismatch_percentage, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      run_id, route, viewport, baseline_path, baseline_snapshot_path, baseline_sha256,
+      current_path, diff_path, mismatch_percentage, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const info = stmt.run(
@@ -135,6 +148,8 @@ export function createSnapshot(snap, db = getDb()) {
     snap.route,
     snap.viewport,
     snap.baseline_path || null,
+    snap.baseline_snapshot_path || null,
+    snap.baseline_sha256 || null,
     snap.current_path,
     snap.diff_path || null,
     snap.mismatch_percentage !== undefined ? snap.mismatch_percentage : 0,
@@ -273,6 +288,34 @@ export function recalculateRunStatus(runId, db = getDb()) {
  * @param {string} [options.storageRoot] - Storage root (defaults to getStorageRoot())
  * @returns {object} Updated snapshot and new parent run status
  */
+const hashFile = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+/**
+ * Refuses to approve a run whose baseline has since been replaced (e.g. a newer run was
+ * approved), which would otherwise silently revert the newer baseline.
+ * - baseline_sha256 'none': the run found no baseline, so there must still be none.
+ * - any other hash: the baseline must still have that hash.
+ * - NULL (rows recorded before hashes existed): unchecked, except legacy
+ *   MISSING_BASELINE rows, which must still have no baseline.
+ * Approving is always allowed when the baseline already equals this run's screenshot,
+ * since the copy then changes nothing.
+ */
+function assertBaselineUnchanged(snapshot, source, target) {
+  const exists = fs.existsSync(target);
+  const recorded = snapshot.baseline_sha256 ||
+    (snapshot.status === 'MISSING_BASELINE' ? 'none' : null);
+  if (!recorded) return;
+
+  const actual = exists ? hashFile(target) : 'none';
+  if (actual === recorded) return;
+  if (exists && actual === hashFile(source)) return; // already this screenshot: no-op
+
+  throw new Error(
+    'Conflict: the baseline has changed since this run (a newer run was probably approved). ' +
+    'Re-run the visual tests and review the new result instead.'
+  );
+}
+
 export function approveSnapshot(snapshotId, db = getDb(), options = {}) {
   const snapshot = getSnapshotById(snapshotId, db);
   if (!snapshot) {
@@ -285,6 +328,7 @@ export function approveSnapshot(snapshotId, db = getDb(), options = {}) {
     const storageRoot = options.storageRoot || getStorageRoot();
     const source = resolvePngInside(snapshot.current_path, path.join(storageRoot, 'runs'));
     const target = resolvePngInside(snapshot.baseline_path, path.join(storageRoot, 'baselines'), { mustExist: false });
+    assertBaselineUnchanged(snapshot, source, target);
     fs.copyFileSync(source, target);
   }
 

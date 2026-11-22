@@ -14,6 +14,7 @@ const router = express.Router();
 
 function errorStatus(err) {
   if (err.message.startsWith('Access denied')) return 403;
+  if (err.message.startsWith('Conflict')) return 409;
   if (err.message.includes('not found')) return 404;
   return 500;
 }
