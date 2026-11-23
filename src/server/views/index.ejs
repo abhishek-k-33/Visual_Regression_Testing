@@ -1,11 +1,11 @@
 <%- include('partials/header', { crumbs: [{ label: 'Dashboard' }] }) %>
   <!-- Main Content Area -->
-  <main class="container">
+  <main class="container" id="main" tabindex="-1">
     <!-- Page Heading -->
     <div class="page-heading">
       <div class="page-heading-left">
         <div class="heading-icon-container">
-          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
             <circle cx="8.5" cy="8.5" r="1.5"></circle>
             <polyline points="21 15 16 10 5 21"></polyline>
@@ -28,11 +28,11 @@
     </div>
 
     <!-- Exactly 3 Statistics Cards (KPIs) -->
-    <section class="kpi-grid">
+    <section class="kpi-grid" aria-label="Run statistics">
       <!-- Card 1: Total Runs -->
       <div class="kpi-card kpi-card-blue">
         <div class="kpi-icon-circle">
-          <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor">
+          <svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="currentColor">
             <polygon points="6 4 20 12 6 20 6 4"></polygon>
           </svg>
         </div>
@@ -40,7 +40,7 @@
           <span class="kpi-label">Total Runs</span>
           <div class="kpi-value"><%= stats.total %></div>
         </div>
-        <svg class="kpi-curve" viewBox="0 0 180 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg aria-hidden="true" class="kpi-curve" viewBox="0 0 180 90" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M0 75 C 50 48, 100 88, 180 25" stroke="rgba(255, 255, 255, 0.28)" stroke-width="2.5" stroke-linecap="round"/>
           <path d="M25 90 C 70 62, 120 95, 180 48" stroke="rgba(255, 255, 255, 0.14)" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
@@ -49,7 +49,7 @@
       <!-- Card 2: Passed / Approved -->
       <div class="kpi-card kpi-card-green">
         <div class="kpi-icon-circle">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <svg aria-hidden="true" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
             <polyline points="22 4 12 14.01 9 11.01"></polyline>
           </svg>
@@ -58,7 +58,7 @@
           <span class="kpi-label">Passed / Approved</span>
           <div class="kpi-value kpi-value-green"><%= stats.passedOrApproved %></div>
         </div>
-        <svg class="kpi-curve" viewBox="0 0 180 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg aria-hidden="true" class="kpi-curve" viewBox="0 0 180 90" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M0 75 C 50 48, 100 88, 180 25" stroke="rgba(167, 243, 208, 0.28)" stroke-width="2.5" stroke-linecap="round"/>
           <path d="M25 90 C 70 62, 120 95, 180 48" stroke="rgba(167, 243, 208, 0.14)" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
@@ -67,7 +67,7 @@
       <!-- Card 3: Visual Regressions -->
       <div class="kpi-card kpi-card-red">
         <div class="kpi-icon-circle">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <svg aria-hidden="true" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
             <line x1="12" y1="9" x2="12" y2="13"></line>
             <line x1="12" y1="17" x2="12.01" y2="17"></line>
@@ -77,7 +77,7 @@
           <span class="kpi-label">Visual Regressions</span>
           <div class="kpi-value kpi-value-red"><%= stats.failed %></div>
         </div>
-        <svg class="kpi-curve" viewBox="0 0 180 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg aria-hidden="true" class="kpi-curve" viewBox="0 0 180 90" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M0 75 C 50 48, 100 88, 180 25" stroke="rgba(253, 164, 175, 0.28)" stroke-width="2.5" stroke-linecap="round"/>
           <path d="M25 90 C 70 62, 120 95, 180 48" stroke="rgba(253, 164, 175, 0.14)" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
@@ -86,15 +86,17 @@
 
     <!-- Table Toolbar: Filtering Tabs + Quick Search -->
     <div class="table-toolbar">
-      <div class="filter-tabs">
-        <button class="filter-tab active" data-filter="all">All Runs (<%= stats.total %>)</button>
-        <button class="filter-tab" data-filter="passed">Passed (<%= stats.passed %>)</button>
-        <button class="filter-tab" data-filter="approved">Approved (<%= stats.approved %>)</button>
-        <button class="filter-tab" data-filter="failed">Regressions (<%= stats.failed %>)</button>
+      <%# Toggle buttons (aria-pressed), not tabs: they filter one table rather than switch panels. -%>
+      <div class="filter-tabs" role="group" aria-label="Filter runs by status">
+        <button type="button" class="filter-tab active" data-filter="all" aria-pressed="true">All Runs (<%= stats.total %>)</button>
+        <button type="button" class="filter-tab" data-filter="passed" aria-pressed="false">Passed (<%= stats.passed %>)</button>
+        <button type="button" class="filter-tab" data-filter="approved" aria-pressed="false">Approved (<%= stats.approved %>)</button>
+        <button type="button" class="filter-tab" data-filter="failed" aria-pressed="false">Regressions (<%= stats.failed %>)</button>
       </div>
 
       <div class="search-input-wrapper">
-        <svg class="search-input-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <label for="dashboard-search" class="visually-hidden">Filter runs by ID, branch or commit</label>
+        <svg aria-hidden="true" class="search-input-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="11" cy="11" r="8"></circle>
           <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
         </svg>
@@ -108,12 +110,12 @@
         <table id="test-runs-table">
           <thead>
             <tr>
-              <th style="width: 130px;">Status</th>
-              <th style="width: 240px;">Run ID</th>
-              <th style="width: 240px;">Git Context</th>
-              <th style="width: 200px;">Snapshots</th>
-              <th style="width: 180px;">Created</th>
-              <th style="width: 100px; text-align: right;">Actions</th>
+              <th scope="col" style="width: 130px;">Status</th>
+              <th scope="col" style="width: 240px;">Run ID</th>
+              <th scope="col" style="width: 240px;">Git Context</th>
+              <th scope="col" style="width: 200px;">Snapshots</th>
+              <th scope="col" style="width: 180px;">Created</th>
+              <th scope="col" style="width: 100px; text-align: right;">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -121,7 +123,7 @@
               <tr>
                 <td colspan="6">
                   <div class="empty-state">
-                    <svg class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <svg aria-hidden="true" class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                       <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
                       <line x1="8" y1="21" x2="16" y2="21"></line>
                       <line x1="12" y1="17" x2="12" y2="21"></line>
@@ -140,14 +142,14 @@
                   <td>
                     <% if (run.status === 'PASSED') { %>
                       <span class="status-pill status-pill-passed">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                           <polyline points="20 6 9 17 4 12"></polyline>
                         </svg>
                         <span>PASSED</span>
                       </span>
                     <% } else if (run.status === 'APPROVED') { %>
                       <span class="status-pill status-pill-approved">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                           <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
                           <polyline points="22 4 12 14.01 9 11.01"></polyline>
                         </svg>
@@ -155,7 +157,7 @@
                       </span>
                     <% } else if (run.status === 'FAILED') { %>
                       <span class="status-pill status-pill-failed">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                           <line x1="18" y1="6" x2="6" y2="18"></line>
                           <line x1="6" y1="6" x2="18" y2="18"></line>
                         </svg>
@@ -163,7 +165,7 @@
                       </span>
                     <% } else if (run.status === 'REJECTED') { %>
                       <span class="status-pill status-pill-rejected">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                           <circle cx="12" cy="12" r="10"></circle>
                           <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
                         </svg>
@@ -184,7 +186,7 @@
                     <div class="git-context">
                       <% if (run.branch) { %>
                         <span class="git-badge">
-                          <svg class="git-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <svg aria-hidden="true" class="git-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <line x1="6" y1="3" x2="6" y2="15"></line>
                             <circle cx="18" cy="6" r="3"></circle>
                             <circle cx="6" cy="18" r="3"></circle>
@@ -223,8 +225,8 @@
                   <!-- 6. Actions -->
                   <td style="text-align: right;">
                     <a href="<%= url(`/runs/${encodeURIComponent(run.id)}`) %>" class="btn-inspect">
-                      <span>Inspect</span>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <span>Inspect<span class="visually-hidden"> run <%= run.id %></span></span>
+                      <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                         <polyline points="9 18 15 12 9 6"></polyline>
                       </svg>
                     </a>
@@ -238,11 +240,11 @@
 
       <!-- Pagination Footer -->
       <div class="pagination-bar">
-        <span id="showing-range">Showing <%= Math.min(runs.length, 10) %> of <%= runs.length %> runs</span>
+        <span id="showing-range" aria-live="polite">Showing <%= Math.min(runs.length, 10) %> of <%= runs.length %> runs</span>
         <div class="pagination-controls">
-          <button id="prev-page-btn" class="pagination-btn" disabled>← Previous</button>
+          <button type="button" id="prev-page-btn" class="pagination-btn" disabled><span aria-hidden="true">←</span> Previous</button>
           <span id="pagination-info" style="font-size: 12px; color: var(--text-muted); padding: 0 4px;">Page 1 of <%= Math.max(1, Math.ceil(runs.length / 10)) %></span>
-          <button id="next-page-btn" class="pagination-btn" <%= runs.length <= 10 ? 'disabled' : '' %>>Next →</button>
+          <button type="button" id="next-page-btn" class="pagination-btn" <%= runs.length <= 10 ? 'disabled' : '' %>>Next <span aria-hidden="true">→</span></button>
         </div>
       </div>
     </div>

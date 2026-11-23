@@ -1414,3 +1414,233 @@ tbody tr:hover {
     border: 0;
   }
 }
+
+/* ==========================================================================
+   Accessibility & keyboard shortcuts - M5
+   Skip link, focus rings, slider/tab focus, action error regions, the run page's
+   shortcut hint and help dialog. Uses existing colour tokens only (contrast and
+   theming are handled separately).
+   ========================================================================== */
+
+/* Skip link: off-screen until focused (first Tab stop on every page) */
+.skip-link {
+  position: absolute;
+  left: 16px;
+  top: 8px;
+  z-index: 1000;
+  transform: translateY(-200%);
+  padding: 10px 16px;
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+  border: 2px solid var(--bright-cyan);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  transform: none;
+}
+
+/* One visible focus ring for every keyboard-focusable element */
+:focus-visible {
+  outline: 2px solid var(--bright-cyan);
+  outline-offset: 2px;
+}
+
+/* Programmatic focus targets (skip link destination, j/k cards) need no ring of their own;
+   the current card is marked by .is-current below. */
+#main:focus,
+.snapshot-card:focus {
+  outline: none;
+}
+
+/* j/k: the current snapshot card. scroll-margin keeps it clear of the sticky navbar. */
+.snapshot-card {
+  scroll-margin-top: 76px;
+}
+
+.snapshot-card.is-current {
+  border-color: var(--primary-blue);
+  box-shadow: 0 0 0 1px var(--primary-blue), 0 4px 20px rgba(0, 0, 0, 0.25);
+}
+
+/* Slider: horizontal drags move the divider, vertical swipes still scroll the page */
+.slider-view-container {
+  touch-action: pan-y;
+}
+
+/* The handle sits in the 2px-wide divider and used to shrink to ~19px: keep its full
+   36px (pointer target size, and room for the focus ring) */
+.slider-handle-pill {
+  flex-shrink: 0;
+}
+
+.slider-divider:focus-visible {
+  outline: none;
+}
+
+.slider-divider:focus-visible .slider-handle-pill {
+  outline: 2px solid var(--bright-cyan);
+  outline-offset: 3px;
+}
+
+/* Inactive tab panels carry the hidden attribute (tabs.js) */
+.tab-panel[hidden] {
+  display: none;
+}
+
+/* Error page heading (was an h2 before the page got its h1) */
+.error-container h1 {
+  font-size: 1.5em;
+}
+
+/* Approve/reject errors (role="alert"); takes no space while empty */
+.action-error:not(:empty) {
+  margin: 0 24px 16px;
+  padding: 10px 14px;
+  background-color: var(--status-failed-bg);
+  border: 1px solid var(--status-failed-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.detail-header-card .action-error:not(:empty) {
+  margin: 14px 0 0;
+}
+
+.action-error p {
+  margin: 0;
+}
+
+.action-error-button {
+  margin-left: 6px;
+  padding: 4px 10px;
+  background: none;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* "Press ? for keyboard shortcuts" (run detail header) */
+.shortcuts-hint {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: auto;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.shortcuts-hint:hover {
+  color: var(--text-primary);
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 1px 6px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* Keyboard shortcuts help (native <dialog>) */
+.shortcuts-dialog {
+  margin: auto; /* centred (the global reset removes the browser's own margin) */
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 22px 24px;
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-card);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.shortcuts-dialog::backdrop {
+  background-color: rgba(0, 0, 0, 0.6);
+}
+
+.shortcuts-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.shortcuts-dialog-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.shortcuts-dialog-close {
+  width: 32px;
+  height: 32px;
+  background: none;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.shortcuts-dialog-close:hover {
+  color: var(--text-primary);
+}
+
+.shortcuts-list {
+  margin: 0 0 14px;
+}
+
+.shortcuts-list > div {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.shortcuts-list dt {
+  white-space: nowrap;
+}
+
+.shortcuts-list dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.shortcuts-note {
+  margin: 0 0 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.shortcuts-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.shortcuts-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--primary-blue);
+}

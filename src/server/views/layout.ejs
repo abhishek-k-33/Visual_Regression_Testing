@@ -1,9 +1,9 @@
 <%# Error page. Params: title, heading, message (both escaped here). -%>
 <%- include('partials/header', { navLink: 'back', crumbs: [{ label: 'Dashboard', href: '/' }, { label: locals.title || 'Error' }] }) %>
 
-  <main class="container">
+  <main class="container" id="main" tabindex="-1">
     <div class="error-container">
-      <h2><%= locals.heading || 'Something went wrong' %></h2>
+      <h1><%= locals.heading || 'Something went wrong' %></h1>
       <p><%= locals.message || '' %></p>
     </div>
   </main>
