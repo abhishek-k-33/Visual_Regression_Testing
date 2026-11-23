@@ -1,0 +1,102 @@
+name: Pages Demo
+
+# Builds a read-only, clickable copy of the review dashboard from real screenshots
+# (scripts/build-static-demo.js) and publishes it to GitHub Pages. Pull requests only
+# build it, so a change that breaks the demo is caught before merging.
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/pages.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# Only the deploy job gets Pages/OIDC permissions; builds (including PR code) read only.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Static Demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Runs the real CLI against the bundled demo site in a temp storage folder, renders
+      # the dashboard in static mode and fails if the output has anything it shouldn't.
+      - name: Build Static Demo
+        run: node scripts/build-static-demo.js --out _site --base "/${{ github.event.repository.name }}"
+
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    # One deployment at a time, never cancelled. Scoped to this job so pull-request
+    # builds can't cancel a pending deploy of main.
+    concurrency:
+      group: pages-deploy
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Smoke Test Deployed Site
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          base="${PAGE_URL%/}"
+          for path in "/" "/runs/demo-05-regression"; do
+            ok=""
+            for attempt in $(seq 1 10); do
+              status=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "${base}${path}" || true)
+              if [ "$status" = "200" ]; then ok=1; break; fi
+              echo "${base}${path} returned ${status} (attempt ${attempt}), retrying..."
+              sleep 10
+            done
+            if [ -z "$ok" ]; then
+              echo "::error::${base}${path} did not return 200"
+              exit 1
+            fi
+            echo "OK ${base}${path}"
+          done

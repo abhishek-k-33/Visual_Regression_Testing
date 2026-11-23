@@ -6,6 +6,8 @@
 node_modules/
 dist/
 build/
+# Static GitHub Pages demo build (npm run demo:pages)
+_site/
 coverage/
 
 # Logs
