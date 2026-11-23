@@ -92,11 +92,12 @@ Visual Regression Testing Project/
 │       ├── urls.js                # url()/pageLocals(): base-path handling so pages also work under a sub-path
 │       ├── routes/                # Express routers (`/api`, `/`)
 │       │   ├── api.js             # REST API for runs and snapshot approval
-│       │   └── views.js           # HTML views for dashboard and run details
+│       │   └── views.js           # HTML views: dashboard, run details, route history
 │       ├── views/                 # EJS templates (Linear/Vercel dark theme)
 │       │   ├── partials/          # Shared header (head + navbar) and footer (scripts)
 │       │   ├── index.ejs          # Main dashboard table with KPI cards
 │       │   ├── run-detail.ejs     # Inspection studio (Slider, Side-by-Side, Diff)
+│       │   ├── history.ejs        # One route + viewport across runs (sparkline, thumbnails)
 │       │   └── layout.ejs         # Error page
 │       └── public/                # Static assets (CSS, client JS as ES modules)
 │           ├── css/styles.css     # Premium dark theme stylesheet
@@ -131,10 +132,10 @@ Visual Regression Testing Project/
     ├── db.test.js                 # SQLite queries and path jail tests
     ├── manifest.test.js           # run.json written by the CLI for every test run
     ├── docker.test.js             # Docker image tag matches the pinned Playwright version
-    ├── server.test.js             # Express REST API and dashboard view tests
+    ├── server.test.js             # Express REST API and dashboard view tests (incl. route history)
     ├── storage-dir.test.js        # Custom storageDir honoured by CLI and dashboard
     ├── urls.test.js               # Base-path URL helpers
-    ├── viewModels.test.js         # Template data shaping and /storage URL mapping
+    ├── viewModels.test.js         # Template data shaping, /storage URL mapping, history model
     ├── reporter.test.js           # Markdown reporter & CI step summary tests
     ├── verify-phase-1.js          # Phase 1 deliverable verification script
     ├── verify-phase-2.js          # Phase 2 deliverable verification script
@@ -310,7 +311,7 @@ npm run demo:pages
 # = node scripts/build-static-demo.js --out _site --base /Visual_Regression_Testing
 ```
 
-It serves the bundled demo site, runs the real CLI five times in a throwaway temp storage folder (baseline, pass, an intentional redesign that gets approved, pass, and a regression left for review), then renders the dashboard pages with the same templates in *static* mode: a demo banner is shown and Approve/Reject only update the page. Only the screenshots the pages show are copied; the build fails if the output would contain a database, `run.json`, Markdown summaries or a broken link. `--base` is the sub-path the site is served under (`/` for a domain root); `--repo-url` sets the banner's GitHub link. Your own `storage/` is never read or changed.
+It serves the bundled demo site, runs the real CLI five times in a throwaway temp storage folder (baseline, pass, an intentional redesign that gets approved, pass, and a regression left for review), then renders the dashboard, run and history pages (`history/<slug>/<viewport>.html` for every route and viewport) with the same templates in *static* mode: a demo banner is shown and Approve/Reject only update the page. Only the screenshots the pages show are copied; the build fails if the output would contain a database, `run.json`, Markdown summaries or a broken link. `--base` is the sub-path the site is served under (`/` for a domain root); `--repo-url` sets the banner's GitHub link. Your own `storage/` is never read or changed.
 
 ---
 
@@ -345,6 +346,15 @@ For every route and viewport, three interactive visual tabs are available:
 | `POST /api/snapshots/:id/reject` | Marks one snapshot rejected |
 | `POST /api/runs/:id/approve-all` | Approves every pending snapshot of the run, all or nothing: `200 { success, approved: [ids], runStatus, snapshots }` (`approved: []` when nothing is pending), `409 { success: false, error, conflicts: [{ id, route, viewport }] }`, `404` for an unknown run |
 
+Each snapshot card links to the **History** of its route and viewport (see below), and has an `id="snapshot-<id>"` anchor that the history page links to.
+
+### Route History (`GET /history/:slug/:viewport`)
+How one route has looked at one viewport over time, e.g. `/history/index/desktop` for `/` on desktop. The slug is the same one the route's baseline file uses (`index-desktop.png`), so route spellings that share a baseline (such as `/a/b` and `/a_b`) share a history. Viewport names must match `[A-Za-z0-9_-]{1,64}`; unknown or invalid ones return a `404` page.
+- **Header**: route, viewport and a link to the current shared baseline image (when one exists).
+- **Sparkline**: server-rendered inline SVG of the mismatch percentage, oldest to newest, with min / max / latest (also in its `aria-label`). No chart library.
+- **One row per run** (latest 100, newest first): link to that run's snapshot card, time (UTC), branch and commit, status pill, mismatch %, and a lazy-loaded thumbnail of the screenshot.
+- **Baseline changed marker**: shown on a run that was compared against a different baseline than the run before it (e.g. the first run after an approval), and as a dashed line on the sparkline. Runs recorded before baseline hashes existed are not marked.
+
 ---
 
 ## 🚀 GitHub Actions CI Pipeline
@@ -372,7 +382,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 211 Vitest unit & integration tests
+# Run all 237 Vitest unit & integration tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -399,21 +409,21 @@ node tests/verify-phase-5.js
  ✓ tests/capture-integration.test.js (6 tests)
  ✓ tests/cli-strict.test.js (5 tests)
  ✓ tests/demo-app.test.js (5 tests)
- ✓ tests/build-static-demo.test.js (11 tests)
- ✓ tests/db.test.js (17 tests)
+ ✓ tests/build-static-demo.test.js (12 tests)
+ ✓ tests/db.test.js (19 tests)
  ✓ tests/docker.test.js (3 tests)
  ✓ tests/manifest.test.js (19 tests)
  ✓ tests/per-run-baselines.test.js (11 tests)
  ✓ tests/approve-all.test.js (21 tests)
  ✓ tests/approve-all-api.test.js (12 tests)
- ✓ tests/server.test.js (32 tests)
+ ✓ tests/server.test.js (38 tests)
  ✓ tests/storage-dir.test.js (3 tests)
  ✓ tests/urls.test.js (3 tests)
- ✓ tests/viewModels.test.js (12 tests)
+ ✓ tests/viewModels.test.js (29 tests)
  ✓ tests/reporter.test.js (11 tests)
 
  Test Files  18 passed (18)
-      Tests  211 passed (211)
+      Tests  237 passed (237)
 ```
 
 ---

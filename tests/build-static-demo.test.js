@@ -8,6 +8,7 @@ import { verifyOutput, resolveLocalUrl, extractUrls, DEMO_RUNS } from '../script
 
 const SCRIPT = path.resolve('scripts/build-static-demo.js');
 const BASE = '/vrt-test';
+const HISTORY_PAGES = ['history/index/desktop.html', 'history/index/mobile.html'];
 
 function runBuild(args) {
   return new Promise((resolve) => {
@@ -33,6 +34,8 @@ describe('link resolution helpers', () => {
     expect(resolveLocalUrl('/b/', '/b')).toEqual({ file: 'index.html' });
     expect(resolveLocalUrl('/b', '/b')).toEqual({ file: 'index.html' });
     expect(resolveLocalUrl('/b/runs/demo-05-regression', '/b')).toEqual({ file: 'runs/demo-05-regression.html' });
+    expect(resolveLocalUrl('/b/runs/demo-05-regression#snapshot-9', '/b')).toEqual({ file: 'runs/demo-05-regression.html' });
+    expect(resolveLocalUrl('/b/history/index/desktop', '/b')).toEqual({ file: 'history/index/desktop.html' });
     expect(resolveLocalUrl('/b/css/styles.css', '/b')).toEqual({ file: 'css/styles.css' });
     expect(resolveLocalUrl('/b/storage/runs/x/a%20b.png', '/b')).toEqual({ file: 'storage/runs/x/a b.png' });
     expect(resolveLocalUrl('/', '')).toEqual({ file: 'index.html' });
@@ -133,7 +136,7 @@ describe('static demo build (end to end)', () => {
   });
 
   it('renders every page in static mode with the demo banner', () => {
-    for (const rel of ['index.html', '404.html', ...DEMO_RUNS.map((r) => `runs/${r.id}.html`)]) {
+    for (const rel of ['index.html', '404.html', ...DEMO_RUNS.map((r) => `runs/${r.id}.html`), ...HISTORY_PAGES]) {
       const html = read(rel);
       expect(html, rel).toContain(`data-base="${BASE}"`);
       expect(html, rel).toContain('data-mode="static"');
@@ -145,7 +148,7 @@ describe('static demo build (end to end)', () => {
     const files = walk(out);
     expect(files.filter((f) => /\.sqlite|\.db$|\.md$|run\.json$/i.test(f))).toEqual([]);
     for (const f of files) {
-      expect(f).toMatch(/^(\.nojekyll|\.vrt-static-demo|index\.html|404\.html|runs\/[\w-]+\.html|css\/[\w.-]+\.css|js\/[\w.-]+\.js|storage\/runs\/[\w./-]+\.png)$/);
+      expect(f).toMatch(/^(\.nojekyll|\.vrt-static-demo|index\.html|404\.html|runs\/[\w-]+\.html|history\/[\w-]+\/[\w-]+\.html|css\/[\w.-]+\.css|js\/[\w.-]+\.js|storage\/(runs|baselines)\/[\w./-]+\.png)$/);
     }
   });
 
@@ -157,7 +160,7 @@ describe('static demo build (end to end)', () => {
         const url = m[1];
         if (/^(#|https?:|data:)/.test(url)) continue;
         expect(url, `${rel}: ${url}`).toMatch(new RegExp(`^${BASE}(/|$)`));
-        let p = decodeURIComponent(url.slice(BASE.length)) || '/';
+        let p = decodeURIComponent(url.slice(BASE.length).replace(/#.*$/, '')) || '/';
         if (p.endsWith('/')) p += 'index.html';
         else if (!path.posix.extname(p)) p += '.html';
         expect(files.has(p.slice(1)), `${rel}: ${url} -> ${p}`).toBe(true);
@@ -166,6 +169,36 @@ describe('static demo build (end to end)', () => {
     }
     expect(checked).toBeGreaterThan(40);
     expect(verifyOutput(out, BASE)).toEqual([]);
+  });
+
+  it('renders a history page per route and viewport, linked from every run page', () => {
+    expect(walk(path.join(out, 'history')).sort()).toEqual(['index/desktop.html', 'index/mobile.html']);
+    for (const { id } of DEMO_RUNS) {
+      const run = read(`runs/${id}.html`);
+      expect(run, id).toContain(`href="${BASE}/history/index/desktop"`);
+      expect(run, id).toContain(`href="${BASE}/history/index/mobile"`);
+    }
+
+    for (const viewport of ['desktop', 'mobile']) {
+      const html = read(`history/index/${viewport}.html`);
+      // Newest first, one row per run, each linking to its snapshot card
+      const runLinks = [...html.matchAll(/href="\/vrt-test\/runs\/([\w-]+)#snapshot-(\d+)" class="run-id-link"/g)].map((m) => m[1]);
+      expect(runLinks, viewport).toEqual(DEMO_RUNS.map((r) => r.id).reverse());
+      for (const [, runId, snapId] of html.matchAll(/href="\/vrt-test\/runs\/([\w-]+)#snapshot-(\d+)"/g)) {
+        expect(read(`runs/${runId}.html`), `${runId} #${snapId}`).toContain(`id="snapshot-${snapId}"`);
+      }
+      expect(html.match(/loading="lazy"/g), viewport).toHaveLength(DEMO_RUNS.length);
+      expect(html.match(/ UTC<\/time>/g), viewport).toHaveLength(DEMO_RUNS.length);
+      expect(html).toContain('role="img"');
+      expect(html).toMatch(/aria-label="Mismatch over 5 runs, oldest to newest: min 0\.00%, max [\d.]+%, latest [\d.]+%"/);
+      expect(html).toContain(`href="${BASE}/storage/baselines/index-${viewport}.png"`);
+
+      // The approved redesign became the baseline, so demo-04-pass is the one run compared
+      // against a different baseline than the run before it.
+      expect(html.match(/<span>Baseline changed<\/span>/g), viewport).toHaveLength(1);
+      const markedRow = html.split('<tr').find((row) => row.includes('<span>Baseline changed</span>'));
+      expect(markedRow).toContain('/runs/demo-04-pass#snapshot-');
+    }
   });
 
   it('leaves the repository storage alone', () => {

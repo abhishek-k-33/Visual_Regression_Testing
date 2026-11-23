@@ -1,0 +1,111 @@
+<%#
+  History of one route at one viewport across runs (newest first).
+  Model: see historyModel() in viewModels.js. Every local URL goes through url().
+-%>
+<%- include('partials/header', { navLink: 'back', crumbs: [{ label: 'Dashboard', href: '/' }, { label: 'History' }, { label: `${route} @ ${viewport}`, mono: true }] }) %>
+
+  <main class="container">
+    <div class="detail-header-card">
+      <div class="detail-title-row">
+        <div class="history-title">
+          <h1 class="detail-run-id">History</h1>
+          <span class="route-pill"><%= route %></span>
+          <span class="viewport-badge"><%= viewport %></span>
+        </div>
+        <% if (baselineUrl) { %>
+          <a href="<%= url(baselineUrl) %>" class="btn-inspect">View current baseline</a>
+        <% } %>
+      </div>
+      <div class="detail-meta-row">
+        <span><%= entries.length %> run(s)<%= truncated ? ` (latest ${limit} shown)` : '' %>, newest first</span>
+        <% if (routes.length > 1) { %>
+          <span>• Includes routes <%= routes.join(', ') %> (same baseline file)</span>
+        <% } %>
+        <% if (!baselineUrl) { %>
+          <span>• No shared baseline exists for this route and viewport</span>
+        <% } %>
+      </div>
+    </div>
+
+    <section class="history-chart-card" aria-labelledby="history-chart-heading">
+      <div class="history-chart-head">
+        <h2 id="history-chart-heading" class="history-chart-title">Mismatch over time <span class="history-chart-sub">(oldest → newest)</span></h2>
+        <% if (sparkline.points.length) { %>
+          <dl class="history-chart-stats">
+            <div><dt>Min</dt><dd><%= sparkline.min.toFixed(2) %>%</dd></div>
+            <div><dt>Max</dt><dd><%= sparkline.max.toFixed(2) %>%</dd></div>
+            <div><dt>Latest</dt><dd><%= sparkline.latest.toFixed(2) %>%</dd></div>
+          </dl>
+        <% } %>
+      </div>
+      <svg class="history-sparkline" viewBox="0 0 <%= sparkline.width %> <%= sparkline.height %>" role="img" aria-label="<%= sparkline.label %>" focusable="false">
+        <line class="history-sparkline-axis" x1="0" y1="<%= sparkline.height - 8 %>" x2="<%= sparkline.width %>" y2="<%= sparkline.height - 8 %>"></line>
+        <% sparkline.changes.forEach((c) => { %>
+          <line class="history-sparkline-change" x1="<%= c.x %>" y1="0" x2="<%= c.x %>" y2="<%= sparkline.height %>"><title><%= c.label %> (<%= c.runId %>)</title></line>
+        <% }) %>
+        <% if (sparkline.points.length > 1) { %>
+          <path class="history-sparkline-line" d="<%= sparkline.path %>"></path>
+        <% } %>
+        <% sparkline.points.forEach((p, i) => { %>
+          <circle class="history-sparkline-dot<%= i === sparkline.points.length - 1 ? ' is-latest' : '' %>" cx="<%= p.x %>" cy="<%= p.y %>" r="<%= i === sparkline.points.length - 1 ? 4 : 2.5 %>"></circle>
+        <% }) %>
+      </svg>
+      <% if (sparkline.changes.length) { %>
+        <p class="history-chart-legend"><span class="history-legend-swatch" aria-hidden="true"></span> Dashed lines mark runs compared against a different baseline than the run before.</p>
+      <% } %>
+    </section>
+
+    <div class="table-card">
+      <div class="table-responsive">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th scope="col">Run</th>
+              <th scope="col">Git</th>
+              <th scope="col">Status</th>
+              <th scope="col">Mismatch</th>
+              <th scope="col">Screenshot</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% entries.forEach((e) => { %>
+              <tr<%- e.baselineChanged ? ' class="history-row-baseline-changed"' : '' %>>
+                <td>
+                  <a href="<%= url(e.runUrl) %>" class="run-id-link"><%= e.run_id %></a>
+                  <div class="timestamp-text history-time">
+                    <% if (e.createdAtIso) { %><time datetime="<%= e.createdAtIso %>"><%= e.created_at %> UTC</time><% } else { %><%= e.created_at || 'Unknown time' %> UTC<% } %>
+                  </div>
+                  <% if (e.baselineChanged) { %>
+                    <span class="history-baseline-marker" title="This run was compared against a different baseline than the run before it">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                      <span><%= e.baselineChangeLabel %></span>
+                    </span>
+                  <% } %>
+                </td>
+                <td>
+                  <div class="git-context">
+                    <% if (e.branch) { %><span class="git-badge"><%= e.branch %></span><% } %>
+                    <% if (e.commit_hash) { %><span class="git-badge git-commit">#<%= e.commit_hash %></span><% } %>
+                    <% if (!e.branch && !e.commit_hash) { %><span class="timestamp-text">—</span><% } %>
+                  </div>
+                </td>
+                <td><span class="status-pill <%= e.statusPill.cls %>"><%= e.statusPill.label %></span></td>
+                <td class="history-mismatch"><%= e.mismatch.toFixed(2) %>%</td>
+                <td>
+                  <% if (e.currentUrl) { %>
+                    <a href="<%= url(e.runUrl) %>" class="history-thumb-link">
+                      <img class="history-thumb" src="<%= url(e.currentUrl) %>" loading="lazy" alt="Screenshot of <%= e.route %> at <%= viewport %> in run <%= e.run_id %>">
+                    </a>
+                  <% } else { %>
+                    <span class="timestamp-text">Not in storage</span>
+                  <% } %>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+<%- include('partials/footer') %>

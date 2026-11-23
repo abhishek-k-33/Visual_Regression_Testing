@@ -80,6 +80,9 @@
           <div class="snapshot-title">
             <span class="route-pill"><%= snap.route %></span>
             <span class="viewport-badge"><%= snap.viewport %></span>
+            <% if (snap.historyUrl) { %>
+              <a href="<%= url(snap.historyUrl) %>" class="history-link" aria-label="History of <%= snap.route %> at <%= snap.viewport %>">History</a>
+            <% } %>
 
             <div class="status-badge-container">
               <% if (snap.status === 'MATCH') { %>
