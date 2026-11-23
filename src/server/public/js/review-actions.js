@@ -272,6 +272,14 @@ if (approveAllBtn) {
     try {
       const data = await sendApproveAll(runId);
 
+      if (data.success && !data.simulated && data.approved.length !== count) {
+        // The page was out of date (e.g. approved or rejected in another tab): show the truth.
+        announce('This run changed since the page was loaded. Reloading to show its current state.');
+        alert(`This run changed since the page was loaded (${data.approved.length} of ${count} snapshots were still pending and have been approved). The page will reload to show the current state.`);
+        window.location.reload();
+        return;
+      }
+
       if (data.success) {
         for (const id of data.approved) markApproved(id, { simulated: data.simulated });
         refreshRunHeader(data.runStatus);

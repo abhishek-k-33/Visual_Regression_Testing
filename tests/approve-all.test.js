@@ -76,7 +76,8 @@ describe('Approve all pending (approveSnapshots / approveAllPending)', () => {
 
   const read = (name) => fs.readFileSync(path.join(baselinesDir, `${name}.png`), 'utf8');
   const exists = (name) => fs.existsSync(path.join(baselinesDir, `${name}.png`));
-  const leftovers = () => fs.readdirSync(baselinesDir).filter((f) => f.includes('.tmp-'));
+  // Anything besides the baselines themselves: hidden temp copies or backups
+  const leftovers = () => fs.readdirSync(baselinesDir).filter((f) => f.startsWith('.') || /\.(tmp|bak)$|\.tmp-/.test(f));
 
   it('approves every pending snapshot: files, statuses and run status', () => {
     const a = seed('run-1', 'home', { baseline: 'OLD_HOME' });
@@ -206,6 +207,90 @@ describe('Approve all pending (approveSnapshots / approveAllPending)', () => {
     expect(leftovers()).toEqual([]);
     for (const s of [a, b, c]) expect(getSnapshotById(s.id, db).status).not.toBe('APPROVED');
     expect(getTestRunById('run-1', db).status).toBe('FAILED');
+  });
+
+  it('a successful batch leaves no temp or backup files behind', () => {
+    seed('run-1', 'home', { baseline: 'OLD_HOME' });
+    seed('run-1', 'brand-new', { baseline: null });
+    approveAllPending('run-1', db, opts);
+    expect(read('home')).toBe('run-1:home:NEW');
+    expect(read('brand-new')).toBe('run-1:brand-new:NEW');
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('a failing copy of the 2nd screenshot restores the 1st baseline', () => {
+    seed('run-1', 'a-first', { baseline: 'OLD_A' });
+    seed('run-1', 'b-second', { baseline: 'OLD_B' });
+    const realCopy = fs.copyFileSync;
+    vi.spyOn(fs, 'copyFileSync').mockImplementation((from, to, mode) => {
+      if (String(from).endsWith('b-second.png') && String(to).endsWith('.tmp')) throw new Error('ENOSPC: simulated');
+      return realCopy(from, to, mode);
+    });
+    expect(() => approveAllPending('run-1', db, opts)).toThrow('ENOSPC: simulated');
+    expect(read('a-first')).toBe('OLD_A');
+    expect(read('b-second')).toBe('OLD_B');
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('still restores the baselines when removing the temp file also fails', () => {
+    seed('run-1', 'a-first', { baseline: 'OLD_A' });
+    seed('run-1', 'b-second', { baseline: 'OLD_B' });
+    const realRename = fs.renameSync;
+    const realRm = fs.rmSync;
+    let renames = 0;
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (++renames === 2) throw new Error('EIO: simulated');
+      return realRename(from, to);
+    });
+    vi.spyOn(fs, 'rmSync').mockImplementation((p, o) => {
+      if (String(p).endsWith('.tmp')) throw new Error('EBUSY: simulated');
+      return realRm(p, o);
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => approveAllPending('run-1', db, opts)).toThrow('EIO: simulated');
+    expect(read('a-first')).toBe('OLD_A');
+    expect(read('b-second')).toBe('OLD_B');
+  });
+
+  it('reports a baseline it could not restore and keeps its backup', () => {
+    seed('run-1', 'a-first', { baseline: 'OLD_A' });
+    seed('run-1', 'b-second', { baseline: 'OLD_B' });
+    const realRename = fs.renameSync;
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(from).endsWith('.tmp') && String(to).endsWith('b-second.png')) throw new Error('EIO: simulated');
+      if (String(from).endsWith('.bak')) throw new Error('EIO: restore failed too');
+      return realRename(from, to);
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const err = thrown(() => approveAllPending('run-1', db, opts));
+    expect(err.message).toMatch(/EIO: simulated.*could not be restored: .*a-first\.png \(backup kept at .*\.bak\)/);
+    const backups = fs.readdirSync(baselinesDir).filter((f) => f.endsWith('.bak'));
+    expect(backups).toHaveLength(1);
+    expect(fs.readFileSync(path.join(baselinesDir, backups[0]), 'utf8')).toBe('OLD_A');
+  });
+
+  it('refuses (409) when a baseline changes between planning and writing, changing nothing', () => {
+    const a = seed('run-1', 'a-first', { baseline: 'OLD_A' });
+    const b = seed('run-1', 'b-second', { baseline: 'OLD_B' });
+    // Another process (e.g. the CLI with --update-baselines) rewrites b's baseline just
+    // after it was planned, before the batch reaches it.
+    const realCopy = fs.copyFileSync;
+    let swapped = false;
+    vi.spyOn(fs, 'copyFileSync').mockImplementation((from, to, mode) => {
+      const out = realCopy(from, to, mode);
+      if (!swapped && String(to).endsWith('.tmp')) {
+        swapped = true;
+        fs.writeFileSync(path.join(baselinesDir, 'b-second.png'), 'NEWER_FROM_ELSEWHERE');
+      }
+      return out;
+    });
+    const err = thrown(() => approveAllPending('run-1', db, opts));
+    expect(err.status).toBe(409);
+    expect(err.conflicts).toEqual([{ id: b.id, route: '/b-second', viewport: 'desktop' }]);
+    expect(read('a-first')).toBe('OLD_A'); // first file was rolled back
+    expect(read('b-second')).toBe('NEWER_FROM_ELSEWHERE'); // the newer baseline survives
+    expect(leftovers()).toEqual([]);
+    for (const s of [a, b]) expect(getSnapshotById(s.id, db).status).toBe('DIFF');
   });
 
   it('a failure after a new baseline was created removes it again', () => {

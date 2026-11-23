@@ -349,57 +349,125 @@ export function planApproval(snapshot, storageRoot = getStorageRoot()) {
   } catch (err) {
     throw conflictError(err.message, [conflictEntry(snapshot)]);
   }
-  return { snapshot, source, target };
+  // What the baseline looked like when it was checked; re-checked just before writing.
+  return { snapshot, source, target, seen: baselineState(target) };
 }
 
-/** Rolls the baseline files back to their backed-up state; never throws. */
-function restoreBaselines(written, backups) {
-  for (const target of [...written].reverse()) {
-    const backup = backups.get(target);
-    try {
-      if (backup.existed) fs.writeFileSync(target, backup.bytes);
-      else fs.rmSync(target, { force: true });
-    } catch (restoreErr) {
-      console.error(`[ERROR] Could not restore baseline ${target}: ${restoreErr.message}`);
-    }
-  }
+/** Hash of a baseline file, or 'none' when it doesn't exist. */
+function baselineState(target) {
+  return fs.existsSync(target) ? hashFile(target) : 'none';
+}
+
+/** Hidden sibling path used for temp copies and backups (never served: not a ".png"). */
+function siblingPath(target, kind) {
+  return path.join(path.dirname(target), `.${path.basename(target)}.${crypto.randomBytes(8).toString('hex')}.${kind}`);
 }
 
 /**
- * Promotes every planned screenshot and records the approvals, all or nothing:
- * existing baselines are backed up first, each copy goes to "<target>.tmp-<random>" and
- * is renamed over the target, and every status change happens in one transaction. If a
- * file or database step fails, baselines are restored, new ones removed, and the error
- * rethrown.
+ * Puts baselines back after a failed batch: each backup (a hard link or copy of the
+ * old file) is renamed back over its target, which is atomic and copies nothing;
+ * targets that didn't exist before are removed. Never throws: returns the targets it
+ * could not restore (their backups are kept on disk so nothing is lost).
+ */
+function restoreBaselines(written) {
+  const failed = [];
+  for (const { target, backup } of [...written].reverse()) {
+    try {
+      if (backup && isSameFile(backup, target)) {
+        // The swap never happened: the target is still the old file (the backup is a
+        // hard link to it), and rename() between two links to one file is a no-op.
+        fs.rmSync(backup, { force: true });
+      } else if (backup) {
+        fs.renameSync(backup, target);
+      } else {
+        fs.rmSync(target, { force: true });
+      }
+    } catch (restoreErr) {
+      console.error(`[ERROR] Could not restore baseline ${target}: ${restoreErr.message}`);
+      failed.push(backup ? `${target} (backup kept at ${backup})` : target);
+    }
+  }
+  return failed;
+}
+
+function isSameFile(a, b) {
+  try {
+    const sa = fs.statSync(a);
+    const sb = fs.statSync(b);
+    return sa.ino === sb.ino && sa.dev === sb.dev;
+  } catch {
+    return false;
+  }
+}
+
+/** Keeps the current baseline under a hidden name: a hard link if possible, else a copy. */
+function backUpBaseline(target) {
+  const backup = siblingPath(target, 'bak');
+  try {
+    fs.linkSync(target, backup);
+  } catch {
+    fs.copyFileSync(target, backup, fs.constants.COPYFILE_EXCL);
+  }
+  return backup;
+}
+
+/**
+ * Promotes every planned screenshot and records the approvals, all or nothing. For each
+ * file: re-check that the baseline is still what planning saw (else 409 Conflict),
+ * copy the screenshot to a hidden temp file, keep the old baseline as a hidden backup,
+ * then rename the temp file over the target. All status changes happen in one
+ * transaction. On any failure, backups are renamed back, new baselines removed, and the
+ * error rethrown (mentioning any baseline that could not be restored).
  */
 function executeApprovalPlans(plans, db) {
   const writes = plans.filter((p) => p.target);
-  const backups = new Map();
-  for (const { target } of writes) {
-    const existed = fs.existsSync(target);
-    backups.set(target, { existed, bytes: existed ? fs.readFileSync(target) : null });
-  }
-
-  const written = [];
+  const written = []; // { target, backup } for every target that may have changed
   let tmp = null;
   try {
-    for (const { source, target } of writes) {
-      tmp = `${target}.tmp-${crypto.randomBytes(8).toString('hex')}`;
-      written.push(target); // before the rename, so a half-done step is still rolled back
-      fs.copyFileSync(source, tmp);
+    for (const plan of writes) {
+      const { snapshot, source, target, seen } = plan;
+      if (baselineState(target) !== seen) {
+        throw conflictError(
+          'Conflict: a baseline changed while the batch was being approved. Re-run the visual tests and review the new result instead.',
+          [conflictEntry(snapshot)]
+        );
+      }
+      tmp = siblingPath(target, 'tmp');
+      fs.copyFileSync(source, tmp, fs.constants.COPYFILE_EXCL);
+      const backup = seen === 'none' ? null : backUpBaseline(target);
+      written.push({ target, backup }); // before the rename, so a half-done step is still rolled back
       fs.renameSync(tmp, target);
       tmp = null;
     }
 
     const runIds = [...new Set(plans.map((p) => p.snapshot.run_id))];
-    return db.transaction(() => {
+    const runStatuses = db.transaction(() => {
       const update = db.prepare('UPDATE snapshots SET status = ? WHERE id = ?');
       for (const { snapshot } of plans) update.run('APPROVED', snapshot.id);
       return Object.fromEntries(runIds.map((runId) => [runId, recalculateRunStatus(runId, db)]));
     })();
+
+    for (const { backup } of written) {
+      if (!backup) continue;
+      try {
+        fs.rmSync(backup, { force: true });
+      } catch (cleanupErr) {
+        console.error(`[WARN] Could not remove baseline backup ${backup}: ${cleanupErr.message}`);
+      }
+    }
+    return runStatuses;
   } catch (err) {
-    if (tmp) fs.rmSync(tmp, { force: true });
-    restoreBaselines(written, backups);
+    if (tmp) {
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch (cleanupErr) {
+        console.error(`[WARN] Could not remove temp file ${tmp}: ${cleanupErr.message}`);
+      }
+    }
+    const notRestored = restoreBaselines(written);
+    if (notRestored.length) {
+      err.message += ` Additionally, these baselines could not be restored: ${notRestored.join('; ')}.`;
+    }
     throw err;
   }
 }
