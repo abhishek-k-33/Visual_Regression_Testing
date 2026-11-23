@@ -231,11 +231,15 @@ export function historyModel({ db, slug, viewport, storageRoot = getStorageRoot(
 
   const routes = getRoutesForViewport(viewport, db).filter((r) => getRouteSlug(r) === slug);
   if (routes.length === 0) return null;
-  const rows = getSnapshotHistory({ routes, viewport, limit: HISTORY_LIMIT }, db);
-  if (rows.length === 0) return null;
+  // One extra row so the oldest row shown can still be compared with the run before it,
+  // and so "truncated" is only claimed when there really are more runs.
+  const fetched = getSnapshotHistory({ routes, viewport, limit: HISTORY_LIMIT + 1 }, db);
+  if (fetched.length === 0) return null;
+  const truncated = fetched.length > HISTORY_LIMIT;
+  const rows = fetched.slice(0, HISTORY_LIMIT);
 
   const entries = rows.map((row, i) => {
-    const change = baselineChange(row, rows[i + 1]);
+    const change = baselineChange(row, fetched[i + 1]);
     return {
       ...snapshotViewModel(row, storageRoot),
       mismatch: Number(row.mismatch_percentage) || 0,
@@ -269,6 +273,6 @@ export function historyModel({ db, slug, viewport, storageRoot = getStorageRoot(
     sparkline,
     baselineUrl: fs.existsSync(sharedBaseline) ? toWebUrl(sharedBaseline, storageRoot) : null,
     limit: HISTORY_LIMIT,
-    truncated: rows.length >= HISTORY_LIMIT
+    truncated
   };
 }

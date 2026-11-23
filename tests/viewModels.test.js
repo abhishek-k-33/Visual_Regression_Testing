@@ -284,6 +284,30 @@ describe('view models (src/server/viewModels.js)', () => {
       expect(historyModel({ db, slug: 'index', viewport: 'desktop', storageRoot }).baselineUrl).toBe('/storage/baselines/index-desktop.png');
     });
 
+    const seedMany = (n, hashOf = () => 'A') => db.transaction(() => {
+      for (let i = 0; i < n; i++) {
+        const at = `2026-01-01 ${String(Math.floor(i / 3600)).padStart(2, '0')}:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}`;
+        seed(`r${String(i).padStart(3, '0')}`, at, [{ baseline_sha256: hashOf(i) }]);
+      }
+    })();
+
+    it(`exactly ${HISTORY_LIMIT} runs are all shown and not reported as truncated`, () => {
+      seedMany(HISTORY_LIMIT);
+      const model = historyModel({ db, slug: 'index', viewport: 'desktop', storageRoot });
+      expect(model.entries).toHaveLength(HISTORY_LIMIT);
+      expect(model.truncated).toBe(false);
+    });
+
+    it('keeps the baseline-changed marker on the oldest row shown when older runs exist', () => {
+      // Runs r000..r100 (101 runs): the baseline changed at r001, which is the oldest shown
+      seedMany(HISTORY_LIMIT + 1, (i) => (i === 0 ? 'A' : 'B'));
+      const model = historyModel({ db, slug: 'index', viewport: 'desktop', storageRoot });
+      expect(model.truncated).toBe(true);
+      const oldest = model.entries[model.entries.length - 1];
+      expect(oldest.run_id).toBe('r001');
+      expect(oldest.baselineChange).toBe('changed');
+    });
+
     it(`keeps only the latest ${HISTORY_LIMIT} runs`, () => {
       db.transaction(() => {
         for (let i = 0; i < HISTORY_LIMIT + 5; i++) seed(`r${String(i).padStart(3, '0')}`, `2026-01-01 00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}`, [{}]);

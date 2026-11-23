@@ -1328,8 +1328,10 @@ tbody tr:hover {
   flex-wrap: wrap;
 }
 
-/* Phones: the longer History breadcrumbs pushed the navbar wider than the screen.
-   Let the crumbs shrink and truncate; "Back to Runs" keeps its size. */
+/* Phones: long breadcrumbs (history pages, run ids) pushed the navbar wider than the
+   screen. Keep the brand and the CURRENT page, hide the middle crumbs, make the right-hand
+   link icon-only (its text stays available to screen readers), and let the current page
+   name truncate with an ellipsis. */
 @media (max-width: 680px) {
   .navbar-left {
     min-width: 0;
@@ -1337,12 +1339,15 @@ tbody tr:hover {
     gap: 8px;
     overflow: hidden;
   }
-  .navbar-brand,
+  .navbar-left > .crumb-middle {
+    display: none;
+  }
   .navbar-left > * {
     white-space: nowrap;
     flex-shrink: 0;
   }
-  .navbar-left > .breadcrumb-current:last-child {
+  .navbar-left > :last-child:not(.navbar-brand) {
+    display: block;
     flex-shrink: 1;
     min-width: 0;
     overflow: hidden;
@@ -1350,5 +1355,16 @@ tbody tr:hover {
   }
   .navbar-right {
     flex-shrink: 0;
+  }
+  .navbar-right .navbar-link-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 }

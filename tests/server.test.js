@@ -144,7 +144,7 @@ describe('Express Review Dashboard & REST API', () => {
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain('<title>History: /hist_page @ tablet</title>');
-      expect(html).toContain('<span class="breadcrumb-current">History</span>');
+      expect(html).toContain('<span class="breadcrumb-current crumb-middle">History</span>');
 
       const runLinks = [...html.matchAll(/href="\/runs\/([^"#]+)#snapshot-(\d+)" class="run-id-link"/g)].map((m) => [m[1], Number(m[2])]);
       expect(runLinks).toEqual(['hist-4', 'hist-3', 'hist-2', 'hist-1'].map((id) => [id, historySnaps[id]]));
@@ -163,6 +163,22 @@ describe('Express Review Dashboard & REST API', () => {
       // No shared baseline file on disk -> no link to one
       expect(html).not.toContain('View current baseline');
       expect(html).toContain('No shared baseline exists');
+    });
+
+    it('escapes hostile route and branch names everywhere on the history page', async () => {
+      const route = '/"><script>alert(1)</script>';
+      createTestRun({ id: 'xss-run', status: 'FAILED', branch: '<img src=x onerror=alert(2)>', commit_hash: '"><svg onload=alert(3)>' });
+      createSnapshot({
+        run_id: 'xss-run', route, viewport: 'desktop', status: 'DIFF', mismatch_percentage: 2,
+        current_path: path.join(storageRoot, 'runs', 'xss-run', 'x.png')
+      });
+      const slug = encodeURIComponent((await import('../src/cli/naming.js')).getRouteSlug(route));
+      const res = await fetch(`${baseUrl}/history/${slug}/desktop`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).not.toMatch(/<script>alert|<img src=x|<svg onload/);
+      expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+      expect(html).toContain('&lt;img src=x onerror=alert(2)&gt;');
     });
 
     it('links the current shared baseline when it exists', async () => {
