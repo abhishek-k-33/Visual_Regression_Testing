@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { getAllTestRuns, getTestRunById, getSnapshotsByRunId } from './db.js';
+import { getAllTestRuns, getTestRunById, getSnapshotsByRunId, PENDING_STATUSES } from './db.js';
 import { getStorageRoot } from './paths.js';
 
 // Data shaping for the server-rendered views, kept out of the routes so the same
@@ -90,9 +90,12 @@ export function indexModel({ db } = {}) {
 export function runDetailModel({ db, runId, storageRoot = getStorageRoot() }) {
   const run = getTestRunById(runId, db);
   if (!run) return null;
+  const snapshots = getSnapshotsByRunId(runId, db).map((s) => snapshotViewModel(s, storageRoot));
   return {
     title: `Run Details: ${run.id}`,
     run,
-    snapshots: getSnapshotsByRunId(runId, db).map((s) => snapshotViewModel(s, storageRoot))
+    snapshots,
+    // Snapshots still awaiting review: the "Approve all pending (N)" button
+    pendingCount: snapshots.filter((s) => PENDING_STATUSES.includes(s.status)).length
   };
 }

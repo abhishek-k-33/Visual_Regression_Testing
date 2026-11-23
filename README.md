@@ -105,7 +105,7 @@ Visual Regression Testing Project/
 │               ├── dashboard.js   # Real-time search, filtering, and pagination
 │               ├── tabs.js        # Snapshot view tabs
 │               ├── slider.js      # Draggable split-slider
-│               └── review-actions.js # Approve / Reject buttons
+│               └── review-actions.js # Approve / Reject buttons and "Approve all pending"
 ├── scripts/
 │   ├── demo-app.js                # Static demo site (the visual CI target) with original/regressed/redesign variants
 │   ├── serve-demo.js              # Serves the demo site on :4567 (npm run demo:serve)
@@ -124,6 +124,8 @@ Visual Regression Testing Project/
     ├── demo-app.test.js           # Demo site variants (original page stays byte-identical)
     ├── build-static-demo.test.js  # Static Pages build end to end: statuses, safety checks, links
     ├── per-run-baselines.test.js  # Per-run baseline copies, stale-approval conflicts, DB migration
+    ├── approve-all.test.js        # Approve all pending: all-or-nothing batch, conflicts, rollback on failure
+    ├── approve-all-api.test.js    # POST /api/runs/:id/approve-all, CSRF, and the run page button
     ├── compare.test.js            # Pixel comparison and padding tests
     ├── config.test.js             # Config validation and path traversal tests
     ├── db.test.js                 # SQLite queries and path jail tests
@@ -331,6 +333,17 @@ For every route and viewport, three interactive visual tabs are available:
 2. **Interactive Overlay Slider**: Draggable vertical divider (mouse and touch enabled) to wipe between before and after images in real time.
 3. **Diff Highlight View**: Full-resolution image canvas with differing pixels painted in bright neon red alongside exact mismatch percentages.
 4. **One-Click Baseline Promotion**: Clicking **"Approve & Update Baseline"** copies the current screenshot over the baseline file on disk and transitions the status to `APPROVED`. If the baseline has changed since the run (e.g. a newer run was approved first), approval is refused with `409 Conflict` rather than silently reverting the newer baseline; re-run the tests and review the fresh result. Approving is still allowed when the baseline already equals the run's screenshot. Runs recorded before this check existed are not protected.
+5. **Approve all pending**: when a run has snapshots awaiting review (`DIFF` or `MISSING_BASELINE`), the run header shows **"Approve all pending (N)"**. After a confirmation it approves them all at once, **all or nothing**: every snapshot is checked first, and if any baseline has changed since the run, nothing is approved and the conflicting route/viewport pairs are listed. If copying a file or saving to the database fails part-way, every baseline already replaced is restored. Approved and rejected snapshots are left as they are. In the static demo it is simulated like the single buttons.
+
+**REST API** (writes need the `X-Requested-With` header, see *Cross-site protection* above):
+
+| Method & path | Does |
+| :--- | :--- |
+| `GET /api/runs` | Lists runs with snapshot counts |
+| `GET /api/runs/:id` | One run and its snapshots |
+| `POST /api/snapshots/:id/approve` | Promotes one screenshot to the baseline (`409` if the baseline changed since the run) |
+| `POST /api/snapshots/:id/reject` | Marks one snapshot rejected |
+| `POST /api/runs/:id/approve-all` | Approves every pending snapshot of the run, all or nothing: `200 { success, approved: [ids], runStatus, snapshots }` (`approved: []` when nothing is pending), `409 { success: false, error, conflicts: [{ id, route, viewport }] }`, `404` for an unknown run |
 
 ---
 
@@ -391,14 +404,16 @@ node tests/verify-phase-5.js
  ✓ tests/docker.test.js (3 tests)
  ✓ tests/manifest.test.js (19 tests)
  ✓ tests/per-run-baselines.test.js (11 tests)
+ ✓ tests/approve-all.test.js (16 tests)
+ ✓ tests/approve-all-api.test.js (12 tests)
  ✓ tests/server.test.js (32 tests)
  ✓ tests/storage-dir.test.js (3 tests)
  ✓ tests/urls.test.js (3 tests)
  ✓ tests/viewModels.test.js (12 tests)
  ✓ tests/reporter.test.js (11 tests)
 
- Test Files  16 passed (16)
-      Tests  178 passed (178)
+ Test Files  18 passed (18)
+      Tests  206 passed (206)
 ```
 
 ---
