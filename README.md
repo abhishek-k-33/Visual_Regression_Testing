@@ -2,6 +2,8 @@
 
 An open-source, self-hosted visual regression testing engine and interactive review dashboard. An automated, zero-cost alternative to Chromatic and Percy designed for developers, local staging environments, and continuous integration pipelines. Monitors, detects, and tracks pixel-level regressions across HTML, CSS, and responsive viewports.
 
+> **[Live demo](https://abhishek-k-33.github.io/Visual_Regression_Testing/)**: try the review dashboard in your browser, nothing to install. Open the failing `demo-05-regression` run, compare the screenshots side by side, with the slider and as a diff, then approve or reject it (approvals are simulated and reset on reload).
+
 ---
 
 ## 🌟 Key Highlights
@@ -64,7 +66,8 @@ Visual Regression Testing Project/
 ├── .dockerignore                  # Docker build context exclusions
 ├── .github/                       # GitHub automation
 │   └── workflows/
-│       └── visual-ci.yml          # GitHub Actions visual regression pipeline
+│       ├── visual-ci.yml          # GitHub Actions visual regression pipeline
+│       └── pages.yml              # Builds the static demo and deploys it to GitHub Pages
 ├── docs/                          # Detailed engineering milestone records
 │   ├── PHASE_1_EXECUTION.md       # Foundation & Playwright Capture Engine
 │   ├── PHASE_2_EXECUTION.md       # Pixel Diffing & Dimension Normalizer
@@ -104,10 +107,12 @@ Visual Regression Testing Project/
 │               ├── slider.js      # Draggable split-slider
 │               └── review-actions.js # Approve / Reject buttons
 ├── scripts/
-│   ├── demo-app.js                # Static demo site (the visual CI target)
+│   ├── demo-app.js                # Static demo site (the visual CI target) with original/regressed/redesign variants
 │   ├── serve-demo.js              # Serves the demo site on :4567 (npm run demo:serve)
 │   ├── demo.js                    # Interactive regression demo (npm run demo)
-│   └── demo.config.json           # Demo-only config (route /__vrt_demo), never touches committed baselines
+│   ├── demo.config.json           # Demo-only config (route /__vrt_demo), never touches committed baselines
+│   ├── build-static-demo.js       # Builds the read-only GitHub Pages demo (npm run demo:pages)
+│   └── pages-demo.config.json     # Config for the Pages demo runs (temp storage only)
 ├── storage/                       # Local artifacts directory
 │   ├── baselines/                 # Golden-master baselines (committed to git, reviewed in PRs)
 │   ├── runs/                      # Per run: screenshots, diffs, compared-baseline copies and run.json (git-ignored)
@@ -116,6 +121,8 @@ Visual Regression Testing Project/
     ├── capture.test.js            # Capture engine unit tests
     ├── capture-integration.test.js# Deterministic capture integration tests
     ├── cli-strict.test.js         # CLI strict mode: missing baselines fail in CI
+    ├── demo-app.test.js           # Demo site variants (original page stays byte-identical)
+    ├── build-static-demo.test.js  # Static Pages build end to end: statuses, safety checks, links
     ├── per-run-baselines.test.js  # Per-run baseline copies, stale-approval conflicts, DB migration
     ├── compare.test.js            # Pixel comparison and padding tests
     ├── config.test.js             # Config validation and path traversal tests
@@ -293,6 +300,16 @@ Baselines captured outside the container (or approved in the dashboard after a n
 
 With rootful Docker on Linux, files the container writes into `storage/` are owned by root. Hand them back with `sudo chown -R "$(id -u):$(id -g)" storage` (not needed with Docker Desktop or rootless Podman).
 
+### 6. Build the Static Demo (GitHub Pages)
+Builds the read-only dashboard behind the [live demo](https://abhishek-k-33.github.io/Visual_Regression_Testing/) into `_site/` (git-ignored):
+
+```bash
+npm run demo:pages
+# = node scripts/build-static-demo.js --out _site --base /Visual_Regression_Testing
+```
+
+It serves the bundled demo site, runs the real CLI five times in a throwaway temp storage folder (baseline, pass, an intentional redesign that gets approved, pass, and a regression left for review), then renders the dashboard pages with the same templates in *static* mode: a demo banner is shown and Approve/Reject only update the page. Only the screenshots the pages show are copied; the build fails if the output would contain a database, `run.json`, Markdown summaries or a broken link. `--base` is the sub-path the site is served under (`/` for a domain root); `--repo-url` sets the banner's GitHub link. Your own `storage/` is never read or changed.
+
 ---
 
 ## 🖥️ Web Review Dashboard
@@ -329,6 +346,12 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 - **Rich Markdown Step Summaries**: Generates a formatted table of every tested route, viewport, mismatch percentage, and pass/fail badge directly in the GitHub Actions run summary (`GITHUB_STEP_SUMMARY`).
 - **Diff Artifact Downloads**: On any visual regression failure, `storage/runs/` is zipped and uploaded as a workflow artifact (`visual-regression-diffs`) for quick inspection. Each run folder includes `run.json`, a machine-readable record of the run (status, git info, and per snapshot: route, viewport, status, mismatch, file names and the compared baseline's hash), so a CI run can be re-created without its database.
 
+### Live demo on GitHub Pages (`.github/workflows/pages.yml`)
+
+- **Build**: on pushes and pull requests to `main` that touch `src/`, `scripts/`, the package files or the workflow, runs `scripts/build-static-demo.js` (see [Build the Static Demo](#6-build-the-static-demo-github-pages)) with the repository name as the base path, and uploads `_site` as the Pages artifact. On pull requests it only builds, so a change that breaks the demo fails the PR.
+- **Deploy**: on `main` (or a manual run from `main`), deploys the artifact with `actions/deploy-pages` and smoke-tests that the dashboard and the `demo-05-regression` run page return `200`.
+- **Setup**: the repository's Pages source must be set to *GitHub Actions* (Settings → Pages).
+
 ---
 
 ## 🧪 Testing & Verification
@@ -336,7 +359,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 159 Vitest unit & integration tests
+# Run all 178 Vitest unit & integration tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -362,18 +385,20 @@ node tests/verify-phase-5.js
  ✓ tests/compare.test.js (11 tests)
  ✓ tests/capture-integration.test.js (6 tests)
  ✓ tests/cli-strict.test.js (5 tests)
+ ✓ tests/demo-app.test.js (5 tests)
+ ✓ tests/build-static-demo.test.js (11 tests)
  ✓ tests/db.test.js (17 tests)
  ✓ tests/docker.test.js (3 tests)
  ✓ tests/manifest.test.js (19 tests)
  ✓ tests/per-run-baselines.test.js (11 tests)
- ✓ tests/server.test.js (29 tests)
+ ✓ tests/server.test.js (32 tests)
  ✓ tests/storage-dir.test.js (3 tests)
  ✓ tests/urls.test.js (3 tests)
  ✓ tests/viewModels.test.js (12 tests)
  ✓ tests/reporter.test.js (11 tests)
 
- Test Files  14 passed (14)
-      Tests  159 passed (159)
+ Test Files  16 passed (16)
+      Tests  178 passed (178)
 ```
 
 ---

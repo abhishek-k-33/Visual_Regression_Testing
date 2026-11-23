@@ -14,6 +14,7 @@
     "test:visual": "node src/cli/index.js test",
     "demo": "node scripts/demo.js",
     "demo:serve": "node scripts/serve-demo.js",
+    "demo:pages": "node scripts/build-static-demo.js --out _site --base /Visual_Regression_Testing",
     "docker:build": "docker compose build",
     "docker:dashboard": "docker compose up dashboard",
     "docker:test": "docker compose run --rm runner",

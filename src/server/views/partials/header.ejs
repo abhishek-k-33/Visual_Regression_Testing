@@ -1,8 +1,10 @@
 <%#
   Shared page head + navbar.
   Params: title, crumbs (array of { label, href?, mono? }; the last one is the current page),
-  navLink ('back' for "Back to Runs", otherwise "Documentation").
+  navLink ('back' for "Back to Runs", otherwise "Documentation"),
+  repoUrl (optional; static demo banner links to it).
   All local URLs go through url() so pages work under a sub-path.
+  mode === 'static' (the GitHub Pages build) adds a banner explaining that approvals are simulated.
 -%>
 <% const pageCrumbs = locals.crumbs || []; -%>
 <!DOCTYPE html>
@@ -60,3 +62,16 @@
       </div>
     </div>
   </header>
+<% if (mode === 'static') { -%>
+  <div class="demo-banner" role="note" aria-label="About this demo">
+    <div class="demo-banner-inner">
+      <span class="demo-banner-tag">Demo</span>
+      <p class="demo-banner-text">
+        Live demo with sample data: approvals are simulated and reset when you reload. Run it locally to review your own app.
+        <%_ if (locals.repoUrl) { _%>
+        <a href="<%= repoUrl %>" class="demo-banner-link">Get it on GitHub</a>
+        <%_ } _%>
+      </p>
+    </div>
+  </div>
+<% } -%>

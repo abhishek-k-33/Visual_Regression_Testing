@@ -5,7 +5,7 @@ import path from 'node:path';
 import app from '../src/server/app.js';
 import { initDb, closeDb, createTestRun, createSnapshot } from '../src/server/db.js';
 import { isAllowedHost } from '../src/server/security.js';
-import { indexModel } from '../src/server/viewModels.js';
+import { indexModel, runDetailModel } from '../src/server/viewModels.js';
 import { pageLocals } from '../src/server/urls.js';
 
 const SAME_ORIGIN_WRITE = { method: 'POST', headers: { 'X-Requested-With': 'test' } };
@@ -176,6 +176,49 @@ describe('Express Review Dashboard & REST API', () => {
       expectAllLocalUrlsUnder(html, '/y', 'pageLocals render');
       expect(app.locals.base).toBe('');
       expect(app.locals.mode).toBe('live');
+    });
+
+    describe('static demo mode (GitHub Pages build)', () => {
+      const BANNER = 'class="demo-banner"';
+      const render = (view, model) => new Promise((resolve, reject) => {
+        app.render(view, model, (err, out) => (err ? reject(err) : resolve(out)));
+      });
+
+      it('shows the demo banner on the dashboard, run and error pages in static mode', async () => {
+        const locals = { ...pageLocals({ base: '/demo', mode: 'static' }), repoUrl: 'https://github.com/example/repo' };
+        const pages = {
+          index: await render('index', { ...indexModel(), ...locals }),
+          run: await render('run-detail', { ...runDetailModel({ runId: 'api-run-1', storageRoot }), ...locals }),
+          error: await render('layout', { title: 'Page not found', heading: 'Page not found', message: '', ...locals })
+        };
+        for (const [name, html] of Object.entries(pages)) {
+          expect(html, name).toContain(BANNER);
+          expect(html, name).toContain('approvals are simulated and reset when you reload');
+          expect(html, name).toContain('href="https://github.com/example/repo"');
+          expect(html, name).toContain('data-mode="static"');
+          expectAllLocalUrlsUnder(html, '/demo', name);
+        }
+        // Approve/Reject stay in the page; review-actions.js simulates them in static mode
+        expect(pages.run).toContain('Approve & Update Baseline');
+        expect(pages.run).toContain('<script type="module" src="/demo/js/review-actions.js"></script>');
+        expect(app.locals.mode).toBe('live');
+      });
+
+      it('never shows the demo banner in live mode', async () => {
+        for (const page of ['/', '/runs/api-run-1', '/runs/no-such-run']) {
+          const html = await (await fetch(`${baseUrl}${page}`)).text();
+          expect(html, page).toContain('data-mode="live"');
+          expect(html, page).not.toContain(BANNER);
+        }
+        const rendered = await render('run-detail', { ...runDetailModel({ runId: 'api-run-1', storageRoot }), ...pageLocals() });
+        expect(rendered).not.toContain(BANNER);
+      });
+
+      it('omits the GitHub link when no repoUrl is given', async () => {
+        const html = await render('index', { ...indexModel(), ...pageLocals({ mode: 'static' }) });
+        expect(html).toContain(BANNER);
+        expect(html).not.toContain('demo-banner-link');
+      });
     });
 
     it('encodes run ids in links and the encoded link opens the run', async () => {
