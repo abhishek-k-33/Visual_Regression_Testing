@@ -7,25 +7,35 @@
 /* @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap'); */
 
 :root {
-  /* Exact Specified Color Palette */
+  /* Dark theme (the default, and what you get without JavaScript). The light theme
+     overrides every colour token in :root[data-theme="light"] at the end of this file. */
+  color-scheme: dark;
+
+  /* Surfaces */
   --bg-main: #0B1020;
   --bg-secondary: #111827;
   --bg-surface: #151F33;
   --bg-card: #151F33;
   --bg-table: #111A2B;
   --border-color: #26344D;
-  
+  /* Boundary of form controls (search box, theme toggle): >= 3:1 against the page */
+  --control-border: #64779A;
+
   /* Brand Accents */
   --primary-blue: #2997FF;
   --bright-cyan: #38BDF8;
   --success-green: #10B981;
   --approved-purple: #8B5CF6;
-  --error-red: #F43F5E;
-  
+  /* M6 contrast fix: was #F43F5E (4.2:1 on the failed-pill tint) */
+  --error-red: #F9657C;
+
   /* Text */
   --text-primary: #F8FAFC;
   --text-secondary: #A5B4CF;
-  --text-muted: #64748B;
+  /* M6 contrast fix: was #64748B (4.0:1 on --bg-main, 3.5:1 on --bg-card) */
+  --text-muted: #8391A7;
+  /* Text on a solid accent fill (hovered Approve / Reject / Inspect, slider handle) */
+  --on-accent: #0B1020;
 
   /* Card Specific Palette */
   --kpi-blue-start: #142C55;
@@ -40,12 +50,69 @@
   --kpi-red-end: #4C1932;
   --kpi-red-border: #79334B;
 
+  /* M6 contrast fix: KPI labels used --text-secondary (3.5:1 on the blue card) */
+  --kpi-label: #CBD5E6;
+  --kpi-value: #FFFFFF;
+  --kpi-value-green: #34D399;
+  --kpi-value-red: #FDA4AF;
+  --kpi-blue-icon: #FFFFFF;
+  --kpi-green-icon: #A7F3D0;
+  --kpi-red-icon: #FDA4AF;
+  --kpi-blue-icon-bg: rgba(41, 151, 255, 0.22);
+  --kpi-blue-icon-border: rgba(41, 151, 255, 0.42);
+  --kpi-blue-icon-shadow: rgba(7, 86, 165, 0.4);
+  --kpi-green-icon-bg: rgba(16, 185, 129, 0.22);
+  --kpi-green-icon-border: rgba(16, 185, 129, 0.42);
+  --kpi-green-icon-shadow: rgba(6, 95, 70, 0.4);
+  --kpi-red-icon-bg: rgba(244, 63, 94, 0.22);
+  --kpi-red-icon-border: rgba(244, 63, 94, 0.42);
+  --kpi-red-icon-shadow: rgba(76, 25, 50, 0.4);
+  /* Decorative curves (drawn at 28% / 14% opacity) */
+  --kpi-blue-curve: #FFFFFF;
+  --kpi-green-curve: #A7F3D0;
+  --kpi-red-curve: #FDA4AF;
+
+  /* Page heading icon and navbar brand */
+  --hero-gradient-start: #2563EB;
+  --hero-gradient-end: #7C3AED;
+  --hero-icon: #FFFFFF;
+  --hero-shadow: rgba(37, 99, 235, 0.35);
+  --brand-icon-bg-start: rgba(41, 151, 255, 0.25);
+  --brand-icon-bg-end: rgba(56, 189, 248, 0.08);
+  --brand-icon-border: rgba(41, 151, 255, 0.45);
+
+  /* Tints and overlays */
+  --hover-overlay: rgba(255, 255, 255, 0.05);
+  --row-hover: rgba(255, 255, 255, 0.035);
+  --subtle-fill: rgba(255, 255, 255, 0.06);
+  --badge-bg: rgba(17, 24, 39, 0.85);
+  --tab-active-bg: var(--bg-secondary);
+  --primary-tint-bg: rgba(41, 151, 255, 0.16);
+  --primary-tint-border: rgba(41, 151, 255, 0.4);
+  --primary-glow: rgba(41, 151, 255, 0.35);
+  --focus-ring: rgba(41, 151, 255, 0.25);
+  --success-tint-bg: rgba(16, 185, 129, 0.16);
+  --success-tint-border: rgba(16, 185, 129, 0.45);
+  --success-glow: rgba(16, 185, 129, 0.6);
+  --danger-tint-bg: rgba(244, 63, 94, 0.16);
+  --danger-tint-border: rgba(244, 63, 94, 0.45);
+
+  /* Shadows */
+  --shadow-tab: 0 2px 4px rgba(0, 0, 0, 0.3);
+  --shadow-kpi: 0 6px 24px rgba(0, 0, 0, 0.28);
+  --shadow-kpi-hover: 0 8px 28px rgba(0, 0, 0, 0.36);
+  --shadow-table: 0 6px 24px rgba(0, 0, 0, 0.3);
+  --shadow-snapshot: 0 4px 20px rgba(0, 0, 0, 0.25);
+  --shadow-handle: 0 4px 14px rgba(0, 0, 0, 0.7);
+
   /* Backward Compatibility Aliases */
   --bg-primary: var(--bg-main);
   --accent-blue: var(--bright-cyan);
+  /* Status pill text: used for text, so each one meets 4.5:1 on its tint */
   --status-passed-text: var(--success-green);
   --status-failed-text: var(--error-red);
-  --status-approved-text: var(--approved-purple);
+  /* M6 contrast fix: --approved-purple is 3.5:1 on its tint; it stays for strokes */
+  --status-approved-text: #A78BFA;
 
   /* Status Colors with Clean Alpha Tints */
   --status-passed-bg: rgba(16, 185, 129, 0.14);
@@ -139,8 +206,8 @@ a:hover {
   width: 30px;
   height: 30px;
   border-radius: var(--radius-sm);
-  background: linear-gradient(135deg, rgba(41, 151, 255, 0.25) 0%, rgba(56, 189, 248, 0.08) 100%);
-  border: 1px solid rgba(41, 151, 255, 0.45);
+  background: linear-gradient(135deg, var(--brand-icon-bg-start) 0%, var(--brand-icon-bg-end) 100%);
+  border: 1px solid var(--brand-icon-border);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -178,7 +245,7 @@ a:hover {
 
 .navbar-link:hover {
   color: var(--text-primary);
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: var(--hover-overlay);
 }
 
 /* Static demo (GitHub Pages build): banner under the navbar + note after a simulated action */
@@ -268,16 +335,16 @@ a:hover {
   width: 56px;
   height: 56px;
   border-radius: 14px;
-  background: linear-gradient(135deg, #2563EB 0%, #7C3AED 100%);
+  background: linear-gradient(135deg, var(--hero-gradient-start) 0%, var(--hero-gradient-end) 100%);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 18px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 4px 18px var(--hero-shadow);
   flex-shrink: 0;
 }
 
 .heading-icon-container svg {
-  color: #FFFFFF;
+  color: var(--hero-icon);
 }
 
 .heading-text-group {
@@ -325,7 +392,7 @@ a:hover {
   height: 8px;
   border-radius: 50%;
   background-color: var(--success-green);
-  box-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
+  box-shadow: 0 0 10px var(--success-glow);
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -347,13 +414,13 @@ a:hover {
   display: flex;
   align-items: center;
   gap: 20px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--shadow-kpi);
   transition: var(--transition);
 }
 
 .kpi-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.36);
+  box-shadow: var(--shadow-kpi-hover);
 }
 
 /* Blue Card: #142C55 to #0756A5, border #285DA0 */
@@ -387,33 +454,33 @@ a:hover {
 }
 
 .kpi-card-blue .kpi-icon-circle {
-  background: rgba(41, 151, 255, 0.22);
-  border: 1px solid rgba(41, 151, 255, 0.42);
-  box-shadow: 0 4px 14px rgba(7, 86, 165, 0.4);
+  background: var(--kpi-blue-icon-bg);
+  border: 1px solid var(--kpi-blue-icon-border);
+  box-shadow: 0 4px 14px var(--kpi-blue-icon-shadow);
 }
 
 .kpi-card-green .kpi-icon-circle {
-  background: rgba(16, 185, 129, 0.22);
-  border: 1px solid rgba(16, 185, 129, 0.42);
-  box-shadow: 0 4px 14px rgba(6, 95, 70, 0.4);
+  background: var(--kpi-green-icon-bg);
+  border: 1px solid var(--kpi-green-icon-border);
+  box-shadow: 0 4px 14px var(--kpi-green-icon-shadow);
 }
 
 .kpi-card-red .kpi-icon-circle {
-  background: rgba(244, 63, 94, 0.22);
-  border: 1px solid rgba(244, 63, 94, 0.42);
-  box-shadow: 0 4px 14px rgba(76, 25, 50, 0.4);
+  background: var(--kpi-red-icon-bg);
+  border: 1px solid var(--kpi-red-icon-border);
+  box-shadow: 0 4px 14px var(--kpi-red-icon-shadow);
 }
 
 .kpi-icon-circle svg {
-  color: #FFFFFF;
+  color: var(--kpi-blue-icon);
 }
 
 .kpi-card-green .kpi-icon-circle svg {
-  color: #A7F3D0;
+  color: var(--kpi-green-icon);
 }
 
 .kpi-card-red .kpi-icon-circle svg {
-  color: #FDA4AF;
+  color: var(--kpi-red-icon);
 }
 
 .kpi-content {
@@ -426,7 +493,7 @@ a:hover {
 .kpi-label {
   font-size: 15px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--kpi-label);
   margin-bottom: 4px;
   letter-spacing: -0.01em;
 }
@@ -437,15 +504,15 @@ a:hover {
   line-height: 1;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
-  color: #FFFFFF;
+  color: var(--kpi-value);
 }
 
 .kpi-value-green {
-  color: #34D399;
+  color: var(--kpi-value-green);
 }
 
 .kpi-value-red {
-  color: #FDA4AF;
+  color: var(--kpi-value-red);
 }
 
 /* Decorative subtle curved SVG line along bottom-right */
@@ -498,9 +565,9 @@ a:hover {
 }
 
 .filter-tab.active {
-  background-color: var(--bg-secondary);
+  background-color: var(--tab-active-bg);
   color: var(--text-primary);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-tab);
 }
 
 .search-input-wrapper {
@@ -518,7 +585,7 @@ a:hover {
 
 .search-input {
   background-color: var(--bg-surface);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--control-border);
   color: var(--text-primary);
   font-size: 13px;
   padding: 9px 14px 9px 38px;
@@ -530,7 +597,7 @@ a:hover {
 
 .search-input:focus {
   border-color: var(--primary-blue);
-  box-shadow: 0 0 0 2px rgba(41, 151, 255, 0.25);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .search-input::placeholder {
@@ -545,7 +612,7 @@ a:hover {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-card);
   overflow: hidden;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-table);
 }
 
 .table-responsive {
@@ -588,7 +655,7 @@ tbody tr {
 }
 
 tbody tr:hover {
-  background-color: rgba(255, 255, 255, 0.035);
+  background-color: var(--row-hover);
 }
 
 /* Status Pills */
@@ -607,31 +674,31 @@ tbody tr:hover {
 
 .status-pill-passed {
   background-color: var(--status-passed-bg);
-  color: var(--success-green);
+  color: var(--status-passed-text);
   border-color: var(--status-passed-border);
 }
 
 .status-pill-approved {
   background-color: var(--status-approved-bg);
-  color: var(--approved-purple);
+  color: var(--status-approved-text);
   border-color: var(--status-approved-border);
 }
 
 .status-pill-failed {
   background-color: var(--status-failed-bg);
-  color: var(--error-red);
+  color: var(--status-failed-text);
   border-color: var(--status-failed-border);
 }
 
 .status-pill-rejected {
   background-color: var(--status-rejected-bg);
-  color: var(--error-red);
+  color: var(--status-failed-text);
   border-color: var(--status-rejected-border);
 }
 
 .status-pill-new {
   background-color: var(--status-new-bg);
-  color: var(--bright-cyan);
+  color: var(--status-new-text);
   border-color: var(--status-new-border);
 }
 
@@ -662,7 +729,7 @@ tbody tr:hover {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background-color: rgba(17, 24, 39, 0.85);
+  background-color: var(--badge-bg);
   border: 1px solid var(--border-color);
   padding: 4px 10px;
   border-radius: var(--radius-sm);
@@ -723,9 +790,9 @@ tbody tr:hover {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background-color: rgba(41, 151, 255, 0.16);
+  background-color: var(--primary-tint-bg);
   color: var(--primary-blue);
-  border: 1px solid rgba(41, 151, 255, 0.4);
+  border: 1px solid var(--primary-tint-border);
   padding: 7px 16px;
   border-radius: var(--radius-sm);
   font-size: 13px;
@@ -737,9 +804,9 @@ tbody tr:hover {
 
 .btn-inspect:hover {
   background-color: var(--primary-blue);
-  color: #0B1020;
+  color: var(--on-accent);
   border-color: var(--primary-blue);
-  box-shadow: 0 2px 10px rgba(41, 151, 255, 0.35);
+  box-shadow: 0 2px 10px var(--primary-glow);
   text-decoration: none;
 }
 
@@ -825,7 +892,7 @@ tbody tr:hover {
   border-radius: var(--radius-card);
   margin-bottom: 28px;
   overflow: hidden;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-snapshot);
 }
 
 .snapshot-header {
@@ -858,7 +925,7 @@ tbody tr:hover {
 }
 
 .viewport-badge {
-  background-color: rgba(255, 255, 255, 0.06);
+  background-color: var(--subtle-fill);
   border: 1px solid var(--border-color);
   color: var(--text-secondary);
   padding: 4px 10px;
@@ -877,9 +944,9 @@ tbody tr:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  background-color: rgba(16, 185, 129, 0.16);
+  background-color: var(--success-tint-bg);
   color: var(--success-green);
-  border: 1px solid rgba(16, 185, 129, 0.45);
+  border: 1px solid var(--success-tint-border);
   padding: 8px 16px;
   font-size: 13px;
   font-weight: 600;
@@ -890,16 +957,16 @@ tbody tr:hover {
 
 .btn-approve:hover {
   background-color: var(--success-green);
-  color: #0B1020;
+  color: var(--on-accent);
 }
 
 .btn-reject {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  background-color: rgba(244, 63, 94, 0.16);
+  background-color: var(--danger-tint-bg);
   color: var(--error-red);
-  border: 1px solid rgba(244, 63, 94, 0.45);
+  border: 1px solid var(--danger-tint-border);
   padding: 8px 16px;
   font-size: 13px;
   font-weight: 600;
@@ -910,7 +977,7 @@ tbody tr:hover {
 
 .btn-reject:hover {
   background-color: var(--error-red);
-  color: #0B1020;
+  color: var(--on-accent);
 }
 
 /* Tabs Navigation */
@@ -1058,8 +1125,8 @@ tbody tr:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.7);
-  color: #0B1020;
+  box-shadow: var(--shadow-handle);
+  color: var(--on-accent);
   font-size: 15px;
   font-weight: 700;
 }
@@ -1154,9 +1221,9 @@ tbody tr:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  background-color: rgba(16, 185, 129, 0.16);
+  background-color: var(--success-tint-bg);
   color: var(--success-green);
-  border: 1px solid rgba(16, 185, 129, 0.45);
+  border: 1px solid var(--success-tint-border);
   padding: 8px 16px;
   font-family: inherit;
   font-size: 13px;
@@ -1168,7 +1235,7 @@ tbody tr:hover {
 
 .btn-approve-all:hover:not(:disabled) {
   background-color: var(--success-green);
-  color: var(--bg-main);
+  color: var(--on-accent);
 }
 
 .btn-approve-all:focus-visible {
@@ -1194,7 +1261,7 @@ tbody tr:hover {
   font-weight: 600;
   color: var(--primary-blue);
   padding: 4px 10px;
-  border: 1px solid rgba(41, 151, 255, 0.4);
+  border: 1px solid var(--primary-tint-border);
   border-radius: var(--radius-sm);
   text-decoration: none;
   transition: var(--transition);
@@ -1202,7 +1269,7 @@ tbody tr:hover {
 
 .history-link:hover,
 .history-link:focus-visible {
-  background-color: rgba(41, 151, 255, 0.16);
+  background-color: var(--primary-tint-bg);
   text-decoration: none;
 }
 
@@ -1339,7 +1406,7 @@ tbody tr:hover {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.03em;
-  color: var(--approved-purple);
+  color: var(--status-approved-text);
   background-color: var(--status-approved-bg);
   border: 1px dashed var(--status-approved-border);
 }
@@ -1412,5 +1479,456 @@ tbody tr:hover {
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+  }
+}
+
+/* ==========================================================================
+   M6: light theme, theme toggle, snapshot counts and phone layout
+   ========================================================================== */
+
+/* Light theme. Set on <html> by the inline script in partials/header.ejs (stored
+   'vrt-theme', else prefers-color-scheme) and by js/theme.js. Overrides every colour
+   token from :root; screenshots and diff images keep their own colours. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-main: #EEF2F8;
+  --bg-secondary: #F6F8FC;
+  --bg-surface: #FFFFFF;
+  --bg-card: #FFFFFF;
+  --bg-table: #FFFFFF;
+  --border-color: #D8DFEA;
+  --control-border: #76869D;
+
+  --primary-blue: #0A66C2;
+  --bright-cyan: #0C6B85;
+  --success-green: #047857;
+  --approved-purple: #7C3AED;
+  --error-red: #BE123C;
+
+  --text-primary: #0F172A;
+  --text-secondary: #475569;
+  --text-muted: #5A6A80;
+  --on-accent: #FFFFFF;
+
+  --kpi-blue-start: #EEF5FF;
+  --kpi-blue-end: #D3E4FB;
+  --kpi-blue-border: #B4CDEE;
+  --kpi-green-start: #EDF9F3;
+  --kpi-green-end: #CFEEDF;
+  --kpi-green-border: #A6D9C2;
+  --kpi-red-start: #FEF1F4;
+  --kpi-red-end: #F9DAE3;
+  --kpi-red-border: #EDB4C4;
+
+  --kpi-label: #334155;
+  --kpi-value: #0B3F7A;
+  --kpi-value-green: #065F46;
+  --kpi-value-red: #9F1239;
+  --kpi-blue-icon: #0A66C2;
+  --kpi-green-icon: #047857;
+  --kpi-red-icon: #BE123C;
+  --kpi-blue-icon-bg: rgba(255, 255, 255, 0.7);
+  --kpi-blue-icon-border: rgba(10, 102, 194, 0.3);
+  --kpi-blue-icon-shadow: rgba(10, 102, 194, 0.12);
+  --kpi-green-icon-bg: rgba(255, 255, 255, 0.7);
+  --kpi-green-icon-border: rgba(4, 120, 87, 0.3);
+  --kpi-green-icon-shadow: rgba(4, 120, 87, 0.12);
+  --kpi-red-icon-bg: rgba(255, 255, 255, 0.7);
+  --kpi-red-icon-border: rgba(190, 18, 60, 0.3);
+  --kpi-red-icon-shadow: rgba(190, 18, 60, 0.12);
+  --kpi-blue-curve: #0A66C2;
+  --kpi-green-curve: #047857;
+  --kpi-red-curve: #BE123C;
+
+  --hero-gradient-start: #2563EB;
+  --hero-gradient-end: #7C3AED;
+  --hero-icon: #FFFFFF;
+  --hero-shadow: rgba(37, 99, 235, 0.25);
+  --brand-icon-bg-start: rgba(10, 102, 194, 0.14);
+  --brand-icon-bg-end: rgba(12, 107, 133, 0.04);
+  --brand-icon-border: rgba(10, 102, 194, 0.35);
+
+  --hover-overlay: rgba(15, 23, 42, 0.05);
+  --row-hover: rgba(15, 23, 42, 0.03);
+  --subtle-fill: rgba(15, 23, 42, 0.04);
+  --badge-bg: #F1F5F9;
+  --tab-active-bg: #E2EAF6;
+  --primary-tint-bg: rgba(10, 102, 194, 0.08);
+  --primary-tint-border: rgba(10, 102, 194, 0.35);
+  --primary-glow: rgba(10, 102, 194, 0.25);
+  --focus-ring: rgba(10, 102, 194, 0.25);
+  --success-tint-bg: rgba(4, 120, 87, 0.07);
+  --success-tint-border: rgba(4, 120, 87, 0.4);
+  --success-glow: rgba(4, 120, 87, 0.35);
+  --danger-tint-bg: rgba(190, 18, 60, 0.06);
+  --danger-tint-border: rgba(190, 18, 60, 0.4);
+
+  --shadow-tab: 0 1px 2px rgba(15, 23, 42, 0.12);
+  --shadow-kpi: 0 1px 2px rgba(15, 23, 42, 0.05), 0 6px 18px rgba(15, 23, 42, 0.06);
+  --shadow-kpi-hover: 0 2px 4px rgba(15, 23, 42, 0.06), 0 10px 24px rgba(15, 23, 42, 0.1);
+  --shadow-table: 0 1px 2px rgba(15, 23, 42, 0.05), 0 6px 18px rgba(15, 23, 42, 0.05);
+  --shadow-snapshot: 0 1px 2px rgba(15, 23, 42, 0.05), 0 6px 18px rgba(15, 23, 42, 0.05);
+  --shadow-handle: 0 2px 8px rgba(15, 23, 42, 0.35);
+
+  --status-approved-text: #6D28D9;
+  --status-passed-bg: rgba(4, 120, 87, 0.08);
+  --status-passed-border: rgba(4, 120, 87, 0.35);
+  --status-approved-bg: rgba(124, 58, 237, 0.08);
+  --status-approved-border: rgba(124, 58, 237, 0.35);
+  --status-failed-bg: rgba(190, 18, 60, 0.07);
+  --status-failed-border: rgba(190, 18, 60, 0.35);
+  --status-rejected-bg: rgba(190, 18, 60, 0.07);
+  --status-rejected-border: rgba(190, 18, 60, 0.35);
+  --status-new-bg: rgba(12, 107, 133, 0.08);
+  --status-new-border: rgba(12, 107, 133, 0.35);
+}
+
+/* Theme toggle (navbar). Needs JS, so it stays hidden until the head script has run. */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.theme-toggle:hover {
+  color: var(--text-primary);
+  background-color: var(--hover-overlay);
+}
+
+:root:not([data-theme]) .theme-toggle,
+.theme-icon-sun,
+:root[data-theme="light"] .theme-icon-moon {
+  display: none;
+}
+
+:root[data-theme="light"] .theme-icon-sun {
+  display: block;
+}
+
+/* KPI curves are drawn in currentColor (index.ejs) */
+.kpi-card-blue .kpi-curve { color: var(--kpi-blue-curve); }
+.kpi-card-green .kpi-curve { color: var(--kpi-green-curve); }
+.kpi-card-red .kpi-curve { color: var(--kpi-red-curve); }
+
+/* Snapshots column: total on top, then one coloured count per status in the run */
+.snapshots-summary {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.snapshots-sub {
+  flex-wrap: wrap;
+}
+
+.snapshots-sub {
+  column-gap: 8px;
+  row-gap: 2px;
+}
+
+.new-count {
+  color: var(--status-new-text);
+  font-weight: 600;
+}
+
+.approved-count {
+  color: var(--status-approved-text);
+  font-weight: 600;
+}
+
+.rejected-count {
+  color: var(--error-red);
+  font-weight: 600;
+}
+
+/* Slider: touches that start on the divider drag it instead of scrolling the page,
+   and the divider is easier to grab than its 2px line. */
+.slider-divider {
+  touch-action: none;
+}
+
+.slider-handle-pill {
+  flex-shrink: 0; /* it sits in the 2px-wide divider and was squeezed into an oval */
+}
+
+.slider-divider::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -14px;
+  right: -14px;
+}
+
+/* Long branch names truncate (full name in the title attribute) */
+.git-badge {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.git-badge > span,
+.git-badge-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-badge-text {
+  display: inline-block;
+}
+
+.git-context {
+  max-width: 100%;
+}
+
+/* Tables size columns by content, so give the badge a hard cap there */
+#test-runs-table .git-badge,
+.history-table .git-badge {
+  max-width: 240px;
+}
+
+.error-container {
+  overflow-wrap: anywhere;
+}
+
+/* Phones (360-680px) */
+@media (max-width: 680px) {
+  .navbar-right {
+    gap: 4px;
+  }
+  .theme-toggle {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* Toolbar: 2x2 filter tabs, full-width search */
+  .table-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .filter-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+  .filter-tab {
+    min-height: 44px;
+    padding: 8px 6px;
+  }
+  .search-input-wrapper,
+  .search-input {
+    width: 100%;
+  }
+  .search-input {
+    min-height: 44px;
+  }
+
+  /* Runs table and history table -> stacked cards; labels come from data-label */
+  #test-runs-table thead,
+  .history-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+  #test-runs-table,
+  #test-runs-table tbody,
+  .history-table,
+  .history-table tbody {
+    display: block;
+    width: 100%;
+  }
+  #test-runs-table tbody tr,
+  .history-table tbody tr {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px;
+    border-bottom: 1px solid var(--border-color);
+  }
+  #test-runs-table tbody tr:last-child,
+  .history-table tbody tr:last-child {
+    border-bottom: none;
+  }
+  #test-runs-table tbody td,
+  .history-table tbody td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    padding: 0;
+    border-bottom: none;
+    text-align: right;
+  }
+  #test-runs-table tbody td[colspan] {
+    display: block;
+  }
+  #test-runs-table tbody td[data-label]::before,
+  .history-table tbody td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    text-align: left;
+  }
+  #test-runs-table .run-id-link,
+  .history-table .run-id-link {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .git-context {
+    justify-content: flex-end;
+    min-width: 0;
+    max-width: 100%;
+  }
+  #test-runs-table .git-badge,
+  .history-table .git-badge {
+    max-width: 100%;
+  }
+  .history-table .git-badge {
+    display: block;
+  }
+  .snapshots-summary {
+    align-items: flex-end;
+  }
+  .snapshots-sub {
+    justify-content: flex-end;
+  }
+  #test-runs-table td.run-actions-cell {
+    text-align: left !important;
+  }
+  #test-runs-table td.run-actions-cell .btn-inspect {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  /* History cards: thumbnail on top, run link + time full width */
+  .history-table tbody td.history-thumb-cell {
+    order: -1;
+    display: block;
+  }
+  .history-thumb-link {
+    display: block;
+  }
+  .history-thumb {
+    width: 100%;
+    height: 160px;
+  }
+  .history-table tbody td.history-run-cell {
+    display: block;
+    text-align: left;
+  }
+  .history-row-baseline-changed td:first-child {
+    box-shadow: none;
+  }
+  .history-table tbody tr.history-row-baseline-changed {
+    box-shadow: inset 3px 0 0 var(--approved-purple);
+  }
+
+  .pagination-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 14px 16px;
+    text-align: center;
+  }
+  .pagination-controls {
+    justify-content: space-between;
+  }
+  .pagination-btn {
+    min-height: 44px;
+  }
+
+  /* Run detail */
+  .detail-header-card,
+  .history-chart-card {
+    padding: 18px 16px;
+  }
+  .detail-run-id {
+    font-size: 19px;
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+  .detail-title-row > * {
+    min-width: 0;
+  }
+  .btn-approve-all {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+  }
+  .detail-meta-row {
+    gap: 6px 12px;
+    font-size: 13px;
+  }
+  .snapshot-header {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 14px 16px;
+  }
+  .snapshot-title {
+    min-width: 0;
+    gap: 8px;
+  }
+  .route-pill {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .snapshot-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .btn-approve,
+  .btn-reject {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+  }
+  .tabs-nav {
+    padding: 0 8px;
+    gap: 0;
+    overflow-x: auto;
+  }
+  .tab-btn {
+    flex: 1 1 auto;
+    min-height: 44px;
+    padding: 10px 8px;
+    font-size: 13px;
+  }
+  .tab-panel {
+    padding: 14px;
+  }
+  .side-by-side {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+  }
+  .slider-handle-pill {
+    width: 48px;
+    height: 48px;
+    font-size: 20px;
   }
 }

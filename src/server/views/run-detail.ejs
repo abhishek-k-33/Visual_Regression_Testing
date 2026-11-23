@@ -61,13 +61,13 @@
               <circle cx="6" cy="18" r="3"></circle>
               <path d="M18 9a9 9 0 0 1-9 9"></path>
             </svg>
-            <span><%= run.branch %></span>
+            <span title="<%= run.branch %>"><%= run.branch %></span>
           </span>
         <% } %>
         <% if (run.commit_hash) { %>
           <span class="git-badge git-commit">#<%= run.commit_hash %></span>
         <% } %>
-        <span>• Created on <%= run.created_at %></span>
+        <span>• Created on <% if (run.createdAtIso) { %><time datetime="<%= run.createdAtIso %>"><%= run.created_at %> UTC</time><% } else { %><%= run.created_at %> UTC<% } %></span>
         <span>• <%= snapshots.length %> total snapshot(s)</span>
       </div>
     </div>

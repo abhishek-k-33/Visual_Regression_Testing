@@ -187,7 +187,8 @@ export function getAllTestRuns(db = getDb()) {
       SUM(CASE WHEN s.status IN ('DIFF', 'MISSING_BASELINE') THEN 1 ELSE 0 END) as diff_count,
       SUM(CASE WHEN s.status = 'MATCH' THEN 1 ELSE 0 END) as match_count,
       SUM(CASE WHEN s.status = 'NEW_BASELINE' THEN 1 ELSE 0 END) as new_baseline_count,
-      SUM(CASE WHEN s.status = 'APPROVED' THEN 1 ELSE 0 END) as approved_count
+      SUM(CASE WHEN s.status = 'APPROVED' THEN 1 ELSE 0 END) as approved_count,
+      SUM(CASE WHEN s.status = 'REJECTED' THEN 1 ELSE 0 END) as rejected_count
     FROM test_runs r
     LEFT JOIN snapshots s ON s.run_id = r.id
     GROUP BY r.id

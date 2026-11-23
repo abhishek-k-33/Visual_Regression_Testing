@@ -12,6 +12,8 @@ import {
   historyPath,
   baselineChange,
   buildSparkline,
+  snapshotCounts,
+  sqliteUtcToIso,
   HISTORY_LIMIT
 } from '../src/server/viewModels.js';
 
@@ -143,6 +145,37 @@ describe('view models (src/server/viewModels.js)', () => {
 
     it('handles an empty database', () => {
       expect(indexModel({ db })).toMatchObject({ runs: [], stats: { total: 0, failed: 0 } });
+    });
+
+    it('gives each run its non-zero snapshot counts and an ISO time', () => {
+      createTestRun({ id: 'base', status: 'PASSED', created_at: '2026-11-20 09:00:00' }, db);
+      createTestRun({ id: 'mixed', status: 'FAILED', created_at: '2026-11-21 09:00:00' }, db);
+      createTestRun({ id: 'empty', status: 'PASSED', created_at: '2026-11-22 09:00:00' }, db);
+      const snap = (run_id, route, status) => createSnapshot({ run_id, route, viewport: 'desktop', status, current_path: path.join(storageRoot, 'runs', run_id, 'a.png') }, db);
+      snap('base', '/a', 'NEW_BASELINE');
+      snap('base', '/b', 'NEW_BASELINE');
+      for (const [route, status] of [['/a', 'DIFF'], ['/b', 'MISSING_BASELINE'], ['/c', 'MATCH'], ['/d', 'APPROVED'], ['/e', 'REJECTED']]) snap('mixed', route, status);
+
+      const runs = Object.fromEntries(indexModel({ db }).runs.map((r) => [r.id, r]));
+      expect(runs.base.snapshotCounts).toEqual([{ count: 2, label: 'new baseline', cls: 'new-count' }]);
+      expect(runs.mixed.snapshotCounts.map((p) => `${p.count} ${p.label}`)).toEqual(['2 diff', '1 rejected', '1 approved', '1 match']);
+      expect(runs.empty.snapshotCounts).toEqual([]);
+      expect(runs.base.createdAtIso).toBe('2026-11-20T09:00:00Z');
+      expect(runDetailModel({ db, runId: 'base', storageRoot }).run.createdAtIso).toBe('2026-11-20T09:00:00Z');
+    });
+  });
+
+  describe('snapshotCounts / sqliteUtcToIso', () => {
+    it('lists approved runs as approved, not "0 match"', () => {
+      expect(snapshotCounts({ total_snapshots: 3, approved_count: 2, match_count: 1, diff_count: 0 }))
+        .toEqual([{ count: 2, label: 'approved', cls: 'approved-count' }, { count: 1, label: 'match', cls: 'match-count' }]);
+      expect(snapshotCounts({ total_snapshots: 0, match_count: null })).toEqual([]);
+    });
+
+    it('converts only the SQLite UTC format', () => {
+      expect(sqliteUtcToIso('2026-11-23 10:20:30')).toBe('2026-11-23T10:20:30Z');
+      expect(sqliteUtcToIso('yesterday')).toBeNull();
+      expect(sqliteUtcToIso(null)).toBeNull();
     });
   });
 

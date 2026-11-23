@@ -144,6 +144,16 @@ describe('static demo build (end to end)', () => {
     }
   });
 
+  it('ships the theme toggle on every page, loaded under the base path', () => {
+    expect(fs.existsSync(path.join(out, 'js', 'theme.js'))).toBe(true);
+    for (const rel of ['index.html', '404.html', ...DEMO_RUNS.map((r) => `runs/${r.id}.html`), ...HISTORY_PAGES]) {
+      const html = read(rel);
+      expect(html, rel).toContain(`<script type="module" src="${BASE}/js/theme.js"></script>`);
+      expect(html, rel).toContain('data-theme-toggle');
+      expect(html.indexOf("localStorage.getItem('vrt-theme')"), rel).toBeLessThan(html.indexOf('rel="stylesheet"'));
+    }
+  });
+
   it('contains no database, summaries, manifests or unexpected files', () => {
     const files = walk(out);
     expect(files.filter((f) => /\.sqlite|\.db$|\.md$|run\.json$/i.test(f))).toEqual([]);

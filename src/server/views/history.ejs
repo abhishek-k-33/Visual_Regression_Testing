@@ -70,7 +70,7 @@
           <tbody>
             <% entries.forEach((e) => { %>
               <tr<%- e.baselineChanged ? ' class="history-row-baseline-changed"' : '' %>>
-                <td>
+                <td class="history-run-cell">
                   <a href="<%= url(e.runUrl) %>" class="run-id-link"><%= e.run_id %></a>
                   <div class="timestamp-text history-time">
                     <% if (e.createdAtIso) { %><time datetime="<%= e.createdAtIso %>"><%= e.created_at %> UTC</time><% } else { %><%= e.created_at || 'Unknown time' %> UTC<% } %>
@@ -82,16 +82,16 @@
                     </span>
                   <% } %>
                 </td>
-                <td>
+                <td data-label="Git">
                   <div class="git-context">
-                    <% if (e.branch) { %><span class="git-badge"><%= e.branch %></span><% } %>
+                    <% if (e.branch) { %><span class="git-badge git-badge-text" title="<%= e.branch %>"><%= e.branch %></span><% } %>
                     <% if (e.commit_hash) { %><span class="git-badge git-commit">#<%= e.commit_hash %></span><% } %>
                     <% if (!e.branch && !e.commit_hash) { %><span class="timestamp-text">—</span><% } %>
                   </div>
                 </td>
-                <td><span class="status-pill <%= e.statusPill.cls %>"><%= e.statusPill.label %></span></td>
-                <td class="history-mismatch"><%= e.mismatch.toFixed(2) %>%</td>
-                <td>
+                <td data-label="Status"><span class="status-pill <%= e.statusPill.cls %>"><%= e.statusPill.label %></span></td>
+                <td class="history-mismatch" data-label="Mismatch"><%= e.mismatch.toFixed(2) %>%</td>
+                <td class="history-thumb-cell">
                   <% if (e.currentUrl) { %>
                     <a href="<%= url(e.runUrl) %>" class="history-thumb-link">
                       <img class="history-thumb" src="<%= url(e.currentUrl) %>" loading="lazy" alt="Screenshot of <%= e.route %> at <%= viewport %> in run <%= e.run_id %>">

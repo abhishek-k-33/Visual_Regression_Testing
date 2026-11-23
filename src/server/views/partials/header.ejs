@@ -13,6 +13,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title><%= locals.title || 'Visual Regression Tool' %></title>
+<%# Theme: runs before the stylesheet so the first paint already has the right colours.
+    Stored choice ('vrt-theme' in localStorage) wins, otherwise the system preference.
+    No JS = no data-theme = the dark default. public/js/theme.js does the rest. -%>
+  <script>(function () { var t; try { t = localStorage.getItem('vrt-theme'); } catch (e) {} if (t !== 'light' && t !== 'dark') { t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; } document.documentElement.setAttribute('data-theme', t); })();</script>
   <link rel="stylesheet" href="<%= url('/css/styles.css') %>">
 </head>
 <body>
@@ -43,6 +47,17 @@
       </div>
 
       <div class="navbar-right">
+<%# Two-state toggle: aria-pressed="true" = dark theme on (synced by theme.js; hidden without JS). -%>
+        <button type="button" class="theme-toggle" data-theme-toggle aria-pressed="true" title="Toggle dark theme">
+          <svg class="theme-icon theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+          </svg>
+          <svg class="theme-icon theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path>
+          </svg>
+          <span class="visually-hidden">Dark theme</span>
+        </button>
         <% if (locals.navLink === 'back') { -%>
         <a href="<%= url('/') %>" class="navbar-link">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
