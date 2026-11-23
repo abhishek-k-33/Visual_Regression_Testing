@@ -5,7 +5,7 @@ import path from 'node:path';
 import app from '../src/server/app.js';
 import { initDb, closeDb, createTestRun, createSnapshot } from '../src/server/db.js';
 import { isAllowedHost } from '../src/server/security.js';
-import { indexModel, runDetailModel } from '../src/server/viewModels.js';
+import { indexModel, runDetailModel, historyModel } from '../src/server/viewModels.js';
 import { pageLocals } from '../src/server/urls.js';
 
 const SAME_ORIGIN_WRITE = { method: 'POST', headers: { 'X-Requested-With': 'test' } };
@@ -34,6 +34,7 @@ describe('Express Review Dashboard & REST API', () => {
   const baselineFile = path.join(storageRoot, 'baselines', 'index-desktop.png');
   const currentFile = path.join(storageRoot, 'runs', 'api-run-1', 'index-desktop.png');
   let snapshotId;
+  const historySnaps = {};
 
   beforeAll(async () => {
     fs.rmSync(testTmpDir, { recursive: true, force: true });
@@ -58,6 +59,22 @@ describe('Express Review Dashboard & REST API', () => {
       mismatch_percentage: 1.5,
       status: 'DIFF'
     }, db).id;
+
+    // History fixtures: route "/hist/page" (slug hist_page) at viewport "tablet", oldest first.
+    // hist-4 spells the route "/hist_page": same slug, same baseline file, same history.
+    for (const [id, createdAt, route, status, sha, mismatch] of [
+      ['hist-1', '2026-01-01 10:00:00', '/hist/page', 'NEW_BASELINE', 'A', 0],
+      ['hist-2', '2026-01-02 10:00:00', '/hist/page', 'DIFF', 'A', 4.25],
+      ['hist-3', '2026-01-03 10:00:00', '/hist/page', 'MATCH', 'B', 0],
+      ['hist-4', '2026-01-04 10:00:00', '/hist_page', 'MATCH', 'B', 0]
+    ]) {
+      createTestRun({ id, status: status === 'DIFF' ? 'FAILED' : 'PASSED', created_at: createdAt, branch: 'main', commit_hash: `c-${id}` }, db);
+      historySnaps[id] = createSnapshot({
+        run_id: id, route, viewport: 'tablet', status, baseline_sha256: sha, mismatch_percentage: mismatch,
+        baseline_path: path.join(storageRoot, 'baselines', 'hist_page-tablet.png'),
+        current_path: path.join(storageRoot, 'runs', id, 'hist_page-tablet.png')
+      }, db).id;
+    }
 
     await new Promise((resolve) => {
       server = app.listen(0, '127.0.0.1', () => {
@@ -121,6 +138,77 @@ describe('Express Review Dashboard & REST API', () => {
     expect(html).toContain('Approve & Update Baseline');
   });
 
+  describe('history page (GET /history/:slug/:viewport)', () => {
+    it('lists every run of the route at the viewport, newest first, with links, thumbnails and UTC times', async () => {
+      const res = await fetch(`${baseUrl}/history/hist_page/tablet`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('<title>History: /hist_page @ tablet</title>');
+      expect(html).toContain('<span class="breadcrumb-current">History</span>');
+
+      const runLinks = [...html.matchAll(/href="\/runs\/([^"#]+)#snapshot-(\d+)" class="run-id-link"/g)].map((m) => [m[1], Number(m[2])]);
+      expect(runLinks).toEqual(['hist-4', 'hist-3', 'hist-2', 'hist-1'].map((id) => [id, historySnaps[id]]));
+
+      expect(html).toContain('<time datetime="2026-01-02T10:00:00Z">2026-01-02 10:00:00 UTC</time>');
+      expect(html.match(/<img class="history-thumb" src="\/storage\/runs\/hist-\d\/hist_page-tablet\.png" loading="lazy" alt="Screenshot of \/hist[/_]page at tablet in run hist-\d">/g)).toHaveLength(4);
+      expect(html).toContain('<span class="status-pill status-pill-failed">DIFF</span>');
+      expect(html).toContain('4.25%');
+      expect(html).toContain('#c-hist-2');
+      expect(html).toMatch(/<svg class="history-sparkline"[^>]* role="img" aria-label="Mismatch over 4 runs, oldest to newest: min 0\.00%, max 4\.25%, latest 0\.00%"/);
+
+      // hist-3 is the first run compared against baseline B
+      expect(html.match(/<span>Baseline changed<\/span>/g)).toHaveLength(1);
+      expect(html.split('<tr').find((row) => row.includes('<span>Baseline changed</span>'))).toContain(`/runs/hist-3#snapshot-${historySnaps['hist-3']}`);
+
+      // No shared baseline file on disk -> no link to one
+      expect(html).not.toContain('View current baseline');
+      expect(html).toContain('No shared baseline exists');
+    });
+
+    it('links the current shared baseline when it exists', async () => {
+      const file = path.join(storageRoot, 'baselines', 'hist_page-tablet.png');
+      fs.writeFileSync(file, 'PNG');
+      try {
+        const html = await (await fetch(`${baseUrl}/history/hist_page/tablet`)).text();
+        expect(html).toContain('<a href="/storage/baselines/hist_page-tablet.png" class="btn-inspect">View current baseline</a>');
+      } finally {
+        fs.rmSync(file);
+      }
+    });
+
+    it('returns a 404 page for unknown slugs, unknown viewports and invalid viewports', async () => {
+      for (const page of [
+        '/history/no_such_route/tablet',
+        '/history/hist_page/watch',
+        '/history/hist_page/tab.let',
+        `/history/hist_page/${'x'.repeat(65)}`,
+        '/history/hist%2Fpage/tablet'
+      ]) {
+        const res = await fetch(`${baseUrl}${page}`);
+        expect(res.status, page).toBe(404);
+        const html = await res.text();
+        expect(html, page).toContain('History not found');
+        expect(html, page).not.toContain('history-sparkline');
+      }
+      // Encoded dot segments sent raw (fetch would normalise them away)
+      const { port } = server.address();
+      for (const reqPath of ['/history/hist_page/%2E%2E', '/history/%2E%2E/tablet', '/history/hist_page/..%2Ftablet']) {
+        const res = await rawRequest(port, { path: reqPath, headers: { Host: `127.0.0.1:${port}` } });
+        expect(res.status, reqPath).toBe(404);
+        expect(res.body, reqPath).toContain('History not found');
+      }
+    });
+
+    it('run detail cards link to their history and keep snapshot anchors', async () => {
+      const html = await (await fetch(`${baseUrl}/runs/api-run-1`)).text();
+      expect(html).toContain(`id="snapshot-${snapshotId}"`);
+      expect(html).toContain('<a href="/history/index/desktop" class="history-link" aria-label="History of / at desktop">History</a>');
+      const histRun = await (await fetch(`${baseUrl}/runs/hist-1`)).text();
+      expect(histRun).toContain('href="/history/hist_page/tablet"');
+      expect(histRun).toContain(`id="snapshot-${historySnaps['hist-1']}"`);
+    });
+  });
+
   describe('base path (sub-path hosting)', () => {
     // Every local href/src/action must go through url(), so a sub-path build works.
     function expectAllLocalUrlsUnder(html, prefix, label) {
@@ -142,7 +230,7 @@ describe('Express Review Dashboard & REST API', () => {
 
     it('prefixes every local URL on the dashboard and run pages, and exposes data-base', async () => {
       await withBase('/x', async () => {
-        for (const page of ['/', '/runs/api-run-1', '/runs/no-such-run']) {
+        for (const page of ['/', '/runs/api-run-1', '/runs/no-such-run', '/history/nope/desktop']) {
           const html = await (await fetch(`${baseUrl}${page}`)).text();
           expect(html, page).toContain('data-base="/x"');
           expect(html, page).toContain('data-mode="live"');
@@ -153,6 +241,27 @@ describe('Express Review Dashboard & REST API', () => {
         expect(runPage).toContain('<script type="module" src="/x/js/review-actions.js"></script>');
       });
       expect(app.locals.base).toBe('');
+    });
+
+    it('prefixes every local URL on the history page (live base and static pageLocals)', async () => {
+      await withBase('/x', async () => {
+        const html = await (await fetch(`${baseUrl}/history/hist_page/tablet`)).text();
+        expect(html).toContain('data-base="/x"');
+        expectAllLocalUrlsUnder(html, '/x', 'history (live)');
+        expect(html).toContain(`href="/x/runs/hist-2#snapshot-${historySnaps['hist-2']}"`);
+      });
+
+      const html = await new Promise((resolve, reject) => {
+        app.render('history', { ...historyModel({ slug: 'hist_page', viewport: 'tablet', storageRoot }), ...pageLocals({ base: '/x', mode: 'static' }) },
+          (err, out) => (err ? reject(err) : resolve(out)));
+      });
+      expect(html).toContain('data-mode="static"');
+      expect(html).toContain('class="demo-banner"');
+      expectAllLocalUrlsUnder(html, '/x', 'history (static)');
+      expect(html).toContain('src="/x/storage/runs/hist-1/hist_page-tablet.png"');
+      expect(html).toContain('href="/x/css/styles.css"');
+      expect(app.locals.base).toBe('');
+      expect(app.locals.mode).toBe('live');
     });
 
     it('prefixes every local URL on the error page', async () => {

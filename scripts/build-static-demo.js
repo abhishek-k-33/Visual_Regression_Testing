@@ -12,7 +12,8 @@
  *      demo-03-redesign   redesign   then approved here      -> APPROVED (new baseline)
  *      demo-04-pass       redesign                           -> PASSED (match)
  *      demo-05-regression regressed  left for visitors       -> FAILED (diff, pending)
- * 3. Renders index.html, runs/<id>.html and 404.html with the server's own templates in
+ * 3. Renders index.html, runs/<id>.html, history/<slug>/<viewport>.html (one per route and
+ *    viewport) and 404.html with the server's own templates in
  *    'static' mode (demo banner, simulated approve/reject), copies the CSS/JS and only
  *    the screenshots those pages reference.
  * 4. Checks the output: only expected file types, no database/manifests/summaries, and
@@ -59,6 +60,7 @@ const ALLOWED_OUTPUT_FILES = [
   /^\.nojekyll$/,
   /^\.vrt-static-demo$/,
   /^runs\/[A-Za-z0-9_-]+\.html$/,
+  /^history\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\.html$/,
   /^css\/[A-Za-z0-9_.-]+\.css$/,
   /^js\/[A-Za-z0-9_.-]+\.js$/,
   /^storage\/(runs|baselines)\/[A-Za-z0-9_\-./]+\.png$/
@@ -312,7 +314,8 @@ async function recordDemoRuns(storageRoot, dbApi) {
 async function renderSite({ outDir, base, repoUrl, storageRoot }) {
   const { default: app } = await import('../src/server/app.js');
   const { pageLocals } = await import('../src/server/urls.js');
-  const { indexModel, runDetailModel } = await import('../src/server/viewModels.js');
+  const { indexModel, runDetailModel, historyModel, historyPath } = await import('../src/server/viewModels.js');
+  const { getRouteViewportPairs } = await import('../src/server/db.js');
 
   const locals = { ...pageLocals({ base, mode: 'static' }), repoUrl };
   const render = (view, model) => new Promise((resolve, reject) => {
@@ -326,11 +329,20 @@ async function renderSite({ outDir, base, repoUrl, storageRoot }) {
   };
 
   // Read every model first (synchronous DB access), then render.
-  const { index, details } = withDb(path.join(storageRoot, 'data.sqlite'), (db) => {
+  const { index, details, histories } = withDb(path.join(storageRoot, 'data.sqlite'), (db) => {
     const model = indexModel({ db });
+    // One history page per route slug + viewport, at the same path the run pages link to.
+    const historyPages = new Map();
+    for (const { route, viewport } of getRouteViewportPairs(db)) {
+      const page = historyPath(route, viewport);
+      if (!page || historyPages.has(page)) continue;
+      const [, , slug] = page.split('/');
+      historyPages.set(page, historyModel({ db, slug, viewport, storageRoot }));
+    }
     return {
       index: model,
-      details: model.runs.map((run) => runDetailModel({ db, runId: run.id, storageRoot }))
+      details: model.runs.map((run) => runDetailModel({ db, runId: run.id, storageRoot })),
+      histories: historyPages
     };
   });
   write('index.html', await render('index', index));
@@ -339,7 +351,12 @@ async function renderSite({ outDir, base, repoUrl, storageRoot }) {
     if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Run id "${id}" is not safe as a file name`);
     write(`runs/${id}.html`, await render('run-detail', detail));
   }
-  log(`Rendered index.html and ${details.length} run pages`);
+  for (const [page, model] of histories) {
+    if (!model) throw new Error(`No history found for ${page}`);
+    // historyPath() only produces /history/<[A-Za-z0-9_-]+>/<[A-Za-z0-9_-]+>
+    write(`${page.slice(1)}.html`, await render('history', model));
+  }
+  log(`Rendered index.html, ${details.length} run pages and ${histories.size} history pages`);
 
   write('404.html', await render('layout', {
     title: 'Page not found',

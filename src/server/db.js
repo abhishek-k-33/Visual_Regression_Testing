@@ -78,6 +78,10 @@ export function initDb(customDbPath) {
     }
   }).immediate();
 
+  // History page lookups (route + viewport across runs). IF NOT EXISTS keeps it
+  // safe for existing databases.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_snapshots_viewport_route ON snapshots(viewport, route)');
+
   dbInstance = db;
   return db;
 }
@@ -242,6 +246,53 @@ export function getSnapshotsByRunId(runId, db = getDb()) {
 export function getSnapshotById(id, db = getDb()) {
   const stmt = db.prepare('SELECT * FROM snapshots WHERE id = ?');
   return stmt.get(id) || null;
+}
+
+// ─── History (one route + viewport across runs) ─────────────────────────────
+
+/**
+ * Distinct routes recorded for a viewport (the history page maps them to slugs).
+ *
+ * @param {string} viewport
+ * @param {Database.Database} [db] - Optional DB instance
+ * @returns {string[]}
+ */
+export function getRoutesForViewport(viewport, db = getDb()) {
+  return db.prepare('SELECT DISTINCT route FROM snapshots WHERE viewport = ?').pluck().all(viewport);
+}
+
+/**
+ * Every distinct route/viewport pair in the database (e.g. to pre-render history pages).
+ *
+ * @param {Database.Database} [db] - Optional DB instance
+ * @returns {Array<{ route: string, viewport: string }>}
+ */
+export function getRouteViewportPairs(db = getDb()) {
+  return db.prepare('SELECT DISTINCT route, viewport FROM snapshots ORDER BY route, viewport').all();
+}
+
+/**
+ * Snapshots of the given routes at one viewport, joined with their run, newest run
+ * first (insertion order breaks ties within the same second, like getAllTestRuns).
+ *
+ * @param {object} options
+ * @param {string[]} options.routes - Route spellings to include (empty -> [])
+ * @param {string} options.viewport
+ * @param {number} [options.limit=100]
+ * @param {Database.Database} [db] - Optional DB instance
+ * @returns {Array<object>} snapshot columns plus created_at, branch, commit_hash, run_status
+ */
+export function getSnapshotHistory({ routes, viewport, limit = 100 }, db = getDb()) {
+  if (!routes || routes.length === 0) return [];
+  const placeholders = routes.map(() => '?').join(', ');
+  return db.prepare(`
+    SELECT s.*, r.created_at, r.branch, r.commit_hash, r.status AS run_status
+    FROM snapshots s
+    JOIN test_runs r ON r.id = s.run_id
+    WHERE s.viewport = ? AND s.route IN (${placeholders})
+    ORDER BY r.created_at DESC, r.rowid DESC, s.id DESC
+    LIMIT ?
+  `).all(viewport, ...routes, limit);
 }
 
 /**

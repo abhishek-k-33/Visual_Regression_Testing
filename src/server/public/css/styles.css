@@ -1139,3 +1139,216 @@ tbody tr:hover {
   white-space: nowrap !important;
   border: 0 !important;
 }
+
+/* ==========================================================================
+   History page (GET /history/:slug/:viewport) and run-detail "History" links
+   ========================================================================== */
+.history-link {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary-blue);
+  padding: 4px 10px;
+  border: 1px solid rgba(41, 151, 255, 0.4);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  transition: var(--transition);
+}
+
+.history-link:hover,
+.history-link:focus-visible {
+  background-color: rgba(41, 151, 255, 0.16);
+  text-decoration: none;
+}
+
+.history-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.history-chart-card {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-card);
+  padding: 20px 24px;
+  margin-bottom: 28px;
+}
+
+.history-chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.history-chart-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.history-chart-sub {
+  font-weight: 500;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.history-chart-stats {
+  display: flex;
+  gap: 20px;
+  font-size: 13px;
+}
+
+.history-chart-stats div {
+  display: flex;
+  gap: 6px;
+}
+
+.history-chart-stats dt {
+  color: var(--text-muted);
+}
+
+.history-chart-stats dd {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-sparkline {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.history-sparkline-axis {
+  stroke: var(--border-color);
+  stroke-width: 1;
+}
+
+.history-sparkline-line {
+  fill: none;
+  stroke: var(--bright-cyan);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.history-sparkline-dot {
+  fill: var(--bright-cyan);
+}
+
+.history-sparkline-dot.is-latest {
+  fill: var(--bg-surface);
+  stroke: var(--bright-cyan);
+  stroke-width: 2;
+}
+
+.history-sparkline-change {
+  stroke: var(--approved-purple);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}
+
+.history-chart-legend {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-legend-swatch {
+  display: inline-block;
+  width: 18px;
+  border-top: 2px dashed var(--approved-purple);
+}
+
+.history-table td {
+  vertical-align: top;
+}
+
+.history-time {
+  margin-top: 4px;
+}
+
+.history-mismatch {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.history-baseline-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--approved-purple);
+  background-color: var(--status-approved-bg);
+  border: 1px dashed var(--status-approved-border);
+}
+
+.history-row-baseline-changed td:first-child {
+  box-shadow: inset 3px 0 0 var(--approved-purple);
+}
+
+.history-thumb-link {
+  display: inline-block;
+  border-radius: var(--radius-sm);
+}
+
+.history-thumb {
+  display: block;
+  width: 160px;
+  height: 100px;
+  object-fit: cover;
+  object-position: top;
+  background-color: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.history-thumb-link:hover .history-thumb,
+.history-thumb-link:focus-visible .history-thumb {
+  border-color: var(--primary-blue);
+}
+
+/* The History link makes snapshot titles longer: let them wrap instead of overflowing */
+.snapshot-title {
+  flex-wrap: wrap;
+}
+
+/* Phones: the longer History breadcrumbs pushed the navbar wider than the screen.
+   Let the crumbs shrink and truncate; "Back to Runs" keeps its size. */
+@media (max-width: 680px) {
+  .navbar-left {
+    min-width: 0;
+    flex: 1 1 auto;
+    gap: 8px;
+    overflow: hidden;
+  }
+  .navbar-brand,
+  .navbar-left > * {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .navbar-left > .breadcrumb-current:last-child {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .navbar-right {
+    flex-shrink: 0;
+  }
+}

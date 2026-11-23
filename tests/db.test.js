@@ -12,7 +12,10 @@ import {
   getSnapshotById,
   recalculateRunStatus,
   approveSnapshot,
-  rejectSnapshot
+  rejectSnapshot,
+  getRoutesForViewport,
+  getRouteViewportPairs,
+  getSnapshotHistory
 } from '../src/server/db.js';
 
 describe('SQLite Storage Layer (db.js)', () => {
@@ -40,6 +43,37 @@ describe('SQLite Storage Layer (db.js)', () => {
       SELECT name FROM sqlite_master WHERE type='table' AND name IN ('test_runs', 'snapshots')
     `).all();
     expect(tables).toHaveLength(2);
+  });
+
+  it('indexes snapshots by viewport + route for the history page, also on existing databases', () => {
+    const indexes = () => db.prepare('PRAGMA index_list(snapshots)').all().map((i) => i.name);
+    expect(indexes()).toContain('idx_snapshots_viewport_route');
+    db.exec('DROP INDEX idx_snapshots_viewport_route'); // as in a database created before it existed
+    closeDb();
+    db = initDb(dbPath);
+    expect(indexes()).toContain('idx_snapshots_viewport_route');
+    const plan = db.prepare(`EXPLAIN QUERY PLAN SELECT * FROM snapshots WHERE viewport = ? AND route IN (?, ?)`).all('d', 'a', 'b');
+    expect(plan.map((r) => r.detail).join('\n')).toMatch(/idx_snapshots_viewport_route/);
+  });
+
+  it('history queries: routes per viewport, route/viewport pairs and joined rows newest first', () => {
+    createTestRun({ id: 'old', status: 'PASSED', created_at: '2026-01-01 00:00:00', branch: 'main', commit_hash: 'aaa' }, db);
+    createTestRun({ id: 'new', status: 'FAILED', created_at: '2026-01-02 00:00:00' }, db);
+    for (const [run, route, viewport] of [['old', '/', 'desktop'], ['old', '/a', 'mobile'], ['new', '/', 'desktop'], ['new', '/b', 'desktop']]) {
+      createSnapshot({ run_id: run, route, viewport, current_path: `/tmp/${run}.png`, status: 'MATCH' }, db);
+    }
+    expect(getRoutesForViewport('desktop', db).sort()).toEqual(['/', '/b']);
+    expect(getRoutesForViewport('nope', db)).toEqual([]);
+    expect(getRouteViewportPairs(db)).toEqual([
+      { route: '/', viewport: 'desktop' }, { route: '/a', viewport: 'mobile' }, { route: '/b', viewport: 'desktop' }
+    ]);
+    const rows = getSnapshotHistory({ routes: ['/'], viewport: 'desktop' }, db);
+    expect(rows.map((r) => [r.run_id, r.run_status, r.created_at, r.branch, r.commit_hash])).toEqual([
+      ['new', 'FAILED', '2026-01-02 00:00:00', null, null],
+      ['old', 'PASSED', '2026-01-01 00:00:00', 'main', 'aaa']
+    ]);
+    expect(getSnapshotHistory({ routes: ['/', '/b'], viewport: 'desktop', limit: 1 }, db)).toHaveLength(1);
+    expect(getSnapshotHistory({ routes: [], viewport: 'desktop' }, db)).toEqual([]);
   });
 
   it('creates and retrieves a test run record', () => {

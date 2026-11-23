@@ -7,7 +7,12 @@ import {
   runDetailModel,
   snapshotViewModel,
   toWebUrl,
-  knownStorageTail
+  knownStorageTail,
+  historyModel,
+  historyPath,
+  baselineChange,
+  buildSparkline,
+  HISTORY_LIMIT
 } from '../src/server/viewModels.js';
 
 describe('view models (src/server/viewModels.js)', () => {
@@ -138,6 +143,181 @@ describe('view models (src/server/viewModels.js)', () => {
 
     it('handles an empty database', () => {
       expect(indexModel({ db })).toMatchObject({ runs: [], stats: { total: 0, failed: 0 } });
+    });
+  });
+
+  describe('runDetailModel history links', () => {
+    it('adds a history URL per snapshot, keyed by route slug and viewport', () => {
+      createTestRun({ id: 'r1', status: 'PASSED' }, db);
+      for (const [route, viewport] of [['/', 'desktop'], ['/blog/post 1', 'mobile'], ['/x', 'bad.name']]) {
+        createSnapshot({ run_id: 'r1', route, viewport, status: 'MATCH', current_path: path.join(storageRoot, 'runs', 'r1', 'a.png') }, db);
+      }
+      expect(runDetailModel({ db, runId: 'r1', storageRoot }).snapshots.map((s) => s.historyUrl))
+        .toEqual(['/history/index/desktop', '/history/blog_post_1/mobile', null]);
+    });
+  });
+
+  describe('history', () => {
+    const png = (run, name = 'index-desktop.png') => path.join(storageRoot, 'runs', run, name);
+    function seed(id, createdAt, snapshots) {
+      createTestRun({ id, status: 'PASSED', created_at: createdAt, branch: 'main', commit_hash: 'abc1234' }, db);
+      return snapshots.map((snap) => createSnapshot({
+        run_id: id,
+        route: '/',
+        viewport: 'desktop',
+        status: 'MATCH',
+        current_path: png(id),
+        ...snap
+      }, db));
+    }
+
+    describe('historyPath', () => {
+      it('uses the route slug (same identity as the baseline file) and the viewport', () => {
+        expect(historyPath('/', 'desktop')).toBe('/history/index/desktop');
+        expect(historyPath('', 'mobile')).toBe('/history/index/mobile');
+        expect(historyPath('/a/b/', 'm_1-x')).toBe('/history/a_b/m_1-x');
+      });
+
+      it('returns null for viewports that are not URL/file safe', () => {
+        for (const vp of ['', 'a.b', 'a b', '../x', 'x'.repeat(65), 'ü']) expect(historyPath('/', vp), vp).toBeNull();
+        expect(historyPath('/', 'x'.repeat(64))).not.toBeNull();
+      });
+    });
+
+    it('returns null for unknown or invalid slugs and viewports', () => {
+      seed('r1', '2026-01-01 00:00:00', [{}]);
+      expect(historyModel({ db, slug: 'index', viewport: 'desktop', storageRoot })).not.toBeNull();
+      for (const [slug, viewport] of [
+        ['nope', 'desktop'],
+        ['index', 'mobile'],
+        ['index', 'desk.top'],
+        ['index', '../desktop'],
+        ['index', ''],
+        ['../index', 'desktop'],
+        ['', 'desktop'],
+        [undefined, 'desktop']
+      ]) {
+        expect(historyModel({ db, slug, viewport, storageRoot }), `${slug} @ ${viewport}`).toBeNull();
+      }
+    });
+
+    it('lists runs newest first, breaking same-second ties by insertion order', () => {
+      seed('b-later', '2026-01-02 00:00:00', [{}]);
+      seed('a-earlier', '2026-01-01 00:00:00', [{}]);
+      seed('c-same-1', '2026-01-03 00:00:00', [{}]);
+      seed('c-same-2', '2026-01-03 00:00:00', [{}]);
+      const model = historyModel({ db, slug: 'index', viewport: 'desktop', storageRoot });
+      expect(model.entries.map((e) => e.run_id)).toEqual(['c-same-2', 'c-same-1', 'b-later', 'a-earlier']);
+      expect(model.title).toBe('History: / @ desktop');
+      expect(model.truncated).toBe(false);
+    });
+
+    it('merges slug-equivalent routes and ignores other routes and viewports', () => {
+      seed('r1', '2026-01-01 00:00:00', [{ route: '/a/b' }, { route: '/a-b' }, { route: '/a/b', viewport: 'mobile' }]);
+      seed('r2', '2026-01-02 00:00:00', [{ route: '/a_b' }]);
+      const model = historyModel({ db, slug: 'a_b', viewport: 'desktop', storageRoot });
+      expect(model.entries.map((e) => [e.run_id, e.route, e.viewport])).toEqual([['r2', '/a_b', 'desktop'], ['r1', '/a/b', 'desktop']]);
+      expect(model.routes.sort()).toEqual(['/a/b', '/a_b']);
+      expect(model.route).toBe('/a_b'); // newest spelling
+      expect(historyModel({ db, slug: 'a-b', viewport: 'desktop', storageRoot }).entries).toHaveLength(1);
+    });
+
+    it('shapes each row: run link to the snapshot anchor, UTC ISO time, status pill, thumbnail URL', () => {
+      const [snap] = seed('feat/x #1', '2026-03-04 05:06:07', [{ status: 'DIFF', mismatch_percentage: 2.5, current_path: png('feat-x', 'index-desktop.png') }]);
+      const [entry] = historyModel({ db, slug: 'index', viewport: 'desktop', storageRoot }).entries;
+      expect(entry).toMatchObject({
+        runUrl: `/runs/feat%2Fx%20%231#snapshot-${snap.id}`,
+        created_at: '2026-03-04 05:06:07',
+        createdAtIso: '2026-03-04T05:06:07Z',
+        branch: 'main',
+        commit_hash: 'abc1234',
+        run_status: 'PASSED',
+        mismatch: 2.5,
+        statusPill: { cls: 'status-pill-failed', label: 'DIFF' },
+        currentUrl: '/storage/runs/feat-x/index-desktop.png',
+        baselineChanged: false
+      });
+    });
+
+    it('marks rows compared against a different baseline than the next older row', () => {
+      // oldest -> newest
+      seed('r1', '2026-01-01 00:00:00', [{ status: 'MISSING_BASELINE', baseline_sha256: 'none' }]);
+      seed('r2', '2026-01-02 00:00:00', [{ status: 'NEW_BASELINE', baseline_sha256: 'A' }]);
+      seed('r3', '2026-01-03 00:00:00', [{ status: 'MATCH', baseline_sha256: 'A' }]);
+      seed('r4', '2026-01-04 00:00:00', [{ status: 'DIFF', baseline_sha256: 'B' }]);
+      seed('r5', '2026-01-05 00:00:00', [{ status: 'DIFF', baseline_sha256: null }]); // legacy: unknown
+      seed('r6', '2026-01-06 00:00:00', [{ status: 'MATCH', baseline_sha256: 'B' }]);
+      seed('r7', '2026-01-07 00:00:00', [{ status: 'MISSING_BASELINE', baseline_sha256: null }]); // legacy: none
+      const model = historyModel({ db, slug: 'index', viewport: 'desktop', storageRoot });
+      expect(model.entries.map((e) => [e.run_id, e.baselineChange])).toEqual([
+        ['r7', 'removed'],
+        ['r6', null],
+        ['r5', null],
+        ['r4', 'changed'],
+        ['r3', null],
+        ['r2', 'created'],
+        ['r1', null]
+      ]);
+      expect(model.entries.filter((e) => e.baselineChanged).map((e) => e.baselineChangeLabel))
+        .toEqual(['Baseline removed', 'Baseline changed', 'Baseline created']);
+      // Chart markers line up with the changed runs (oldest first)
+      expect(model.sparkline.changes.map((c) => c.runId)).toEqual(['r2', 'r4', 'r7']);
+      expect(model.sparkline.changes[0].x).toBe(model.sparkline.points[1].x);
+    });
+
+    it('baselineChange handles none/NULL and a missing older row', () => {
+      expect(baselineChange({ baseline_sha256: 'A' }, undefined)).toBeNull();
+      expect(baselineChange({ baseline_sha256: 'A' }, { baseline_sha256: 'A' })).toBeNull();
+      expect(baselineChange({ baseline_sha256: 'B' }, { baseline_sha256: 'A' })).toBe('changed');
+      expect(baselineChange({ baseline_sha256: 'A' }, { baseline_sha256: 'none' })).toBe('created');
+      expect(baselineChange({ baseline_sha256: 'none' }, { baseline_sha256: 'A' })).toBe('removed');
+      expect(baselineChange({ baseline_sha256: 'none' }, { baseline_sha256: null, status: 'MISSING_BASELINE' })).toBeNull();
+      expect(baselineChange({ baseline_sha256: 'A' }, { baseline_sha256: null, status: 'DIFF' })).toBeNull();
+      expect(baselineChange({ baseline_sha256: null, status: 'APPROVED' }, { baseline_sha256: 'A' })).toBeNull();
+    });
+
+    it('links the current shared baseline only when the file exists', () => {
+      seed('r1', '2026-01-01 00:00:00', [{}]);
+      expect(historyModel({ db, slug: 'index', viewport: 'desktop', storageRoot }).baselineUrl).toBeNull();
+      fs.mkdirSync(path.join(storageRoot, 'baselines'), { recursive: true });
+      fs.writeFileSync(path.join(storageRoot, 'baselines', 'index-desktop.png'), 'PNG');
+      expect(historyModel({ db, slug: 'index', viewport: 'desktop', storageRoot }).baselineUrl).toBe('/storage/baselines/index-desktop.png');
+    });
+
+    it(`keeps only the latest ${HISTORY_LIMIT} runs`, () => {
+      db.transaction(() => {
+        for (let i = 0; i < HISTORY_LIMIT + 5; i++) seed(`r${String(i).padStart(3, '0')}`, `2026-01-01 00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}`, [{}]);
+      })();
+      const model = historyModel({ db, slug: 'index', viewport: 'desktop', storageRoot });
+      expect(model.entries).toHaveLength(HISTORY_LIMIT);
+      expect(model.entries[0].run_id).toBe('r104');
+      expect(model.truncated).toBe(true);
+    });
+
+    describe('buildSparkline', () => {
+      it('handles no points', () => {
+        expect(buildSparkline([])).toMatchObject({ points: [], path: '', label: 'Mismatch: no runs recorded' });
+      });
+
+      it('centres a single point', () => {
+        const s = buildSparkline([3], { width: 100, height: 40, pad: 5 });
+        expect(s.points).toEqual([{ value: 3, x: 50, y: 5 }]);
+        expect(s.path).toBe('M50 5');
+        expect(s.label).toBe('Mismatch for 1 run: 3.00%');
+      });
+
+      it('scales from 0% at the bottom to the max at the top, oldest on the left', () => {
+        const s = buildSparkline([0, 5, 10], { width: 100, height: 40, pad: 5 });
+        expect(s.points.map((p) => [p.x, p.y])).toEqual([[5, 35], [50, 20], [95, 5]]);
+        expect(s.path).toBe('M5 35 L50 20 L95 5');
+        expect(s).toMatchObject({ min: 0, max: 10, latest: 10 });
+        expect(s.label).toBe('Mismatch over 3 runs, oldest to newest: min 0.00%, max 10.00%, latest 10.00%');
+      });
+
+      it('draws an all-zero history as a flat line along the bottom', () => {
+        const s = buildSparkline([0, 0], { width: 100, height: 40, pad: 5 });
+        expect(s.points.map((p) => p.y)).toEqual([35, 35]);
+      });
     });
   });
 });

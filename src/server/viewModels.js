@@ -1,6 +1,14 @@
+import fs from 'node:fs';
 import path from 'node:path';
-import { getAllTestRuns, getTestRunById, getSnapshotsByRunId } from './db.js';
+import {
+  getAllTestRuns,
+  getTestRunById,
+  getSnapshotsByRunId,
+  getRoutesForViewport,
+  getSnapshotHistory
+} from './db.js';
 import { getStorageRoot } from './paths.js';
+import { getRouteSlug, getSnapshotFilename } from '../cli/naming.js';
 
 // Data shaping for the server-rendered views, kept out of the routes so the same
 // models can feed other renderers (e.g. a static build). Image URLs are app-relative
@@ -93,6 +101,174 @@ export function runDetailModel({ db, runId, storageRoot = getStorageRoot() }) {
   return {
     title: `Run Details: ${run.id}`,
     run,
-    snapshots: getSnapshotsByRunId(runId, db).map((s) => snapshotViewModel(s, storageRoot))
+    snapshots: getSnapshotsByRunId(runId, db).map((s) => ({
+      ...snapshotViewModel(s, storageRoot),
+      historyUrl: historyPath(s.route, s.viewport)
+    }))
+  };
+}
+
+// ─── History page (one route + viewport across runs) ────────────────────────
+
+/** Viewport names the history page accepts (also keeps "/history/<slug>/<viewport>" file-safe). */
+export const VIEWPORT_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+// getRouteSlug() only ever produces these characters; the length cap matches file names.
+const SLUG_PATTERN = /^[A-Za-z0-9_-]{1,255}$/;
+export const HISTORY_LIMIT = 100;
+
+/**
+ * App-relative URL of a route's history page at one viewport, or null when the pair
+ * can't have one (e.g. a viewport name outside VIEWPORT_PATTERN). Routes are identified
+ * by getRouteSlug(), the same identity as their shared baseline file, so "/a/b" and
+ * "/a_b" share one history.
+ *
+ * @param {string} route
+ * @param {string} viewport
+ * @returns {string|null}
+ */
+export function historyPath(route, viewport) {
+  const slug = getRouteSlug(route);
+  if (!SLUG_PATTERN.test(slug) || !VIEWPORT_PATTERN.test(String(viewport))) return null;
+  return `/history/${slug}/${viewport}`;
+}
+
+const STATUS_PILLS = {
+  MATCH: { cls: 'status-pill-passed', label: 'MATCH' },
+  DIFF: { cls: 'status-pill-failed', label: 'DIFF' },
+  MISSING_BASELINE: { cls: 'status-pill-failed', label: 'MISSING BASELINE' },
+  NEW_BASELINE: { cls: 'status-pill-new', label: 'NEW BASELINE' },
+  APPROVED: { cls: 'status-pill-approved', label: 'APPROVED' },
+  REJECTED: { cls: 'status-pill-rejected', label: 'REJECTED' }
+};
+
+/**
+ * The baseline a row was compared against: its hash, 'none' when there was no baseline,
+ * or null when unknown (rows recorded before hashes existed, except MISSING_BASELINE).
+ */
+function comparedBaseline(row) {
+  if (row.baseline_sha256) return row.baseline_sha256;
+  return row.status === 'MISSING_BASELINE' ? 'none' : null;
+}
+
+/**
+ * How the baseline changed between an older row and the next newer one:
+ * 'created' (none -> baseline), 'removed' (baseline -> none), 'changed' (different
+ * hash), or null (same, or unknown for either row).
+ */
+export function baselineChange(newer, older) {
+  const before = older ? comparedBaseline(older) : null;
+  const after = comparedBaseline(newer);
+  if (!before || !after || before === after) return null;
+  if (before === 'none') return 'created';
+  if (after === 'none') return 'removed';
+  return 'changed';
+}
+
+const BASELINE_CHANGE_LABELS = {
+  created: 'Baseline created',
+  removed: 'Baseline removed',
+  changed: 'Baseline changed'
+};
+
+const pct = (n) => `${n.toFixed(2)}%`;
+
+/**
+ * Geometry for a server-rendered SVG sparkline of mismatch percentages (oldest first).
+ * The y axis starts at 0%, so an all-zero history is a flat line along the bottom.
+ *
+ * @param {number[]} values
+ * @param {{ width?: number, height?: number, pad?: number }} [size]
+ */
+export function buildSparkline(values, { width = 600, height = 72, pad = 8 } = {}) {
+  const n = values.length;
+  if (n === 0) {
+    return { width, height, points: [], path: '', label: 'Mismatch: no runs recorded' };
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const latest = values[n - 1];
+  const top = max > 0 ? max : 1;
+  const round = (v) => Math.round(v * 10) / 10;
+  const points = values.map((value, i) => ({
+    value,
+    x: round(n === 1 ? width / 2 : pad + (i * (width - 2 * pad)) / (n - 1)),
+    y: round(height - pad - (value / top) * (height - 2 * pad))
+  }));
+  const label = n === 1
+    ? `Mismatch for 1 run: ${pct(latest)}`
+    : `Mismatch over ${n} runs, oldest to newest: min ${pct(min)}, max ${pct(max)}, latest ${pct(latest)}`;
+  return {
+    width,
+    height,
+    points,
+    path: points.map((p, i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' '),
+    min,
+    max,
+    latest,
+    label
+  };
+}
+
+/** 'YYYY-MM-DD HH:MM:SS' (SQLite UTC) -> ISO 8601 with Z, or null for anything else. */
+function sqliteUtcToIso(value) {
+  const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$/.exec(String(value ?? ''));
+  return m ? `${m[1]}T${m[2]}Z` : null;
+}
+
+/**
+ * History page model: every recorded snapshot of one route (by slug) at one viewport,
+ * newest run first, or null when the slug/viewport is invalid or has no snapshots.
+ *
+ * @param {object} options
+ * @param {import('better-sqlite3').Database} [options.db] - Defaults to the shared DB
+ * @param {string} options.slug - getRouteSlug(route)
+ * @param {string} options.viewport
+ * @param {string} [options.storageRoot] - Defaults to getStorageRoot()
+ */
+export function historyModel({ db, slug, viewport, storageRoot = getStorageRoot() }) {
+  if (typeof slug !== 'string' || typeof viewport !== 'string') return null;
+  if (!SLUG_PATTERN.test(slug) || !VIEWPORT_PATTERN.test(viewport)) return null;
+
+  const routes = getRoutesForViewport(viewport, db).filter((r) => getRouteSlug(r) === slug);
+  if (routes.length === 0) return null;
+  const rows = getSnapshotHistory({ routes, viewport, limit: HISTORY_LIMIT }, db);
+  if (rows.length === 0) return null;
+
+  const entries = rows.map((row, i) => {
+    const change = baselineChange(row, rows[i + 1]);
+    return {
+      ...snapshotViewModel(row, storageRoot),
+      mismatch: Number(row.mismatch_percentage) || 0,
+      runUrl: `/runs/${encodeURIComponent(row.run_id)}#snapshot-${row.id}`,
+      createdAtIso: sqliteUtcToIso(row.created_at),
+      statusPill: STATUS_PILLS[row.status] || { cls: 'status-pill-new', label: String(row.status) },
+      baselineChange: change,
+      baselineChanged: change !== null,
+      baselineChangeLabel: change ? BASELINE_CHANGE_LABELS[change] : null
+    };
+  });
+
+  // Oldest -> newest for the chart; baseline changes become vertical markers.
+  const chronological = [...entries].reverse();
+  const sparkline = buildSparkline(chronological.map((e) => e.mismatch));
+  sparkline.changes = chronological
+    .map((e, i) => (e.baselineChanged ? { x: sparkline.points[i].x, label: e.baselineChangeLabel, runId: e.run_id } : null))
+    .filter(Boolean);
+
+  const route = rows[0].route;
+  // Today's shared baseline (what the next run compares against), if there is one.
+  const sharedBaseline = path.join(storageRoot, 'baselines', getSnapshotFilename(route, viewport));
+
+  return {
+    title: `History: ${route} @ ${viewport}`,
+    slug,
+    viewport,
+    route,
+    routes,
+    entries,
+    sparkline,
+    baselineUrl: fs.existsSync(sharedBaseline) ? toWebUrl(sharedBaseline, storageRoot) : null,
+    limit: HISTORY_LIMIT,
+    truncated: rows.length >= HISTORY_LIMIT
   };
 }
