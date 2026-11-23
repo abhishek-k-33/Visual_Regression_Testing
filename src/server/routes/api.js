@@ -4,6 +4,7 @@ import {
   getTestRunById,
   getSnapshotsByRunId,
   approveSnapshot,
+  approveAllPending,
   rejectSnapshot
 } from '../db.js';
 
@@ -13,6 +14,7 @@ const router = express.Router();
 // no endpoint for creating runs, since that would let clients choose file paths.
 
 function errorStatus(err) {
+  if (Number.isInteger(err.status) && err.status >= 400 && err.status < 600) return err.status;
   if (err.message.startsWith('Access denied')) return 403;
   if (err.message.startsWith('Conflict')) return 409;
   if (err.message.includes('not found')) return 404;
@@ -70,6 +72,28 @@ router.post('/snapshots/:id/approve', (req, res) => {
   } catch (err) {
     const statusCode = errorStatus(err);
     res.status(statusCode).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/runs/:id/approve-all
+ * Approves every pending (DIFF / MISSING_BASELINE) snapshot of a run, all or nothing.
+ * 409 with `conflicts: [{ id, route, viewport }]` when any baseline changed since the
+ * run (nothing is approved then); 200 with `approved: []` when nothing is pending.
+ */
+router.post('/runs/:id/approve-all', (req, res) => {
+  try {
+    const result = approveAllPending(req.params.id);
+    res.json({
+      success: true,
+      approved: result.approved,
+      runStatus: result.runStatus,
+      snapshots: result.snapshots
+    });
+  } catch (err) {
+    const body = { success: false, error: err.message };
+    if (Array.isArray(err.conflicts)) body.conflicts = err.conflicts;
+    res.status(errorStatus(err)).json(body);
   }
 });
 

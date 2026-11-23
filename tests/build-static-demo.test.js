@@ -119,9 +119,12 @@ describe('static demo build (end to end)', () => {
     const redesign = read('runs/demo-03-redesign.html');
     expect(redesign.match(/<span>APPROVED<\/span>/g)).toHaveLength(3); // run pill + 2 snapshots
     expect(redesign).not.toContain('btn-approve');
+    expect(redesign).not.toContain('Approve all pending');
 
     const regression = read('runs/demo-05-regression.html');
     expect(regression.match(/class="btn btn-approve"/g)).toHaveLength(2);
+    expect(regression).toContain('Approve all pending (2)'); // simulated in static mode by review-actions.js
+    expect(regression.match(/class="btn btn-approve-all"/g)).toHaveLength(1);
     expect(regression.match(/% Mismatch<\/span>/g)).toHaveLength(2);
     expect(regression).toContain('data-tab="slider"');
     expect(regression).toContain('data-tab="diff"');
