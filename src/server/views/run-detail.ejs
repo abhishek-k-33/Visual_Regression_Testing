@@ -7,6 +7,7 @@
       <div class="detail-title-row">
         <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
           <h1 class="detail-run-id"><%= run.id %></h1>
+          <span class="run-status-container" data-run-status="<%= run.status %>">
           <% if (run.status === 'PASSED') { %>
             <span class="status-pill status-pill-passed">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -39,7 +40,16 @@
               <span>REJECTED</span>
             </span>
           <% } %>
+          </span>
         </div>
+        <% if (locals.pendingCount > 0) { %>
+          <button type="button" class="btn btn-approve-all" data-run-id="<%= run.id %>" data-count="<%= pendingCount %>">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+            <span class="approve-all-label">Approve all pending (<%= pendingCount %>)</span>
+          </button>
+        <% } %>
       </div>
 
       <div class="detail-meta-row">
@@ -64,7 +74,7 @@
 
     <!-- Snapshots Inspection List -->
     <% snapshots.forEach(snap => { %>
-      <div class="snapshot-card" id="snapshot-<%= snap.id %>">
+      <div class="snapshot-card" id="snapshot-<%= snap.id %>" data-status="<%= snap.status %>">
         <!-- Header: Route, Viewport & Actions -->
         <div class="snapshot-header">
           <div class="snapshot-title">

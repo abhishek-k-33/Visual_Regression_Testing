@@ -336,19 +336,14 @@ export function recalculateRunStatus(runId, db = getDb()) {
   return newStatus;
 }
 
-/**
- * Approves a snapshot:
- * 1. Copies current_path screenshot over baseline_path on disk
- * 2. Updates snapshot status in SQLite to 'APPROVED'
- * 3. Recalculates parent test_run status
- *
- * @param {number|string} snapshotId - Snapshot ID
- * @param {Database.Database} [db] - Optional DB instance
- * @param {object} [options]
- * @param {string} [options.storageRoot] - Storage root (defaults to getStorageRoot())
- * @returns {object} Updated snapshot and new parent run status
- */
 const hashFile = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+/** Snapshot statuses that still need a review decision. */
+export const PENDING_STATUSES = Object.freeze(['DIFF', 'MISSING_BASELINE']);
+
+const STALE_BASELINE_MESSAGE =
+  'Conflict: the baseline has changed since this run (a newer run was probably approved). ' +
+  'Re-run the visual tests and review the new result instead.';
 
 /**
  * Refuses to approve a run whose baseline has since been replaced (e.g. a newer run was
@@ -370,38 +365,275 @@ function assertBaselineUnchanged(snapshot, source, target) {
   if (actual === recorded) return;
   if (exists && actual === hashFile(source)) return; // already this screenshot: no-op
 
-  throw new Error(
-    'Conflict: the baseline has changed since this run (a newer run was probably approved). ' +
-    'Re-run the visual tests and review the new result instead.'
-  );
+  throw new Error(STALE_BASELINE_MESSAGE);
 }
 
-export function approveSnapshot(snapshotId, db = getDb(), options = {}) {
-  const snapshot = getSnapshotById(snapshotId, db);
-  if (!snapshot) {
-    throw new Error(`Snapshot with id ${snapshotId} not found.`);
-  }
+function conflictError(message, conflicts) {
+  const err = new Error(message);
+  err.status = 409;
+  err.conflicts = conflicts;
+  return err;
+}
 
-  // Promote current image to baseline on disk.
-  // Allowlist: copy only a .png from <storage>/runs/ to a .png in <storage>/baselines/.
-  if (snapshot.baseline_path && snapshot.current_path) {
-    const storageRoot = options.storageRoot || getStorageRoot();
-    const source = resolvePngInside(snapshot.current_path, path.join(storageRoot, 'runs'));
-    const target = resolvePngInside(snapshot.baseline_path, path.join(storageRoot, 'baselines'), { mustExist: false });
+const conflictEntry = (s) => ({ id: s.id, route: s.route, viewport: s.viewport });
+
+/**
+ * Works out what approving one snapshot would do, without changing anything.
+ * Allowlist: the source must be a .png in <storage>/runs/ and the target a .png in
+ * <storage>/baselines/ (symlinks resolved). Also runs the stale-baseline check.
+ * (Like before, resolving a not-yet-existing target may create its parent folder.)
+ *
+ * @param {object} snapshot - Snapshot row
+ * @param {string} [storageRoot] - Defaults to getStorageRoot()
+ * @returns {{ snapshot: object, source: string|null, target: string|null }}
+ *   source/target are null when the row has no files to promote (status-only approval)
+ * @throws {Error} "Access denied: ..." or "Conflict: ..." (with err.conflicts)
+ */
+export function planApproval(snapshot, storageRoot = getStorageRoot()) {
+  if (!snapshot.baseline_path || !snapshot.current_path) {
+    return { snapshot, source: null, target: null };
+  }
+  const source = resolvePngInside(snapshot.current_path, path.join(storageRoot, 'runs'));
+  const target = resolvePngInside(snapshot.baseline_path, path.join(storageRoot, 'baselines'), { mustExist: false });
+  try {
     assertBaselineUnchanged(snapshot, source, target);
-    fs.copyFileSync(source, target);
+  } catch (err) {
+    throw conflictError(err.message, [conflictEntry(snapshot)]);
+  }
+  // What the baseline looked like when it was checked; re-checked just before writing.
+  return { snapshot, source, target, seen: baselineState(target) };
+}
+
+/** Hash of a baseline file, or 'none' when it doesn't exist. */
+function baselineState(target) {
+  return fs.existsSync(target) ? hashFile(target) : 'none';
+}
+
+/** Hidden sibling path used for temp copies and backups (never served: not a ".png"). */
+function siblingPath(target, kind) {
+  return path.join(path.dirname(target), `.${path.basename(target)}.${crypto.randomBytes(8).toString('hex')}.${kind}`);
+}
+
+/**
+ * Puts baselines back after a failed batch: each backup (a hard link or copy of the
+ * old file) is renamed back over its target, which is atomic and copies nothing;
+ * targets that didn't exist before are removed. Never throws: returns the targets it
+ * could not restore (their backups are kept on disk so nothing is lost).
+ */
+function restoreBaselines(written) {
+  const failed = [];
+  for (const { target, backup } of [...written].reverse()) {
+    try {
+      if (backup && isSameFile(backup, target)) {
+        // The swap never happened: the target is still the old file (the backup is a
+        // hard link to it), and rename() between two links to one file is a no-op.
+        fs.rmSync(backup, { force: true });
+      } else if (backup) {
+        fs.renameSync(backup, target);
+      } else {
+        fs.rmSync(target, { force: true });
+      }
+    } catch (restoreErr) {
+      console.error(`[ERROR] Could not restore baseline ${target}: ${restoreErr.message}`);
+      failed.push(backup ? `${target} (backup kept at ${backup})` : target);
+    }
+  }
+  return failed;
+}
+
+function isSameFile(a, b) {
+  try {
+    const sa = fs.statSync(a);
+    const sb = fs.statSync(b);
+    return sa.ino === sb.ino && sa.dev === sb.dev;
+  } catch {
+    return false;
+  }
+}
+
+/** Keeps the current baseline under a hidden name: a hard link if possible, else a copy. */
+function backUpBaseline(target) {
+  const backup = siblingPath(target, 'bak');
+  try {
+    fs.linkSync(target, backup);
+  } catch {
+    fs.copyFileSync(target, backup, fs.constants.COPYFILE_EXCL);
+  }
+  return backup;
+}
+
+/**
+ * Promotes every planned screenshot and records the approvals, all or nothing. For each
+ * file: re-check that the baseline is still what planning saw (else 409 Conflict),
+ * copy the screenshot to a hidden temp file, keep the old baseline as a hidden backup,
+ * then rename the temp file over the target. All status changes happen in one
+ * transaction. On any failure, backups are renamed back, new baselines removed, and the
+ * error rethrown (mentioning any baseline that could not be restored).
+ */
+function executeApprovalPlans(plans, db) {
+  const writes = plans.filter((p) => p.target);
+  const written = []; // { target, backup } for every target that may have changed
+  let tmp = null;
+  try {
+    for (const plan of writes) {
+      const { snapshot, source, target, seen } = plan;
+      if (baselineState(target) !== seen) {
+        throw conflictError(
+          'Conflict: a baseline changed while the batch was being approved. Re-run the visual tests and review the new result instead.',
+          [conflictEntry(snapshot)]
+        );
+      }
+      tmp = siblingPath(target, 'tmp');
+      fs.copyFileSync(source, tmp, fs.constants.COPYFILE_EXCL);
+      const backup = seen === 'none' ? null : backUpBaseline(target);
+      written.push({ target, backup }); // before the rename, so a half-done step is still rolled back
+      fs.renameSync(tmp, target);
+      tmp = null;
+    }
+
+    const runIds = [...new Set(plans.map((p) => p.snapshot.run_id))];
+    const runStatuses = db.transaction(() => {
+      const update = db.prepare('UPDATE snapshots SET status = ? WHERE id = ?');
+      for (const { snapshot } of plans) update.run('APPROVED', snapshot.id);
+      return Object.fromEntries(runIds.map((runId) => [runId, recalculateRunStatus(runId, db)]));
+    })();
+
+    for (const { backup } of written) {
+      if (!backup) continue;
+      try {
+        fs.rmSync(backup, { force: true });
+      } catch (cleanupErr) {
+        console.error(`[WARN] Could not remove baseline backup ${backup}: ${cleanupErr.message}`);
+      }
+    }
+    return runStatuses;
+  } catch (err) {
+    if (tmp) {
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch (cleanupErr) {
+        console.error(`[WARN] Could not remove temp file ${tmp}: ${cleanupErr.message}`);
+      }
+    }
+    const notRestored = restoreBaselines(written);
+    if (notRestored.length) {
+      err.message += ` Additionally, these baselines could not be restored: ${notRestored.join('; ')}.`;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Approves several snapshots at once, all or nothing:
+ * 1. Plans every snapshot first (path allowlist + stale-baseline check). Any conflicts
+ *    are collected and reported together in one "Conflict" error (err.status 409,
+ *    err.conflicts [{ id, route, viewport }]) before anything is changed. An
+ *    "Access denied" or "not found" error is thrown as for a single approval.
+ * 2. Refuses (as a Conflict) when two snapshots would write the same baseline file.
+ * 3. Copies every screenshot over its baseline and marks the snapshots APPROVED,
+ *    recalculating each affected run once; on any failure, everything is rolled back.
+ *
+ * @param {Array<number|string>} snapshotIds
+ * @param {Database.Database} [db]
+ * @param {object} [options]
+ * @param {string} [options.storageRoot] - Storage root (defaults to getStorageRoot())
+ * @returns {{ approved: number[], snapshots: object[], runStatuses: Record<string, string> }}
+ */
+export function approveSnapshots(snapshotIds, db = getDb(), options = {}) {
+  const storageRoot = options.storageRoot || getStorageRoot();
+  // Approving the same snapshot twice in one call is the same as approving it once.
+  const ids = [...new Map(snapshotIds.map((id) => [String(id), id])).values()];
+  const snapshots = ids.map((id) => {
+    const snapshot = getSnapshotById(id, db);
+    if (!snapshot) throw new Error(`Snapshot with id ${id} not found.`);
+    return snapshot;
+  });
+
+  const plans = [];
+  const conflicts = [];
+  for (const snapshot of snapshots) {
+    try {
+      plans.push(planApproval(snapshot, storageRoot));
+    } catch (err) {
+      if (!err.conflicts) throw err;
+      conflicts.push(...err.conflicts);
+    }
+  }
+  if (conflicts.length) {
+    if (snapshots.length === 1) throw conflictError(STALE_BASELINE_MESSAGE, conflicts);
+    const list = conflicts.map((c) => `${c.route} @ ${c.viewport}`).join(', ');
+    throw conflictError(
+      `Conflict: the baseline has changed since this run for ${conflicts.length} of ${snapshots.length} ` +
+      `snapshot(s) (${list}); a newer run was probably approved. Nothing was approved. ` +
+      'Re-run the visual tests and review the new result instead.',
+      conflicts
+    );
   }
 
-  // Update snapshot status in database
-  db.prepare('UPDATE snapshots SET status = ? WHERE id = ?').run('APPROVED', snapshotId);
+  const byTarget = new Map();
+  for (const plan of plans.filter((p) => p.target)) {
+    const other = byTarget.get(plan.target);
+    if (other) {
+      throw conflictError(
+        `Conflict: ${other.snapshot.route} @ ${other.snapshot.viewport} and ${plan.snapshot.route} @ ` +
+        `${plan.snapshot.viewport} would both write the baseline ${path.basename(plan.target)}. ` +
+        'Nothing was approved; approve them one at a time.',
+        [conflictEntry(other.snapshot), conflictEntry(plan.snapshot)]
+      );
+    }
+    byTarget.set(plan.target, plan);
+  }
 
-  // Recalculate parent run status
-  const runStatus = recalculateRunStatus(snapshot.run_id, db);
-
+  const runStatuses = executeApprovalPlans(plans, db);
   return {
-    snapshot: getSnapshotById(snapshotId, db),
-    runStatus
+    approved: snapshots.map((s) => s.id),
+    snapshots: snapshots.map((s) => getSnapshotById(s.id, db)),
+    runStatuses
   };
+}
+
+/**
+ * Approves a snapshot:
+ * 1. Copies current_path screenshot over baseline_path on disk
+ * 2. Updates snapshot status in SQLite to 'APPROVED'
+ * 3. Recalculates parent test_run status
+ *
+ * @param {number|string} snapshotId - Snapshot ID
+ * @param {Database.Database} [db] - Optional DB instance
+ * @param {object} [options]
+ * @param {string} [options.storageRoot] - Storage root (defaults to getStorageRoot())
+ * @returns {object} Updated snapshot and new parent run status
+ */
+export function approveSnapshot(snapshotId, db = getDb(), options = {}) {
+  const result = approveSnapshots([snapshotId], db, options);
+  const snapshot = result.snapshots[0];
+  return {
+    snapshot,
+    runStatus: result.runStatuses[snapshot.run_id]
+  };
+}
+
+/**
+ * Approves every snapshot of a run that still needs review (DIFF or MISSING_BASELINE),
+ * all or nothing (see approveSnapshots).
+ *
+ * @param {string} runId
+ * @param {Database.Database} [db]
+ * @param {object} [options]
+ * @param {string} [options.storageRoot] - Storage root (defaults to getStorageRoot())
+ * @returns {{ approved: number[], runStatus: string, snapshots: object[] }}
+ *   With nothing pending, approved is [] and no file or row is touched.
+ * @throws {Error} "Run with id ... not found.", "Access denied: ..." or "Conflict: ..."
+ */
+export function approveAllPending(runId, db = getDb(), options = {}) {
+  const run = getTestRunById(runId, db);
+  if (!run) throw new Error(`Run with id ${runId} not found.`);
+
+  const pending = getSnapshotsByRunId(runId, db).filter((s) => PENDING_STATUSES.includes(s.status));
+  if (pending.length === 0) return { approved: [], runStatus: run.status, snapshots: [] };
+
+  const result = approveSnapshots(pending.map((s) => s.id), db, options);
+  return { approved: result.approved, runStatus: result.runStatuses[runId], snapshots: result.snapshots };
 }
 
 /**

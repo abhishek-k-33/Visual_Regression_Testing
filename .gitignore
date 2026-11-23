@@ -21,6 +21,9 @@ storage/runs/*
 # storage/baselines/ is committed: approved baselines are versioned and reviewed in PRs.
 # The interactive demo and verify scripts use their own routes, kept out of git.
 storage/baselines/__vrt_*.png
+# Hidden temp/backup files from an interrupted approval
+storage/baselines/.*.tmp
+storage/baselines/.*.bak
 storage/*.sqlite*
 *.sqlite*
 *.db*

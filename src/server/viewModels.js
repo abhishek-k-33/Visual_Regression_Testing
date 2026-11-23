@@ -5,7 +5,8 @@ import {
   getTestRunById,
   getSnapshotsByRunId,
   getRoutesForViewport,
-  getSnapshotHistory
+  getSnapshotHistory,
+  PENDING_STATUSES
 } from './db.js';
 import { getStorageRoot } from './paths.js';
 import { getRouteSlug, getSnapshotFilename } from '../cli/naming.js';
@@ -98,13 +99,16 @@ export function indexModel({ db } = {}) {
 export function runDetailModel({ db, runId, storageRoot = getStorageRoot() }) {
   const run = getTestRunById(runId, db);
   if (!run) return null;
+  const snapshots = getSnapshotsByRunId(runId, db).map((s) => ({
+    ...snapshotViewModel(s, storageRoot),
+    historyUrl: historyPath(s.route, s.viewport)
+  }));
   return {
     title: `Run Details: ${run.id}`,
     run,
-    snapshots: getSnapshotsByRunId(runId, db).map((s) => ({
-      ...snapshotViewModel(s, storageRoot),
-      historyUrl: historyPath(s.route, s.viewport)
-    }))
+    snapshots,
+    // Snapshots still awaiting review: the "Approve all pending (N)" button
+    pendingCount: snapshots.filter((s) => PENDING_STATUSES.includes(s.status)).length
   };
 }
 
