@@ -324,7 +324,7 @@ When the visual check fails in GitHub Actions, review it in your own dashboard i
    npx visual-ci import ~/Downloads/visual-regression-diffs.zip
    # or: node src/cli/index.js import ~/Downloads/visual-regression-diffs.zip
    ```
-   It prints each imported run with its dashboard link, e.g. `http://localhost:4000/runs/run_1732440000000`.
+   It prints each imported run with its dashboard link, e.g. `http://localhost:4000/runs/run_1732440000000` (using `PORT` if you set it).
 3. Start the dashboard (`npm start`) and open that link. Imported runs carry an **Imported** badge on the dashboard and in the run header.
 
 ```text
@@ -337,11 +337,12 @@ visual-ci import <path> [options]
 ```
 
 - **Where it goes:** the same storage folder the dashboard uses (`VISUAL_STORAGE_DIR`, else `storageDir` from the config, else `./storage`). Screenshots, diffs and the per-run baseline copies go to `runs/<id>/`; your shared `baselines/` folder is never written by an import.
-- **Ids:** a run keeps its CI id. If that id is already used by a different local run, it is imported as `<id>-imp2` (then `-imp3`, ...). Importing the same artifact again changes nothing and says *already imported*. `--run-id` picks the id yourself (it must be free).
+- **Ids:** a run keeps its CI id. If that id is already used by a different local run (compared ignoring case, as macOS and Windows file systems do), it is imported as `<id>-imp2` (then `-imp3`, ...). Importing the same artifact again changes nothing and says *already imported*. `--run-id` picks the id yourself (it must be free).
 - **Approving an imported run:** approval copies the CI screenshot into your local `baselines/`, then you commit it as usual. It only works while your local baseline is **exactly the one CI compared against** (CI's hash is kept from `run.json`). If it differs (your branch is behind or ahead of the commit CI tested, or the baseline was changed or approved since), the run page says *"Your local baseline differs from the one CI compared against, so approving would be refused"* and disables **Approve** for that snapshot (and **Approve all pending**); the API answers `409 Conflict`. Check out the commit CI tested (or update your branch) or re-run the tests locally, then review that result. Reject still works.
 - **Only artifacts with `run.json`:** artifacts from before `run.json` existed can't be imported (*"no run.json found"*); re-run CI.
-- **What is checked:** the archive is untrusted. Only `run.json` and `*.png` files are extracted, into a private staging folder inside the storage root that is removed afterwards. Absolute paths, `..`, backslashes, symlinks and duplicate entries are refused or skipped; at most 2000 entries, 50 MB per image, 1 MB per `run.json` and 500 MB in total, counted while unpacking, not taken from the archive's headers. Every `run.json` is validated strictly (schema and version, run id, routes, viewports, statuses, numbers); file names are re-derived from each snapshot's route and viewport rather than trusted; every referenced image must be a real PNG (at most 16384 x 65536 pixels) whose SHA-256 matches the manifest, and the compared baseline's hash must be present. If any run in the input fails a check, nothing is imported.
-- **Reused by the dashboard later:** the work is done by `importRuns(source, { storageRoot, db, runId })` in `src/server/importRuns.js`, which reports failures with an HTTP-style `status` (`400` unreadable or unsafe input, `409` id taken, `413` too large, `422` no valid run).
+- **What is checked:** the archive is untrusted. Only `run.json` and `*.png` files are extracted, into a private staging folder inside the storage root that is removed afterwards. Absolute paths, `..`, backslashes, control or invisible formatting characters in names (e.g. terminal escape sequences, bidi overrides), symlinks and duplicate entries are refused or skipped; anything quoted from the archive in a message is escaped. When importing a folder, symlinks are never followed below the folder you name, and a folder or file swapped for a symlink or a pipe while it is being read is skipped; at most 2000 entries, 50 MB per image, 1 MB per `run.json` and 500 MB in total, counted while unpacking, not taken from the archive's headers. Every `run.json` is validated strictly (schema and version, run id, routes, viewports, statuses, numbers; no control or bidi characters in any string); file names are re-derived from each snapshot's route and viewport rather than trusted; every referenced image must be a real PNG (at most 16384 x 65536 pixels) whose SHA-256 matches the manifest, and the compared baseline's hash must be present. If any run in the input fails a check, nothing is imported.
+- **Reused by the dashboard later:** the work is done by `importRuns(source, { storageRoot, db, runId })` in `src/server/importRuns.js`, which reports failures with an HTTP-style `status` (`400` unreadable or unsafe input, `409` id taken, `413` too large, `422` no valid run). Before an upload endpoint uses it, two things are still to do: hashing and the PNG checks run synchronously (a large upload would block the server while it is checked), and concurrent uploads should be queued one at a time with a cap on staging disk space.
+- **Interrupted imports:** files are unpacked into a hidden `.import-*` folder in the storage root and removed afterwards; folders left by a crashed import are cleaned up by the next import once they are an hour old.
 
 ### 7. Build the Static Demo (GitHub Pages)
 Builds the read-only dashboard behind the [live demo](https://abhishek-k-33.github.io/Visual_Regression_Testing/) into `_site/` (git-ignored):
@@ -455,7 +456,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 373 Vitest unit, integration & browser tests
+# Run all 408 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -486,7 +487,7 @@ node tests/verify-phase-5.js
  ✓ tests/db.test.js (19 tests)
  ✓ tests/docker.test.js (3 tests)
  ✓ tests/manifest.test.js (19 tests)
- ✓ tests/import.test.js (68 tests)
+ ✓ tests/import.test.js (103 tests)
  ✓ tests/per-run-baselines.test.js (11 tests)
  ✓ tests/approve-all.test.js (21 tests)
  ✓ tests/approve-all-api.test.js (12 tests)
@@ -501,7 +502,7 @@ node tests/verify-phase-5.js
  ✓ tests/keyboard-ui.test.js (20 tests)
 
  Test Files  23 passed (23)
-      Tests  373 passed (373)
+      Tests  408 passed (408)
 ```
 
 ---
