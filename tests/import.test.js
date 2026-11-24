@@ -1,18 +1,18 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { PNG } from 'pngjs';
 import app from '../src/server/app.js';
 import {
   initDb, closeDb, createTestRun, getTestRunById, getSnapshotsByRunId, approveSnapshot
 } from '../src/server/db.js';
-import { importRuns, IMPORT_LIMITS } from '../src/server/importRuns.js';
-import { runDetailModel } from '../src/server/viewModels.js';
+import { importRuns, IMPORT_LIMITS, STALE_STAGING_MS, sanitizeForDisplay } from '../src/server/importRuns.js';
+import { runDetailModel, hashCacheInfo } from '../src/server/viewModels.js';
 import { toSqliteTimestamp } from '../src/cli/manifest.js';
 import { writeZip, folderEntries } from './helpers/zip.js';
 
@@ -21,6 +21,8 @@ import { writeZip, folderEntries } from './helpers/zip.js';
 
 const CLI = path.resolve('src/cli/index.js');
 const sha = (data) => crypto.createHash('sha256').update(data).digest('hex');
+// Anything that could drive a terminal or disguise text: must never reach output raw.
+const RAW_CONTROL = /[\p{Cc}\p{Cf}]/u;
 
 function cleanEnv(extra = {}) {
   const env = { ...process.env, ...extra };
@@ -319,10 +321,18 @@ describe('importRuns', () => {
       ['backslash traversal', '..\\evil.png'],
       ['empty segment', 'ci_diff//evil.png'],
       ['dot segment', './ci_diff/evil.png']
-    ])('rejects a %s entry and writes nothing', async (_label, name) => {
-      const zip = writeZip(path.join(work, 'evil.zip'), [{ name, data: pngBuffer(1, 1, [255, 0, 0]) }, ...folderEntries(ciRunDir, 'ci_diff')]);
+    ].flatMap(([label, name]) => [[label, name, 'first'], [label, name, 'last']]))('rejects a %s entry (%s, listed %s) and writes nothing', async (_label, name, order) => {
+      const bad = { name, data: pngBuffer(1, 1, [255, 0, 0]) };
+      const good = folderEntries(ciRunDir, 'ci_diff');
+      // Last: the good entries are already staged when the bad one is reached.
+      const zip = writeZip(path.join(work, 'evil.zip'), order === 'first' ? [bad, ...good] : [...good, bad]);
+      const storageBefore = treeHashes(storageRoot);
+      const workBefore = Object.keys(treeHashes(work)).sort();
       const err = await rejection(importRuns({ kind: 'zip', file: zip }, opts()));
       expect(err.status).toBe(400);
+      expect(err.message).not.toMatch(RAW_CONTROL);
+      expect(treeHashes(storageRoot)).toEqual(storageBefore);
+      expect(Object.keys(treeHashes(work)).sort()).toEqual(workBefore);
       expect(fs.existsSync(path.join(work, 'evil.png'))).toBe(false);
       expect(fs.existsSync('/tmp/vrt-import-evil.png')).toBe(false);
       expect(fs.existsSync(path.join(storageRoot, 'evil.png'))).toBe(false);
@@ -330,6 +340,50 @@ describe('importRuns', () => {
       expect(fs.readdirSync(path.join(storageRoot, 'runs'))).toEqual([]);
       expect(runCount()).toBe(0);
       expect(leftovers()).toEqual([]);
+    });
+
+    it.each([
+      ['a name over 1024 bytes', `ci_diff/${'a/'.repeat(520)}x.png`],
+      ['a path segment over 255 bytes', `ci_diff/${'a'.repeat(300)}.png`]
+    ])('rejects %s', async (_label, name) => {
+      const zip = writeZip(path.join(work, 'long.zip'), [...folderEntries(ciRunDir, 'ci_diff'), { name, data: 'x' }]);
+      const err = await rejection(importRuns({ kind: 'zip', file: zip }, opts()));
+      expect(err.status).toBe(400);
+      expect(err.message).toContain('Unsafe file name');
+      expect(leftovers()).toEqual([]);
+    });
+
+    describe('terminal escape injection', () => {
+      it.each([
+        ['ESC/OSC/BEL caught by yauzl (backslash)', 'x\\\u001b]0;PWNED\u0007\u001b[2J'],
+        ['ESC caught by yauzl (absolute path)', '/\u001b[2J\u001b]0;PWNED\u0007.png'],
+        ['ESC caught by yauzl (..)', '../\u001b[2Jx.png'],
+        ['ESC in an otherwise valid name', 'ci_diff/\u001b[2Jx.png'],
+        ['a C1 CSI', 'ci_diff/\u009b2Jx.png'],
+        ['a bidi override', 'ci_diff/x\u202egnp.png']
+      ])('an entry name with %s is refused and the message is escaped', async (_label, name) => {
+        const zip = writeZip(path.join(work, 'esc.zip'), [...folderEntries(ciRunDir, 'ci_diff'), { name, data: 'x' }]);
+        const err = await rejection(importRuns({ kind: 'zip', file: zip }, opts()));
+        expect(err.status).toBe(400);
+        expect(err.message).toContain('Unsafe file name');
+        expect(err.message).not.toMatch(RAW_CONTROL);
+        // Shown escaped: \u001b (JSON) or \u{9B} / \u{202E} (sanitizeForDisplay)
+        expect(err.message).toMatch(/\\u(001b|\{(9B|202E)\})/);
+      });
+
+      it('escapes control characters that V8 quotes from invalid JSON', async () => {
+        const entries = [...folderEntries(ciRunDir, 'ci_diff').filter((e) => !e.name.endsWith('run.json')), { name: 'ci_diff/run.json', data: '{"a": \u001b]0;PWNED\u0007\u009b2J}' }];
+        const err = await rejection(importRuns({ kind: 'zip', file: writeZip(path.join(work, 'j.zip'), entries) }, opts()));
+        expect(err.status).toBe(422);
+        expect(err.message).toContain('not valid JSON');
+        expect(err.message).not.toMatch(RAW_CONTROL);
+      });
+
+      it('sanitizeForDisplay escapes C0, DEL, C1, bidi and format characters', () => {
+        expect(sanitizeForDisplay('a\u001b[2J\u0007\u007f\u0085\u009b\u200f\u202e\u2066\ufeffb')).toBe(
+          'a\\u{1B}[2J\\u{7}\\u{7F}\\u{85}\\u{9B}\\u{200F}\\u{202E}\\u{2066}\\u{FEFF}b');
+        expect(sanitizeForDisplay('plain /route-é ✓')).toBe('plain /route-é ✓');
+      });
     });
 
     it('skips symlink entries (never creates a link), even one named like a wanted image', async () => {
@@ -474,6 +528,13 @@ describe('importRuns', () => {
       ['an unknown run status', (m) => { m.run.status = 'APPROVED'; }, 'run.status'],
       ['a bad created_at', (m) => { m.run.created_at = 'yesterday'; }, 'run.created_at'],
       ['a branch with control characters', (m) => { m.run.branch = 'main\u0000'; }, 'run.branch'],
+      ['a branch with an ESC sequence', (m) => { m.run.branch = 'main\u001b]0;PWNED\u0007'; }, 'run.branch'],
+      ['a branch with a C1 control', (m) => { m.run.branch = 'main\u009b2J'; }, 'run.branch'],
+      ['a branch with a bidi override', (m) => { m.run.branch = 'main\u202eniam'; }, 'run.branch'],
+      ['a route with a bidi override', (m) => { m.snapshots[0].route = '/\u202ecilbup'; }, 'snapshots[0].route'],
+      ['a route with a bidi isolate', (m) => { m.snapshots[0].route = '/a\u2066b'; }, 'snapshots[0].route'],
+      ['a route with a direction mark', (m) => { m.snapshots[0].route = '/a\u200fb'; }, 'snapshots[0].route'],
+      ['a route with a C1 control', (m) => { m.snapshots[0].route = '/a\u0085b'; }, 'snapshots[0].route'],
       ['a non-finite threshold', (m) => { m.run.threshold_percentage = 'NaN'; }, 'threshold_percentage'],
       ['no snapshots', (m) => { m.snapshots = []; }, 'non-empty array'],
       ['an unsafe viewport', (m) => { m.snapshots[0].viewport = '../x'; }, 'viewport'],
@@ -502,8 +563,10 @@ describe('importRuns', () => {
       expect(err.status).toBe(422);
       expect(err.message).toContain(message);
       expect(err.message).toContain('ci_diff/run.json');
+      expect(err.message).not.toMatch(RAW_CONTROL);
       expect(runCount()).toBe(0);
       expect(fs.readdirSync(path.join(storageRoot, 'runs'))).toEqual([]);
+      expect(leftovers()).toEqual([]);
     });
 
     it('rejects an image that is not a PNG even when its hash matches', async () => {
@@ -551,6 +614,180 @@ describe('importRuns', () => {
       const err = await rejection(importRuns({ kind: 'zip', file: writeZip(path.join(work, 'nested.zip'), entries) }, opts()));
       expect(err.status).toBe(422);
       expect(err.message).toContain('inside the run');
+    });
+  });
+
+  describe('robustness', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    const twoRunZip = () => writeZip(path.join(work, 'two.zip'), [
+      ...folderEntries(ciRunDir, 'ci_diff'),
+      ...folderEntries(path.join(ciDir, 'storage', 'runs', 'ci_base'), 'ci_base')
+    ]);
+
+    it('a failed move of the SECOND run removes the first one again', async () => {
+      const realRename = fs.renameSync;
+      vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (to === localRunDir('ci_base')) throw Object.assign(new Error('EIO: simulated failure'), { code: 'EIO' });
+        return realRename(from, to);
+      });
+      const err = await rejection(importRuns({ kind: 'zip', file: twoRunZip() }, opts()));
+      expect(err.message).toContain('simulated failure');
+      expect(fs.readdirSync(path.join(storageRoot, 'runs'))).toEqual([]);
+      expect(runCount()).toBe(0);
+      expect(leftovers()).toEqual([]);
+    });
+
+    it('copies through a temp folder inside runs/ when runs/ is on another filesystem (EXDEV)', async () => {
+      const realRename = fs.renameSync;
+      const crossDevice = [];
+      vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        // The staging folder -> runs/<id> move crosses filesystems; renames within runs/ don't.
+        if (String(from).includes(`${path.sep}.import-`) && path.dirname(to) === path.join(storageRoot, 'runs') &&
+            !path.dirname(from).endsWith(`${path.sep}runs`)) {
+          crossDevice.push(to);
+          throw Object.assign(new Error('EXDEV: cross-device link not permitted'), { code: 'EXDEV' });
+        }
+        return realRename(from, to);
+      });
+      const result = await importRuns({ kind: 'zip', file: twoRunZip() }, opts());
+      expect(result.runs.map((r) => r.id)).toEqual(['ci_diff', 'ci_base']);
+      expect(crossDevice).toEqual([localRunDir('ci_diff'), localRunDir('ci_base')]);
+      expect(fs.readdirSync(path.join(storageRoot, 'runs')).sort()).toEqual(['ci_base', 'ci_diff']); // no .import-* left
+      expect(sha(fs.readFileSync(path.join(localRunDir('ci_diff'), 'index-desktop.png')))).toBe(manifest.snapshots[0].current_sha256);
+      expect(leftovers()).toEqual([]);
+    });
+
+    it('a requested run id must not collide with a leftover folder, ignoring case', async () => {
+      fs.mkdirSync(localRunDir('review-1'), { recursive: true });
+      fs.mkdirSync(localRunDir('REVIEW-2'), { recursive: true });
+      for (const id of ['review-1', 'review-2', 'Review-1']) {
+        const err = await rejection(importRuns({ kind: 'dir', path: ciRunDir }, opts({ runId: id })));
+        expect(err.status, id).toBe(409);
+      }
+      expect(runCount()).toBe(0);
+    });
+
+    it('ids differing only in case count as taken (case-insensitive filesystems)', async () => {
+      createTestRun({ id: 'CI_DIFF', status: 'PASSED' }, db);
+      fs.mkdirSync(localRunDir('Ci_Diff-IMP2'), { recursive: true });
+      const result = await importRuns({ kind: 'dir', path: ciRunDir }, opts());
+      expect(result.runs[0]).toMatchObject({ id: 'ci_diff-imp3', renamedFrom: 'ci_diff' });
+      // The same artifact again is still recognised as already imported.
+      const again = await importRuns({ kind: 'dir', path: ciRunDir }, opts());
+      expect(again.runs[0]).toMatchObject({ id: 'ci_diff-imp3', alreadyImported: true });
+    });
+
+    it('removes staging folders left behind by a crashed import (only old real directories)', async () => {
+      const old = (Date.now() - STALE_STAGING_MS - 60000) / 1000;
+      const mk = (p) => { fs.mkdirSync(p, { recursive: true }); fs.writeFileSync(path.join(p, 'x.png'), 'x'); return p; };
+      const staleRoot = mk(path.join(storageRoot, '.import-crashed'));
+      const staleRuns = mk(path.join(storageRoot, 'runs', '.import-copy'));
+      const fresh = mk(path.join(storageRoot, '.import-busy'));
+      const outside = mk(path.join(work, 'outside-target'));
+      const link = path.join(storageRoot, '.import-link');
+      fs.symlinkSync(outside, link);
+      const file = path.join(storageRoot, '.import-file');
+      fs.writeFileSync(file, 'not a folder');
+      for (const p of [staleRoot, staleRuns, file, outside]) fs.utimesSync(p, old, old);
+      fs.lutimesSync(link, old, old);
+
+      await importRuns({ kind: 'dir', path: ciRunDir }, opts());
+      expect(fs.existsSync(staleRoot)).toBe(false);
+      expect(fs.existsSync(staleRuns)).toBe(false);
+      expect(fs.existsSync(fresh)).toBe(true);
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(fs.existsSync(path.join(outside, 'x.png'))).toBe(true);
+      expect(fs.existsSync(file)).toBe(true);
+    });
+
+    it('the run page notices when a baseline changes (and changes back) despite the hash cache', async () => {
+      await importRuns({ kind: 'zip', file: artifactZip() }, opts());
+      const baseline = path.join(storageRoot, 'baselines', 'index-desktop.png');
+      const original = fs.readFileSync(baseline);
+      const staleCount = () => runDetailModel({ db, runId: 'ci_diff', storageRoot }).stalePendingCount;
+      expect(staleCount()).toBe(0);
+      expect(hashCacheInfo(baseline).has).toBe(true);
+      expect(staleCount()).toBe(0); // served from the cache
+
+      // Same size, one byte different: only mtime/ctime tell the cache it changed.
+      const tweaked = Buffer.from(original);
+      tweaked[tweaked.length - 20] ^= 0xff;
+      fs.writeFileSync(baseline, tweaked);
+      expect(staleCount()).toBe(1);
+      fs.writeFileSync(baseline, original);
+      expect(staleCount()).toBe(0);
+    });
+
+    describe('folder walker: the tree changing underneath', () => {
+      const copyRun = () => {
+        const copy = path.join(work, 'copy');
+        fs.cpSync(ciRunDir, copy, { recursive: true });
+        return copy;
+      };
+      const realLstat = fs.lstatSync;
+
+      it.skipIf(process.platform === 'win32')('a FIFO swapped in for an image does not hang the import', async () => {
+        const copy = copyRun();
+        const target = path.join(copy, 'index-desktop.png');
+        fs.rmSync(target);
+        execFileSync('mkfifo', [target]);
+        // Simulate the swap: the walker's lstat still sees the regular file that was there.
+        const regular = path.join(copy, 'about-desktop.png');
+        vi.spyOn(fs, 'lstatSync').mockImplementation((p, ...rest) => realLstat(p === target ? regular : p, ...rest));
+        // A blocking open would freeze this whole worker (no test timeout could fire), so
+        // a watchdog opens the FIFO for writing after 5 s, which would release it: a
+        // regression then fails on the elapsed time instead of hanging the suite.
+        const watchdog = spawn('sh', ['-c', 'sleep 5; : > "$0"', target], { stdio: 'ignore' });
+        const started = Date.now();
+        try {
+          const err = await rejection(importRuns({ kind: 'dir', path: copy }, opts()));
+          expect(Date.now() - started).toBeLessThan(4000);
+          expect(err.status).toBe(422);
+          expect(err.message).toContain('"index-desktop.png" is missing');
+        } finally {
+          watchdog.kill('SIGKILL');
+        }
+      }, 15000);
+
+      it('a folder swapped for a symlink to outside the root is not walked', async () => {
+        const holder = path.join(work, 'holder');
+        fs.mkdirSync(holder);
+        const outsideRun = path.join(work, 'outside-run');
+        fs.cpSync(ciRunDir, outsideRun, { recursive: true });
+        const linked = path.join(holder, 'ci_diff');
+        fs.symlinkSync(outsideRun, linked);
+        // lstat reports a plain folder (as it was before the swap); the real path is outside.
+        vi.spyOn(fs, 'lstatSync').mockImplementation((p, ...rest) => realLstat(p === linked ? holder : p, ...rest));
+        const err = await rejection(importRuns({ kind: 'dir', path: holder }, opts()));
+        expect(err.status).toBe(422);
+        expect(err.message).toContain('No run.json found');
+      });
+
+      it('a parent folder swapped for a symlink between the checks and the open is caught', async () => {
+        const holder = path.join(work, 'holder');
+        fs.mkdirSync(holder);
+        const outsideRun = path.join(work, 'outside-run');
+        fs.cpSync(ciRunDir, outsideRun, { recursive: true });
+        const linked = path.join(holder, 'ci_diff');
+        fs.symlinkSync(outsideRun, linked);
+        // Both folder checks pass (as if it were still a real folder inside the root);
+        // only the check made after opening each file sees where it really is.
+        vi.spyOn(fs, 'lstatSync').mockImplementation((p, ...rest) => realLstat(p === linked ? holder : p, ...rest));
+        const realRealpath = fs.realpathSync;
+        let fooled = false;
+        vi.spyOn(fs, 'realpathSync').mockImplementation((p, ...rest) => {
+          if (p === linked && !fooled) {
+            fooled = true;
+            return path.join(realRealpath(holder), 'ci_diff');
+          }
+          return realRealpath(p, ...rest);
+        });
+        const err = await rejection(importRuns({ kind: 'dir', path: holder }, opts()));
+        expect(fooled).toBe(true);
+        expect(err.status).toBe(422);
+        expect(err.message).toContain('No run.json found');
+      });
     });
   });
 
@@ -693,6 +930,23 @@ describe('visual-ci import (CLI)', () => {
     } finally {
       db.close();
     }
+  }, 30000);
+
+  it('never prints raw control characters from a malicious archive', async () => {
+    const zip = writeZip(path.join(cwd, 'evil.zip'), [
+      ...folderEntries(ciRunDir, 'ci_diff'),
+      { name: 'x\\\u001b]0;PWNED\u0007\u001b[2J\u009b2J\u202e', data: 'x' }
+    ]);
+    const { code, out } = await runCli(['import', 'evil.zip'], { cwd, env: { VISUAL_STORAGE_DIR: path.join(cwd, 's') } });
+    expect(code).toBe(1);
+    expect(out).toContain('Unsafe file name in the archive');
+    expect(out.replace(/[\n\t]/g, '')).not.toMatch(RAW_CONTROL);
+  }, 30000);
+
+  it('prints dashboard links with the PORT the dashboard will use', async () => {
+    const { code, out } = await runCli(['import', ciRunDir], { cwd, env: { VISUAL_STORAGE_DIR: path.join(cwd, 's'), PORT: '4670' } });
+    expect(code, out).toBe(0);
+    expect(out).toContain('http://localhost:4670/runs/ci_diff');
   }, 30000);
 
   it('exits 1 with a clear message on failure', async () => {
