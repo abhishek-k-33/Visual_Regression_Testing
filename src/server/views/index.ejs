@@ -41,8 +41,8 @@
           <div class="kpi-value"><%= stats.total %></div>
         </div>
         <svg aria-hidden="true" class="kpi-curve" viewBox="0 0 180 90" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M0 75 C 50 48, 100 88, 180 25" stroke="rgba(255, 255, 255, 0.28)" stroke-width="2.5" stroke-linecap="round"/>
-          <path d="M25 90 C 70 62, 120 95, 180 48" stroke="rgba(255, 255, 255, 0.14)" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M0 75 C 50 48, 100 88, 180 25" stroke="currentColor" stroke-opacity="0.28" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M25 90 C 70 62, 120 95, 180 48" stroke="currentColor" stroke-opacity="0.14" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
       </div>
 
@@ -59,8 +59,8 @@
           <div class="kpi-value kpi-value-green"><%= stats.passedOrApproved %></div>
         </div>
         <svg aria-hidden="true" class="kpi-curve" viewBox="0 0 180 90" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M0 75 C 50 48, 100 88, 180 25" stroke="rgba(167, 243, 208, 0.28)" stroke-width="2.5" stroke-linecap="round"/>
-          <path d="M25 90 C 70 62, 120 95, 180 48" stroke="rgba(167, 243, 208, 0.14)" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M0 75 C 50 48, 100 88, 180 25" stroke="currentColor" stroke-opacity="0.28" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M25 90 C 70 62, 120 95, 180 48" stroke="currentColor" stroke-opacity="0.14" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
       </div>
 
@@ -78,8 +78,8 @@
           <div class="kpi-value kpi-value-red"><%= stats.failed %></div>
         </div>
         <svg aria-hidden="true" class="kpi-curve" viewBox="0 0 180 90" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M0 75 C 50 48, 100 88, 180 25" stroke="rgba(253, 164, 175, 0.28)" stroke-width="2.5" stroke-linecap="round"/>
-          <path d="M25 90 C 70 62, 120 95, 180 48" stroke="rgba(253, 164, 175, 0.14)" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M0 75 C 50 48, 100 88, 180 25" stroke="currentColor" stroke-opacity="0.28" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M25 90 C 70 62, 120 95, 180 48" stroke="currentColor" stroke-opacity="0.14" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
       </div>
     </section>
@@ -114,7 +114,7 @@
               <th scope="col" style="width: 240px;">Run ID</th>
               <th scope="col" style="width: 240px;">Git Context</th>
               <th scope="col" style="width: 200px;">Snapshots</th>
-              <th scope="col" style="width: 180px;">Created</th>
+              <th scope="col" style="width: 180px;">Created (UTC)</th>
               <th scope="col" style="width: 100px; text-align: right;">Actions</th>
             </tr>
           </thead>
@@ -139,7 +139,7 @@
               <% runs.forEach(run => { %>
                 <tr data-run-id="<%= run.id %>" data-status="<%= run.status %>" data-branch="<%= run.branch || '' %>" data-commit="<%= run.commit_hash || '' %>">
                   <!-- 1. Status Pill -->
-                  <td>
+                  <td data-label="Status">
                     <% if (run.status === 'PASSED') { %>
                       <span class="status-pill status-pill-passed">
                         <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -177,12 +177,12 @@
                   </td>
 
                   <!-- 2. Run ID -->
-                  <td>
+                  <td data-label="Run ID">
                     <a href="<%= url(`/runs/${encodeURIComponent(run.id)}`) %>" class="run-id-link"><%= run.id %></a>
                   </td>
 
                   <!-- 3. Git Context -->
-                  <td>
+                  <td data-label="Git">
                     <div class="git-context">
                       <% if (run.branch) { %>
                         <span class="git-badge">
@@ -192,7 +192,7 @@
                             <circle cx="6" cy="18" r="3"></circle>
                             <path d="M18 9a9 9 0 0 1-9 9"></path>
                           </svg>
-                          <span><%= run.branch %></span>
+                          <span title="<%= run.branch %>"><%= run.branch %></span>
                         </span>
                       <% } %>
                       <% if (run.commit_hash) { %>
@@ -204,26 +204,27 @@
                     </div>
                   </td>
 
-                  <!-- 4. Snapshots -->
-                  <td>
+                  <!-- 4. Snapshots: total, then each non-zero status count -->
+                  <td data-label="Snapshots">
                     <div class="snapshots-summary">
-                      <span class="snapshots-count"><%= run.total_snapshots || 0 %> snapshots</span>
-                      <span class="snapshots-sub">
-                        <span class="match-count">• <%= run.match_count || 0 %> match</span>
-                        <% if (run.diff_count > 0) { %>
-                          <span class="diff-count">• <%= run.diff_count %> diff</span>
-                        <% } %>
-                      </span>
+                      <span class="snapshots-count"><%= run.total_snapshots || 0 %> snapshot<%= run.total_snapshots === 1 ? '' : 's' %></span>
+                      <% if (run.snapshotCounts.length) { %>
+                        <span class="snapshots-sub">
+                          <% run.snapshotCounts.forEach((part) => { %>
+                            <span class="<%= part.cls %>">• <%= part.count %> <%= part.label %></span>
+                          <% }) %>
+                        </span>
+                      <% } %>
                     </div>
                   </td>
 
-                  <!-- 5. Created Date/Time -->
-                  <td>
-                    <span class="timestamp-text"><%= run.created_at %></span>
+                  <!-- 5. Created Date/Time (stored as UTC) -->
+                  <td data-label="Created">
+                    <span class="timestamp-text"><% if (run.createdAtIso) { %><time datetime="<%= run.createdAtIso %>"><%= run.created_at %> UTC</time><% } else { %><%= run.created_at %> UTC<% } %></span>
                   </td>
 
                   <!-- 6. Actions -->
-                  <td style="text-align: right;">
+                  <td class="run-actions-cell" style="text-align: right;">
                     <a href="<%= url(`/runs/${encodeURIComponent(run.id)}`) %>" class="btn-inspect">
                       <span>Inspect<span class="visually-hidden"> run <%= run.id %></span></span>
                       <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">

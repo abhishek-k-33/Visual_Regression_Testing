@@ -7,9 +7,9 @@ import { chromium } from 'playwright';
 import { AxeBuilder } from '@axe-core/playwright';
 import { startUiServer } from './helpers/ui-fixture.js';
 
-// color-contrast is disabled for now: the colour palette and contrast are being reworked
-// in a separate milestone (M6), which re-enables this rule.
-const DISABLED_RULES = ['color-contrast'];
+// Every rule runs, including color-contrast, in both themes (the page follows the
+// emulated system colour scheme when no theme is stored).
+const THEMES = ['dark', 'light'];
 
 const PAGES = [
   { name: 'dashboard', path: '/' },
@@ -34,9 +34,9 @@ describe('axe accessibility scan (serious/critical violations)', () => {
     await ui?.close();
   });
 
-  for (const page of PAGES) {
-    it(`${page.name}: ${page.path}`, async () => {
-      const context = await browser.newContext();
+  for (const theme of THEMES) for (const page of PAGES) {
+    it(`${theme} theme, ${page.name}: ${page.path}`, async () => {
+      const context = await browser.newContext({ colorScheme: theme });
       const tab = await context.newPage();
       try {
         const res = await tab.goto(`${ui.baseUrl}${page.path}`, { waitUntil: 'load' });
@@ -49,7 +49,8 @@ describe('axe accessibility scan (serious/critical violations)', () => {
           await expect.poll(() => tab.locator('#shortcuts-dialog').evaluate((d) => d.open)).toBe(true);
         }
 
-        const results = await new AxeBuilder({ page: tab }).disableRules(DISABLED_RULES).analyze();
+        expect(await tab.evaluate(() => document.documentElement.dataset.theme)).toBe(theme);
+        const results = await new AxeBuilder({ page: tab }).analyze();
         const blocking = results.violations
           .filter((v) => v.impact === 'serious' || v.impact === 'critical')
           .map((v) => `${v.impact} ${v.id}: ${v.help}\n    ${v.nodes.map((n) => n.target.join(' ')).join('\n    ')}`);

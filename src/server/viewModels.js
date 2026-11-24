@@ -66,14 +66,48 @@ export function snapshotViewModel(s, storageRoot = getStorageRoot()) {
   };
 }
 
+// Snapshot status counts shown in the dashboard's Snapshots column, in display order.
+const SNAPSHOT_COUNT_PARTS = [
+  { key: 'diff_count', label: 'diff', cls: 'diff-count' }, // DIFF + MISSING_BASELINE (pending review)
+  { key: 'rejected_count', label: 'rejected', cls: 'rejected-count' },
+  { key: 'new_baseline_count', label: 'new baseline', cls: 'new-count' },
+  { key: 'approved_count', label: 'approved', cls: 'approved-count' },
+  { key: 'match_count', label: 'match', cls: 'match-count' }
+];
+
+/**
+ * Non-zero snapshot counts of a run row from getAllTestRuns(), e.g.
+ * [{ count: 2, label: 'new baseline', cls: 'new-count' }]. A baseline-only run reads
+ * "2 new baseline" rather than "0 match"; an approved run "2 approved".
+ *
+ * @param {object} run
+ * @returns {{ count: number, label: string, cls: string }[]}
+ */
+export function snapshotCounts(run) {
+  return SNAPSHOT_COUNT_PARTS
+    .map(({ key, label, cls }) => ({ count: Number(run[key]) || 0, label, cls }))
+    .filter((part) => part.count > 0);
+}
+
+/** 'YYYY-MM-DD HH:MM:SS' (SQLite UTC) -> ISO 8601 with Z, or null for anything else. */
+export function sqliteUtcToIso(value) {
+  const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$/.exec(String(value ?? ''));
+  return m ? `${m[1]}T${m[2]}Z` : null;
+}
+
 /**
  * Dashboard homepage model: all runs (newest first) plus the KPI / filter-tab counts.
+ * Each run also gets `snapshotCounts` and `createdAtIso` (for <time datetime>).
  *
  * @param {object} [options]
  * @param {import('better-sqlite3').Database} [options.db] - Defaults to the shared DB
  */
 export function indexModel({ db } = {}) {
-  const runs = getAllTestRuns(db);
+  const runs = getAllTestRuns(db).map((run) => ({
+    ...run,
+    snapshotCounts: snapshotCounts(run),
+    createdAtIso: sqliteUtcToIso(run.created_at)
+  }));
   const count = (...statuses) => runs.filter((r) => statuses.includes(r.status)).length;
   return {
     title: 'Visual Regression Test Runs',
@@ -105,7 +139,7 @@ export function runDetailModel({ db, runId, storageRoot = getStorageRoot() }) {
   }));
   return {
     title: `Run Details: ${run.id}`,
-    run,
+    run: { ...run, createdAtIso: sqliteUtcToIso(run.created_at) },
     snapshots,
     // Snapshots still awaiting review: the "Approve all pending (N)" button
     pendingCount: snapshots.filter((s) => PENDING_STATUSES.includes(s.status)).length
@@ -211,12 +245,6 @@ export function buildSparkline(values, { width = 600, height = 72, pad = 8 } = {
     latest,
     label
   };
-}
-
-/** 'YYYY-MM-DD HH:MM:SS' (SQLite UTC) -> ISO 8601 with Z, or null for anything else. */
-function sqliteUtcToIso(value) {
-  const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$/.exec(String(value ?? ''));
-  return m ? `${m[1]}T${m[2]}Z` : null;
 }
 
 /**

@@ -1,9 +1,10 @@
 <%#
   Shared page end. Params: scripts (array of local paths such as '/js/dashboard.js'),
   loaded as ES modules through url() so they work under a sub-path.
+  /js/theme.js (light/dark toggle) is loaded on every page.
 -%>
   <div id="live-region" class="visually-hidden" role="status" aria-live="polite"></div>
-<% (locals.scripts || []).forEach((src) => { -%>
+<% ['/js/theme.js', ...(locals.scripts || [])].forEach((src) => { -%>
   <script type="module" src="<%= url(src) %>"></script>
 <% }) -%>
 </body>

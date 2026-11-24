@@ -11,7 +11,7 @@ An open-source, self-hosted visual regression testing engine and interactive rev
 - 📸 **Deterministic Multi-Viewport Capture**: Playwright-powered headless Chromium capture with automatic CSS transition/animation freezing, caret hiding, and dynamic DOM element masking.
 - 🔍 **Pixel-Level Diffing & Dimension Normalization**: Powered by `pixelmatch` and `pngjs` with automatic canvas dimension padding (`PNG.bitblt`) to handle layout shifts without crashes.
 - 🗄️ **High-Performance SQLite Persistence**: Embedded SQLite storage (`better-sqlite3`) with Write-Ahead Logging (WAL) mode for fast, concurrent run tracking, Git commit/branch context, and snapshot history.
-- 🖥️ **Linear/Vercel-Inspired Review Dashboard**: Full-width dark developer dashboard featuring real-time search, status filtering, pagination, Side-by-Side comparison, Draggable Split Sliders, and Diff Highlight visualizers.
+- 🖥️ **Linear/Vercel-Inspired Review Dashboard**: Full-width developer dashboard (dark and light themes, phone-friendly layout, WCAG AA contrast) featuring real-time search, status filtering, pagination, Side-by-Side comparison, Draggable Split Sliders, and Diff Highlight visualizers.
 - 🔄 **One-Click Baseline Promotion**: Promote approved visual regressions to new golden baselines on disk directly from the web interface.
 - 🔒 **Security Basics**: Baseline promotion restricted to PNGs inside `storage/runs/` → `storage/baselines/` (symlink-aware), `/storage` serves only screenshot PNGs, localhost-only binding by default, and parameterized SQL queries.
 
@@ -93,16 +93,17 @@ Visual Regression Testing Project/
 │       ├── routes/                # Express routers (`/api`, `/`)
 │       │   ├── api.js             # REST API for runs and snapshot approval
 │       │   └── views.js           # HTML views: dashboard, run details, route history
-│       ├── views/                 # EJS templates (Linear/Vercel dark theme)
-│       │   ├── partials/          # Shared header (head + navbar) and footer (scripts)
+│       ├── views/                 # EJS templates (Linear/Vercel style, dark + light themes)
+│       │   ├── partials/          # Shared header (head, theme init script, navbar) and footer (scripts)
 │       │   ├── index.ejs          # Main dashboard table with KPI cards
 │       │   ├── run-detail.ejs     # Inspection studio (Slider, Side-by-Side, Diff)
 │       │   ├── history.ejs        # One route + viewport across runs (sparkline, thumbnails)
 │       │   └── layout.ejs         # Error page
 │       └── public/                # Static assets (CSS, client JS as ES modules)
-│           ├── css/styles.css     # Premium dark theme stylesheet
+│           ├── css/styles.css     # Stylesheet: colour tokens on :root (dark) + :root[data-theme="light"]
 │           └── js/
 │               ├── common.js      # Base path, API URL and screen-reader announce helpers
+│               ├── theme.js       # Light/dark toggle (every page), remembers the choice
 │               ├── dashboard.js   # Real-time search, filtering, and pagination
 │               ├── tabs.js        # Snapshot view tabs (WAI-ARIA tabs pattern)
 │               ├── slider.js      # Split slider (ARIA slider: keyboard + pointer events)
@@ -136,7 +137,10 @@ Visual Regression Testing Project/
     ├── server.test.js             # Express REST API and dashboard view tests (incl. route history)
     ├── storage-dir.test.js        # Custom storageDir honoured by CLI and dashboard
     ├── urls.test.js               # Base-path URL helpers
-    ├── viewModels.test.js         # Template data shaping, /storage URL mapping, history model
+    ├── viewModels.test.js         # Template data shaping, /storage URL mapping, history model, snapshot counts
+    ├── theme-contrast.test.js     # Parses styles.css: light theme covers every token, WCAG AA contrast per theme
+    ├── responsive-theme.test.js   # Chromium: no sideways scroll at 360/375px in both themes, 44px tap targets, theme toggle
+    ├── helpers/                   # Shared test helpers (CSS token/contrast math, seeded dashboard storage)
     ├── reporter.test.js           # Markdown reporter & CI step summary tests
     ├── a11y-axe.test.js           # axe-core scan of every page type in headless Chromium
     ├── keyboard-ui.test.js        # Keyboard & screen-reader behaviour: tabs, slider, shortcuts, skip link
@@ -329,7 +333,7 @@ The dashboard provides a **Linear/Vercel-inspired developer interface**:
   - **Passed / Approved**: Shows successful runs with emerald green gradient and check icon.
   - **Visual Regressions**: Highlights failing runs with coral red gradient and alert icon.
 - **Real-Time Toolbar**: Client-side filter toggle buttons (`All`, `Passed`, `Approved`, `Regressions`) and quick search input.
-- **Test Runs Table**: Displays status pills, cyan monospace Run IDs, Git context badges (`🌿 branch`, `#commit`), snapshot counts (matches in green, diffs in red), timestamps, and prominent **Inspect** buttons.
+- **Test Runs Table**: Displays status pills, cyan monospace Run IDs, Git context badges (`🌿 branch`, `#commit`; long branch names are truncated, full name on hover), snapshot counts per status (only the ones present: diff, rejected, new baseline, approved, match), creation times (UTC), and prominent **Inspect** buttons.
 - **Pagination**: Minimal footer with item range indicator and navigation controls.
 
 ### Run Detail Studio (`GET /runs/:id`)
@@ -352,11 +356,22 @@ An unknown run id returns the error page with status `404`. For every route and 
 
 Each snapshot card links to the **History** of its route and viewport (see below), and has an `id="snapshot-<id>"` anchor that the history page links to.
 
+### Themes (light / dark)
+- **How the theme is picked**: an inline script in `<head>` (before the stylesheet, so there is no flash of the wrong theme) sets `<html data-theme="light|dark">`. A choice you made with the toggle wins; otherwise it follows the system setting (`prefers-color-scheme`), and keeps following live system changes until you pick one. Without JavaScript the dashboard stays dark.
+- **Toggle**: the sun/moon button in the navbar (`aria-pressed="true"` means dark is on). It stores your choice in `localStorage` under the key **`vrt-theme`** (`"light"` or `"dark"`); clear that key to go back to following the system. Other open tabs follow the change. Works the same in the static GitHub Pages demo, under its sub-path.
+- **Colours** are custom properties: `:root` holds the dark palette, `:root[data-theme="light"]` overrides every colour token. Screenshots and diff images are never recoloured. `tests/theme-contrast.test.js` checks that the key text/background pairs (text on every surface, links, status pills, buttons, KPI cards, demo banner) meet WCAG AA (4.5:1 text, 3:1 large text and control borders) in both themes.
+
+### Phones (680px and narrower)
+- The runs table and the history table become stacked cards with a label per field; long run ids and branch names are cut with an ellipsis.
+- Filter tabs form a 2x2 grid and the search box takes the full width.
+- On run pages, Approve / Reject (and Approve all pending) stack full width with tap targets at least 44px tall, baseline and current screenshots stack, and the slider handle is bigger (dragging it no longer scrolls the page).
+- `tests/responsive-theme.test.js` checks in headless Chromium that the dashboard, a run with diffs, a history page and the error page never scroll sideways at 360px and 375px in either theme, including inside their tables (which become cards on phones). On tablets (681–1200px) wide tables may scroll inside their own box, but the page itself never does.
+
 ### Route History (`GET /history/:slug/:viewport`)
 How one route has looked at one viewport over time, e.g. `/history/index/desktop` for `/` on desktop. The slug is the same one the route's baseline file uses (`index-desktop.png`), so route spellings that share a baseline (such as `/a/b` and `/a_b`) share a history. Viewport names must match `[A-Za-z0-9_-]{1,64}`; unknown or invalid ones return a `404` page.
 - **Header**: route, viewport and a link to the current shared baseline image (when one exists).
 - **Sparkline**: server-rendered inline SVG of the mismatch percentage, oldest to newest, with min / max / latest (also in its `aria-label`). No chart library.
-- **One row per run** (latest 100, newest first): link to that run's snapshot card, time (UTC), branch and commit, status pill, mismatch %, and a lazy-loaded thumbnail of the screenshot.
+- **One row per run** (latest 100, newest first; a card per run on phones, thumbnail on top): link to that run's snapshot card, time (UTC), branch and commit, status pill, mismatch %, and a lazy-loaded thumbnail of the screenshot.
 - **Baseline changed marker**: shown on a run that was compared against a different baseline than the run before it (e.g. the first run after an approval), and as a dashed line on the sparkline. Runs recorded before baseline hashes existed are not marked.
 
 ### Accessibility & Keyboard Shortcuts
@@ -378,7 +393,7 @@ The dashboard can be used with the keyboard alone and with a screen reader:
 
 Clicking or tabbing into a card also makes it the current one. Shortcuts are ignored while you type in a field, with <kbd>Ctrl</kbd>/<kbd>Alt</kbd>/<kbd>Cmd</kbd> held, on key repeat and while a dialog is open. There is deliberately no shortcut for *Approve all pending*. Single-key shortcuts can conflict with screen readers and speech input (WCAG 2.1.4), so the help dialog has a switch to turn them off; the choice is saved in the browser's `localStorage` (if storage is blocked, the switch still works until reload). They work the same in the static demo, where approvals are simulated.
 
-`tests/a11y-axe.test.js` runs [axe-core](https://github.com/dequelabs/axe-core) on the dashboard, a run page (also with the slider and the help dialog open), a history page and the error page, and fails on any *serious* or *critical* violation. The `color-contrast` rule is disabled there for now, pending the colour/contrast rework.
+`tests/a11y-axe.test.js` runs [axe-core](https://github.com/dequelabs/axe-core) on the dashboard, a run page (also with the slider and the help dialog open), a history page and the error page, and fails on any *serious* or *critical* violation, with every rule enabled (including `color-contrast`) in both the dark and light themes.
 
 ---
 
@@ -407,7 +422,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 271 Vitest unit, integration & browser tests
+# Run all 303 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -434,23 +449,25 @@ node tests/verify-phase-5.js
  ✓ tests/capture-integration.test.js (6 tests)
  ✓ tests/cli-strict.test.js (5 tests)
  ✓ tests/demo-app.test.js (5 tests)
- ✓ tests/build-static-demo.test.js (12 tests)
+ ✓ tests/build-static-demo.test.js (13 tests)
  ✓ tests/db.test.js (19 tests)
  ✓ tests/docker.test.js (3 tests)
  ✓ tests/manifest.test.js (19 tests)
  ✓ tests/per-run-baselines.test.js (11 tests)
  ✓ tests/approve-all.test.js (21 tests)
  ✓ tests/approve-all-api.test.js (12 tests)
- ✓ tests/server.test.js (46 tests)
+ ✓ tests/server.test.js (50 tests)
  ✓ tests/storage-dir.test.js (3 tests)
  ✓ tests/urls.test.js (3 tests)
- ✓ tests/viewModels.test.js (29 tests)
+ ✓ tests/viewModels.test.js (32 tests)
+ ✓ tests/theme-contrast.test.js (9 tests)
+ ✓ tests/responsive-theme.test.js (9 tests)
  ✓ tests/reporter.test.js (11 tests)
- ✓ tests/a11y-axe.test.js (6 tests)
+ ✓ tests/a11y-axe.test.js (12 tests)
  ✓ tests/keyboard-ui.test.js (20 tests)
 
- Test Files  20 passed (20)
-      Tests  271 passed (271)
+ Test Files  22 passed (22)
+      Tests  303 passed (303)
 ```
 
 ---

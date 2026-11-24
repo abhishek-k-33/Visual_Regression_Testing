@@ -127,6 +127,10 @@ describe('Express Review Dashboard & REST API', () => {
     expect(data.run.id).toBe('api-run-1');
     expect(data.snapshots).toHaveLength(1);
     expect(data.snapshots[0].route).toBe('/');
+    // Same per-status counts as the run list (GET /api/runs)
+    for (const key of ['diff_count', 'match_count', 'new_baseline_count', 'approved_count', 'rejected_count']) {
+      expect(data.run, key).toHaveProperty(key);
+    }
   });
 
   it('GET /runs/:id renders run details HTML view', async () => {
@@ -136,6 +140,58 @@ describe('Express Review Dashboard & REST API', () => {
     expect(html).toContain('api-run-1');
     expect(html).toContain('Side-by-Side');
     expect(html).toContain('Approve & Update Baseline');
+  });
+
+  describe('theme and dashboard labels (M6)', () => {
+    const PAGE_URLS = ['/', '/runs/api-run-1', '/history/hist_page/tablet', '/history/nope/tablet'];
+
+    it('sets the theme in <head> before the stylesheet loads, on every page', async () => {
+      for (const url of PAGE_URLS) {
+        const html = await (await fetch(`${baseUrl}${url}`)).text();
+        const head = html.slice(0, html.indexOf('</head>'));
+        const script = head.indexOf("localStorage.getItem('vrt-theme')");
+        expect(script, url).toBeGreaterThan(-1);
+        expect(script, url).toBeLessThan(head.indexOf('rel="stylesheet"'));
+        expect(head, url).toContain("matchMedia('(prefers-color-scheme: light)')");
+        expect(head, url).toContain("setAttribute('data-theme', t)");
+      }
+    });
+
+    it('renders the theme toggle and loads js/theme.js on every page', async () => {
+      for (const url of PAGE_URLS) {
+        const html = await (await fetch(`${baseUrl}${url}`)).text();
+        expect(html, url).toMatch(/<button type="button" class="theme-toggle" data-theme-toggle aria-pressed="true"[^>]*>/);
+        expect(html, url).toContain('<span class="visually-hidden">Dark theme</span>');
+        expect(html.match(/<script type="module" src="\/js\/theme\.js"><\/script>/g), url).toHaveLength(1);
+        // Without JS nothing sets data-theme: the server never renders one.
+        expect(html, url).not.toMatch(/<html[^>]*data-theme=/);
+      }
+    });
+
+    it('serves theme.js without imports from outside its folder', async () => {
+      const res = await fetch(`${baseUrl}/js/theme.js`);
+      expect(res.status).toBe(200);
+      const src = await res.text();
+      expect(src).toContain("STORAGE_KEY = 'vrt-theme'");
+      for (const m of src.matchAll(/^\s*import\s[^'"]*['"]([^'"]+)['"]/gm)) expect(m[1]).toMatch(/^\.\//);
+    });
+
+    it('labels dashboard and run times as UTC and shows meaningful snapshot counts', async () => {
+      const index = await (await fetch(`${baseUrl}/`)).text();
+      expect(index).toContain('<th scope="col" style="width: 180px;">Created (UTC)</th>');
+      expect(index).toContain('<time datetime="2026-01-01T10:00:00Z">2026-01-01 10:00:00 UTC</time>');
+      const row = (id) => index.split('<tr').find((r) => r.includes(`data-run-id="${id}"`));
+      // hist-1 only created a baseline: no more "0 match"
+      expect(row('hist-1')).toContain('<span class="new-count">• 1 new baseline</span>');
+      expect(row('hist-1')).not.toContain('match');
+      expect(row('hist-2')).toContain('<span class="diff-count">• 1 diff</span>');
+      expect(row('hist-3')).toContain('<span class="match-count">• 1 match</span>');
+      expect(row('hist-3')).toContain('1 snapshot</span>');
+      expect(row('hist-1')).toContain('data-label="Run ID"');
+
+      const run = await (await fetch(`${baseUrl}/runs/hist-2`)).text();
+      expect(run).toContain('Created on <time datetime="2026-01-02T10:00:00Z">2026-01-02 10:00:00 UTC</time>');
+    });
   });
 
   describe('accessibility markup (M5)', () => {
