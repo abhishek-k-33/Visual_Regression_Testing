@@ -122,11 +122,24 @@ describe('Import CI run (dashboard)', () => {
     expect(uploads).toBe(0); // the held request was already counted before the listener
   });
 
-  it('an artifact with several runs lists links to each', async () => {
+  it('keeps the empty status region rendered, so its first message is announced', async () => {
+    const status = page.locator('[data-import-status]');
+    expect(await status.textContent()).toBe('');
+    expect(await status.evaluate((el) => getComputedStyle(el).display)).not.toBe('none');
+    // Still exposed to assistive technology while empty (a live region must exist
+    // before its content changes).
+    const snapshot = await page.locator('main').ariaSnapshot();
+    expect(snapshot).toMatch(/- status/);
+  });
+
+  it('an artifact with several runs lists links to each (announced once, by the status region)', async () => {
     await page.setInputFiles('#import-file', artifact('ci_ui_multi_a', 'ci_ui_multi_b'));
     const status = page.locator('[data-import-status]');
     await expect.poll(() => status.locator('a').count()).toBe(2);
     expect(await status.textContent()).toContain('Imported 2 runs');
+    // Not repeated through the page's other live region (announce() writes after 50 ms).
+    await page.waitForTimeout(250);
+    expect(await page.locator('#live-region').textContent()).toBe('');
     expect(await status.locator('a').evaluateAll((as) => as.map((a) => a.getAttribute('href'))))
       .toEqual(['/runs/ci_ui_multi_a', '/runs/ci_ui_multi_b']);
     expect(await page.getByRole('button', { name: 'Import CI run' }).isDisabled()).toBe(false);

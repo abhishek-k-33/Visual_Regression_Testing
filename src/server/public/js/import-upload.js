@@ -106,13 +106,11 @@ function initImport() {
       if (data.runs.length === 1) {
         const [run] = data.runs;
         const done = run.alreadyImported ? `${run.id} was already imported` : `Imported ${run.id}`;
-        setStatus(`${done}. Opening it…`);
-        announce(`${done}. Opening it.`);
+        setStatus(`${done}. Opening it…`); // the status region announces it (once)
         navigating = true;
         window.location.assign(`${base}${run.url}`);
       } else {
-        showRunLinks(data.runs);
-        announce(`Imported ${data.runs.length} runs. Links are listed below the page heading.`);
+        showRunLinks(data.runs); // announced by the status region
       }
     } catch (err) {
       showError(`Import failed: network error (${err.message}).`);

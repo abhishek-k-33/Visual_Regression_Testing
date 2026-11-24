@@ -2291,15 +2291,17 @@ kbd {
   color: var(--text-secondary);
 }
 
-/* Progress / result of an import; takes no space while empty */
-.import-status:empty {
-  display: none;
-}
-
+/* Progress / result of an import (role="status"). Takes no space while empty but stays
+   rendered: display: none would drop the live region, and "Importing..." might not be
+   announced. */
 .import-status {
-  margin: 0 0 16px;
+  margin: 0;
   font-size: 13px;
   color: var(--text-primary);
+}
+
+.import-status:not(:empty) {
+  margin: 0 0 16px;
 }
 
 .import-status ul {
