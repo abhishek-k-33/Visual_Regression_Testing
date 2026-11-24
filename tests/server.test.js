@@ -760,6 +760,17 @@ describe('Express Review Dashboard & REST API', () => {
     }
   });
 
+  it('never serves hidden (dot-named) folders or files under /storage', async () => {
+    const hiddenRun = path.join(storageRoot, 'runs', '.import-abc123', 'x');
+    fs.mkdirSync(hiddenRun, { recursive: true });
+    fs.writeFileSync(path.join(hiddenRun, 'index-desktop.png'), 'STAGED');
+    fs.writeFileSync(path.join(storageRoot, 'runs', 'api-run-1', '.hidden.png'), 'HIDDEN');
+    for (const p of ['/storage/runs/.import-abc123/x/index-desktop.png', '/storage/runs/api-run-1/.hidden.png']) {
+      const res = await fetch(`${baseUrl}${p}`);
+      expect(res.status, p).toBe(403);
+    }
+  });
+
   it('returns 404 for a missing screenshot', async () => {
     const res = await fetch(`${baseUrl}/storage/runs/api-run-1/missing.png`);
     expect(res.status).toBe(404);

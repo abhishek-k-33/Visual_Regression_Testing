@@ -49,7 +49,9 @@ app.use('/storage', (req, res, next) => {
     return res.status(400).type('text/plain').send('Bad request');
   }
 
-  if (!SERVABLE_STORAGE_PATH.test(relPath) || relPath.split('/').includes('..')) {
+  // No dot-segments at all: blocks '..' and hidden folders such as an import's
+  // temporary runs/.import-* copy or a baseline's .x.png.<id>.bak backup.
+  if (!SERVABLE_STORAGE_PATH.test(relPath) || relPath.split('/').some((seg) => seg.startsWith('.'))) {
     return res.status(403).type('text/plain').send('Access denied');
   }
 

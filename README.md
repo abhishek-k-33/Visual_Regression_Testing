@@ -456,7 +456,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 408 Vitest unit, integration & browser tests
+# Run all 409 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -491,7 +491,7 @@ node tests/verify-phase-5.js
  ✓ tests/per-run-baselines.test.js (11 tests)
  ✓ tests/approve-all.test.js (21 tests)
  ✓ tests/approve-all-api.test.js (12 tests)
- ✓ tests/server.test.js (50 tests)
+ ✓ tests/server.test.js (51 tests)
  ✓ tests/storage-dir.test.js (3 tests)
  ✓ tests/urls.test.js (3 tests)
  ✓ tests/viewModels.test.js (32 tests)
@@ -502,7 +502,7 @@ node tests/verify-phase-5.js
  ✓ tests/keyboard-ui.test.js (20 tests)
 
  Test Files  23 passed (23)
-      Tests  408 passed (408)
+      Tests  409 passed (409)
 ```
 
 ---
