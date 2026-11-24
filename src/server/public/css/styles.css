@@ -1699,6 +1699,15 @@ tbody tr:hover {
   max-width: 240px;
 }
 
+/* Tablets / small laptops (until the phone card layout takes over): the cap alone
+   still pushed the history table past its container, so shorten it further */
+@media (min-width: 681px) and (max-width: 1200px) {
+  #test-runs-table .git-badge,
+  .history-table .git-badge {
+    max-width: 150px;
+  }
+}
+
 .error-container {
   overflow-wrap: anywhere;
 }
@@ -1782,6 +1791,8 @@ tbody tr:hover {
   #test-runs-table tbody td[data-label]::before,
   .history-table tbody td[data-label]::before {
     content: attr(data-label);
+    /* Empty alt text: screen readers already get the column header from <thead> */
+    content: attr(data-label) / "";
     flex-shrink: 0;
     font-size: 11px;
     font-weight: 600;

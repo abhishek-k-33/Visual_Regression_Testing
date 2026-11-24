@@ -75,10 +75,15 @@ describe('theme and phone layout in Chromium', { timeout: 60_000 }, () => {
           const m = await page.evaluate(() => ({
             theme: document.documentElement.dataset.theme,
             scrollWidth: document.documentElement.scrollWidth,
-            clientWidth: document.documentElement.clientWidth
+            clientWidth: document.documentElement.clientWidth,
+            // Overflow absorbed by a scrolling table container never reaches the page
+            scrollers: [...document.querySelectorAll('.table-responsive')]
+              .filter((el) => el.scrollWidth > el.clientWidth + 1)
+              .map((el) => `${el.scrollWidth}/${el.clientWidth}`)
           }));
           expect(m.theme, `${name} @ ${width}`).toBe(theme);
           if (m.scrollWidth > m.clientWidth) problems.push(`${name} @ ${width}px: scrollWidth ${m.scrollWidth} > ${m.clientWidth}`);
+          if (m.scrollers.length) problems.push(`${name} @ ${width}px: table scrolls sideways (${m.scrollers.join(', ')})`);
         }
         expect(errors, `console errors @ ${width}`).toEqual([]);
         await context.close();
@@ -115,7 +120,7 @@ describe('theme and phone layout in Chromium', { timeout: 60_000 }, () => {
     await page.goto(baseUrl + PAGES.index);
     const row = page.locator(`tr[data-run-id="${LONG_RUN_ID}"]`);
     expect(await row.evaluate((tr) => getComputedStyle(tr).display)).toBe('flex');
-    expect(await row.locator('td[data-label="Run ID"]').evaluate((td) => getComputedStyle(td, '::before').content)).toBe('"Run ID"');
+    expect(await row.locator('td[data-label="Run ID"]').evaluate((td) => getComputedStyle(td, '::before').content)).toBe('"Run ID" / ""');
     const link = row.locator('.run-id-link');
     expect(await link.evaluate((a) => getComputedStyle(a).textOverflow)).toBe('ellipsis');
     expect(await link.evaluate((a) => a.scrollWidth > a.clientWidth)).toBe(true);
@@ -160,6 +165,44 @@ describe('theme and phone layout in Chromium', { timeout: 60_000 }, () => {
     await page.reload();
     expect(await page.getAttribute('html', 'data-theme')).toBe('dark');
     expect(errors).toEqual([]);
+    await context.close();
+  });
+
+  it('tablet / small-laptop widths: the page never scrolls sideways, and history fits at 1024px', async () => {
+    // Wide tables may scroll inside their own .table-responsive box on tablets (the
+    // dashboard table always did); the page itself must not. Long branch names used to
+    // push the history table past its box at 1024px.
+    const problems = [];
+    for (const width of [768, 1024]) {
+      const { context, page } = await openContext({ width, height: 900, theme: 'dark' });
+      for (const name of ['index', 'history']) {
+        await page.goto(baseUrl + PAGES[name]);
+        const m = await page.evaluate(() => ({
+          page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          tables: [...document.querySelectorAll('.table-responsive')]
+            .filter((el) => el.scrollWidth > el.clientWidth + 1)
+            .map((el) => `${el.scrollWidth}/${el.clientWidth}`)
+        }));
+        if (m.page > 0) problems.push(`${name} @ ${width}px: page scrolls sideways by ${m.page}px`);
+        if (name === 'history' && width === 1024 && m.tables.length) problems.push(`history @ 1024px: table ${m.tables.join(', ')}`);
+      }
+      await context.close();
+    }
+    expect(problems).toEqual([]);
+  });
+
+  it('keeps a toggled theme when storage is blocked and the system theme changes', async () => {
+    const { context, page } = await openContext({ width: 1024, colorScheme: 'dark' });
+    await context.addInitScript(() => {
+      Object.defineProperty(window, 'localStorage', { get() { throw new Error('blocked'); } });
+    });
+    await page.goto(baseUrl + PAGES.index);
+    expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark');
+    await page.locator('[data-theme-toggle]').click();
+    expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe('light');
+    await page.emulateMedia({ colorScheme: 'light' });
+    await page.emulateMedia({ colorScheme: 'dark' });
+    expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe('light');
     await context.close();
   });
 

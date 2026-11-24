@@ -127,6 +127,10 @@ describe('Express Review Dashboard & REST API', () => {
     expect(data.run.id).toBe('api-run-1');
     expect(data.snapshots).toHaveLength(1);
     expect(data.snapshots[0].route).toBe('/');
+    // Same per-status counts as the run list (GET /api/runs)
+    for (const key of ['diff_count', 'match_count', 'new_baseline_count', 'approved_count', 'rejected_count']) {
+      expect(data.run, key).toHaveProperty(key);
+    }
   });
 
   it('GET /runs/:id renders run details HTML view', async () => {

@@ -361,7 +361,7 @@ Each snapshot card links to the **History** of its route and viewport (see below
 - The runs table and the history table become stacked cards with a label per field; long run ids and branch names are cut with an ellipsis.
 - Filter tabs form a 2x2 grid and the search box takes the full width.
 - On run pages, Approve / Reject (and Approve all pending) stack full width with tap targets at least 44px tall, baseline and current screenshots stack, and the slider handle is bigger (dragging it no longer scrolls the page).
-- `tests/responsive-theme.test.js` checks in headless Chromium that the dashboard, a run with diffs, a history page and the error page never scroll sideways at 360px and 375px in either theme.
+- `tests/responsive-theme.test.js` checks in headless Chromium that the dashboard, a run with diffs, a history page and the error page never scroll sideways at 360px and 375px in either theme, including inside their tables (which become cards on phones). On tablets (681–1200px) wide tables may scroll inside their own box, but the page itself never does.
 
 ### Route History (`GET /history/:slug/:viewport`)
 How one route has looked at one viewport over time, e.g. `/history/index/desktop` for `/` on desktop. The slug is the same one the route's baseline file uses (`index-desktop.png`), so route spellings that share a baseline (such as `/a/b` and `/a_b`) share a history. Viewport names must match `[A-Za-z0-9_-]{1,64}`; unknown or invalid ones return a `404` page.
@@ -397,7 +397,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 261 Vitest unit & integration tests
+# Run all 263 Vitest unit & integration tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -436,11 +436,11 @@ node tests/verify-phase-5.js
  ✓ tests/urls.test.js (3 tests)
  ✓ tests/viewModels.test.js (32 tests)
  ✓ tests/theme-contrast.test.js (9 tests)
- ✓ tests/responsive-theme.test.js (7 tests)
+ ✓ tests/responsive-theme.test.js (9 tests)
  ✓ tests/reporter.test.js (11 tests)
 
  Test Files  20 passed (20)
-      Tests  261 passed (261)
+      Tests  263 passed (263)
 ```
 
 ---

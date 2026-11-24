@@ -7,7 +7,8 @@
  *  - wires the navbar toggle ([data-theme-toggle], aria-pressed="true" = dark),
  *  - remembers an explicit choice in localStorage under 'vrt-theme',
  *  - follows live system changes while no choice is stored,
- *  - keeps other open tabs in sync.
+ *  - keeps other open tabs in sync, and re-checks when a page is restored from the
+ *    back/forward cache (which receives no storage events).
  * Without JavaScript nothing sets data-theme and the page stays dark (the CSS default).
  */
 
@@ -29,7 +30,12 @@ function storedTheme() {
   }
 }
 
+// A choice made on this page, kept in memory too: if storage is blocked, the saved
+// choice reads back as null, and a system change must still not override it.
+let explicitChoice = null;
+
 function saveTheme(theme) {
+  explicitChoice = theme;
   try {
     window.localStorage.setItem(STORAGE_KEY, theme);
   } catch {
@@ -47,7 +53,9 @@ function applyTheme(theme) {
   });
 }
 
-applyTheme(storedTheme() || systemTheme());
+const preferredTheme = () => storedTheme() || explicitChoice || systemTheme();
+
+applyTheme(preferredTheme());
 
 document.querySelectorAll('[data-theme-toggle]').forEach((button) => {
   button.addEventListener('click', () => {
@@ -59,12 +67,17 @@ document.querySelectorAll('[data-theme-toggle]').forEach((button) => {
 
 if (systemLight) {
   const onSystemChange = () => {
-    if (!storedTheme()) applyTheme(systemTheme());
+    if (!storedTheme() && !explicitChoice) applyTheme(systemTheme());
   };
   if (typeof systemLight.addEventListener === 'function') systemLight.addEventListener('change', onSystemChange);
   else if (typeof systemLight.addListener === 'function') systemLight.addListener(onSystemChange);
 }
 
 window.addEventListener('storage', (event) => {
-  if (event.key === STORAGE_KEY || event.key === null) applyTheme(storedTheme() || systemTheme());
+  if (event.key === STORAGE_KEY || event.key === null) applyTheme(preferredTheme());
+});
+
+// Pages restored from the back/forward cache missed any change made on other pages.
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) applyTheme(preferredTheme());
 });
