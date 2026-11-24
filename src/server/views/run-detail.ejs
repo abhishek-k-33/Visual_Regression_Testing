@@ -41,9 +41,13 @@
             </span>
           <% } %>
           </span>
+          <% if (run.imported_at) { %>
+            <span class="imported-badge">Imported</span>
+          <% } %>
         </div>
         <% if (locals.pendingCount > 0) { %>
-          <button type="button" class="btn btn-approve-all" data-run-id="<%= run.id %>" data-count="<%= pendingCount %>">
+          <%# Disabled while a pending snapshot can't be approved (stale local baseline): approve-all is all or nothing. -%>
+          <button type="button" class="btn btn-approve-all<%= locals.stalePendingCount > 0 ? ' is-blocked' : '' %>" data-run-id="<%= run.id %>" data-count="<%= pendingCount %>"<% if (locals.stalePendingCount > 0) { %> disabled aria-describedby="approve-all-stale-note"<% } %>>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
               <polyline points="20 6 9 17 4 12"></polyline>
             </svg>
@@ -68,10 +72,18 @@
           <span class="git-badge git-commit">#<%= run.commit_hash %></span>
         <% } %>
         <span>• Created on <% if (run.createdAtIso) { %><time datetime="<%= run.createdAtIso %>"><%= run.created_at %> UTC</time><% } else { %><%= run.created_at %> UTC<% } %></span>
+        <% if (run.imported_at) { %>
+          <span>• Imported on <% if (run.importedAtIso) { %><time datetime="<%= run.importedAtIso %>"><%= run.imported_at %> UTC</time><% } else { %><%= run.imported_at %> UTC<% } %></span>
+        <% } %>
         <span>• <%= snapshots.length %> total snapshot(s)</span>
         <%# Opens the shortcuts dialog (shortcuts.js); also how to turn them back on once off. -%>
         <button type="button" class="shortcuts-hint" data-shortcuts-open aria-haspopup="dialog" aria-controls="shortcuts-dialog">Press <kbd>?</kbd> for keyboard shortcuts</button>
       </div>
+      <% if (locals.pendingCount > 0 && run.imported_at) { %>
+        <p class="baseline-stale-note" id="approve-all-stale-note" data-approve-all-stale<% if (!(locals.stalePendingCount > 0)) { %> hidden<% } %>>
+          Approve all is unavailable: your local baseline differs from the one CI compared against for <span data-stale-count><%= locals.stalePendingCount || 0 %></span> pending snapshot(s), so approving them would be refused. Update your branch or re-run the tests locally.
+        </p>
+      <% } %>
       <%# Errors from "Approve all pending" (review-actions.js); empty and invisible until then. -%>
       <div class="action-error" role="alert" data-action-error></div>
     </div>
@@ -88,7 +100,7 @@
         const tabAttrs = (key) => `role="tabpanel" id="${idBase}-panel-${key}" aria-labelledby="${idBase}-tab-${key}" tabindex="0"`;
       %>
       <%# tabindex="-1": the j/k shortcuts move focus to the card. -%>
-      <article class="snapshot-card" id="<%= idBase %>" data-status="<%= snap.status %>" tabindex="-1" aria-labelledby="<%= idBase %>-heading">
+      <article class="snapshot-card" id="<%= idBase %>" data-status="<%= snap.status %>"<% if (snap.baselineStale) { %> data-baseline-stale="true"<% } %> tabindex="-1" aria-labelledby="<%= idBase %>-heading">
         <h2 class="visually-hidden" id="<%= idBase %>-heading">Snapshot <%= snapLabel %></h2>
         <!-- Header: Route, Viewport & Actions -->
         <div class="snapshot-header">
@@ -140,7 +152,11 @@
 
           <div class="snapshot-actions">
             <% if (snap.status === 'DIFF' || snap.status === 'MISSING_BASELINE') { %>
+              <% if (snap.baselineStale) { %>
+              <button type="button" class="btn btn-approve is-blocked" data-id="<%= snap.id %>" disabled aria-describedby="<%= idBase %>-heading <%= idBase %>-stale">
+              <% } else { %>
               <button type="button" class="btn btn-approve" data-id="<%= snap.id %>" aria-describedby="<%= idBase %>-heading">
+              <% } %>
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                   <polyline points="20 6 9 17 4 12"></polyline>
                 </svg>
@@ -163,6 +179,11 @@
             <% } %>
           </div>
         </div>
+        <% if (snap.baselineStale) { %>
+          <p class="baseline-stale-note" id="<%= idBase %>-stale">
+            Your local baseline differs from the one CI compared against, so approving would be refused. Update your branch or re-run the tests locally.
+          </p>
+        <% } %>
         <%# Approve/reject errors for this snapshot (review-actions.js); empty and invisible until then. -%>
         <div class="action-error" role="alert" data-action-error></div>
 

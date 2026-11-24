@@ -2182,3 +2182,60 @@ kbd {
   height: 18px;
   accent-color: var(--primary-blue);
 }
+
+/* ==========================================================================
+   Imported runs (visual-ci import) - M2
+   ========================================================================== */
+
+/* "Imported" badge: dashboard row and run header */
+.imported-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  margin-left: 6px;
+  background-color: var(--primary-tint-bg);
+  color: var(--primary-on-tint);
+  border: 1px solid var(--primary-tint-border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.detail-title-row .imported-badge {
+  margin-left: 0;
+}
+
+/* The local baseline is not the one CI compared against: approval would be refused */
+.baseline-stale-note {
+  margin: 0 24px 16px;
+  padding: 10px 14px;
+  background-color: var(--status-new-bg);
+  border: 1px solid var(--status-new-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.detail-header-card .baseline-stale-note {
+  margin: 14px 0 0;
+}
+
+.baseline-stale-note[hidden] {
+  display: none;
+}
+
+/* Approve buttons disabled because of a stale baseline (not "busy") */
+.btn-approve.is-blocked,
+.btn-approve-all.is-blocked:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-approve.is-blocked:hover {
+  background-color: var(--success-tint-bg);
+  color: var(--success-green);
+}

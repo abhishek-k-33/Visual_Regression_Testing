@@ -131,11 +131,27 @@ function refreshRunHeader(runStatus = runStatusFromCards()) {
 
   const approveAll = document.querySelector('.btn-approve-all');
   if (!approveAll) return;
-  const pending = snapshotCards().filter((c) => PENDING_STATUSES.includes(c.dataset.status)).length;
+  const pendingCards = snapshotCards().filter((c) => PENDING_STATUSES.includes(c.dataset.status));
+  const pending = pendingCards.length;
   approveAll.dataset.count = String(pending);
   const label = approveAll.querySelector('.approve-all-label');
   if (label) label.textContent = `Approve all pending (${pending})`;
   approveAll.hidden = pending === 0;
+
+  // Imported runs: "Approve all" stays blocked while a pending snapshot has a stale local
+  // baseline (run-detail.ejs); rejecting those snapshots unblocks it.
+  const stale = pendingCards.filter((c) => c.dataset.baselineStale === 'true').length;
+  const note = document.querySelector('[data-approve-all-stale]');
+  if (note) {
+    note.hidden = stale === 0;
+    const count = note.querySelector('[data-stale-count]');
+    if (count) count.textContent = String(stale);
+  }
+  if (stale === 0 && approveAll.classList.contains('is-blocked')) {
+    approveAll.classList.remove('is-blocked');
+    approveAll.removeAttribute('aria-describedby');
+    approveAll.disabled = false;
+  }
 }
 
 /**
