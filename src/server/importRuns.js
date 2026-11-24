@@ -189,7 +189,7 @@ async function stageFile(source, parts, kind, state) {
     }
     throw err;
   }
-  state.files.set(label, { size: written, sha256: hash.digest('hex'), header });
+  state.files.set(label, { sha256: hash.digest('hex'), header });
   if (kind === 'manifest') state.manifests.push(parts);
 }
 
@@ -434,7 +434,7 @@ function checkPng(header, rel, where, limits) {
  * Validates one parsed run.json against the files staged next to it.
  *
  * @param {unknown} manifest - Parsed JSON
- * @param {(rel: string) => ({ size: number, sha256: string, header: Buffer } | undefined)} stagedFile
+ * @param {(rel: string) => ({ sha256: string, header: Buffer } | undefined)} stagedFile
  *   What staging recorded for a path relative to the run.json's folder (undefined if
  *   nothing was staged there)
  * @param {string} label - Where the manifest came from, for messages
@@ -708,7 +708,7 @@ export async function importRuns(source, { storageRoot, db, runId, limits: limit
     entries: 0,
     totalBytes: 0,
     manifests: [],
-    files: new Map() // staged path -> { size, sha256, header }
+    files: new Map() // staged path -> { sha256, header }
   };
   await fs.promises.mkdir(state.filesDir);
 
