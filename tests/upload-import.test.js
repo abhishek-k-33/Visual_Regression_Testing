@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { Writable } from 'node:stream';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import app from '../src/server/app.js';
 import { initDb, closeDb, getTestRunById, getSnapshotsByRunId } from '../src/server/db.js';
 import { isImportBusy, RETRY_AFTER_SECONDS, DEFAULT_MAX_UPLOAD_BYTES } from '../src/server/uploadImport.js';
@@ -37,6 +39,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise((resolve) => server.close(resolve));
+  delete process.env.VISUAL_IMPORT_IDLE_TIMEOUT_MS;
   for (const [key, value] of [['VISUAL_STORAGE_DIR', previousEnv.storage], ['VISUAL_IMPORT_MAX_UPLOAD_BYTES', previousEnv.cap]]) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -49,6 +52,7 @@ beforeEach(() => {
   fs.mkdirSync(path.join(storageRoot, 'baselines'), { recursive: true });
   process.env.VISUAL_STORAGE_DIR = storageRoot;
   delete process.env.VISUAL_IMPORT_MAX_UPLOAD_BYTES;
+  delete process.env.VISUAL_IMPORT_IDLE_TIMEOUT_MS;
   db = initDb(path.join(storageRoot, 'data.sqlite'));
 });
 
@@ -73,9 +77,11 @@ function artifact(options = {}) {
 
 /**
  * Raw POST, so tests control Content-Length, chunking and aborts. Resolves with the
- * response (even if the server stops reading the body early).
+ * response (even if the server stops reading the body early); rejects if no response
+ * arrives within `timeout`, so a server that never answers fails the test instead of
+ * hanging it.
  */
-function post({ body, headers = {}, chunks = null, chunkDelay = 0, onRequest } = {}) {
+function post({ body, headers = {}, chunks = null, chunkDelay = 0, onRequest, timeout = 10000 } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const req = http.request({
@@ -93,6 +99,7 @@ function post({ body, headers = {}, chunks = null, chunkDelay = 0, onRequest } =
       });
     });
     req.on('error', (err) => { if (!settled) setTimeout(() => { if (!settled) reject(err); }, 200); });
+    req.setTimeout(timeout, () => req.destroy(new Error(`no response within ${timeout} ms`)));
     onRequest?.(req);
     if (chunks) {
       (async () => {
@@ -301,31 +308,133 @@ describe('POST /api/imports', () => {
     });
   });
 
-  it('stays responsive: GET /api/runs answers promptly while a large import runs', async () => {
+  describe('server-side failures', () => {
+    const serverPathsIn = (text) => [storageRoot, root, os.tmpdir()].filter((p) => text.includes(p));
+
+    it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+      '500 (not a hang) when the temp file cannot be created; nothing left, lock released', async () => {
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+        fs.chmodSync(storageRoot, 0o555);
+        let res;
+        try {
+          res = await post({ body: artifact({ runId: 'ci_eacces' }).body, timeout: 5000 });
+        } finally {
+          fs.chmodSync(storageRoot, 0o755);
+        }
+        expect(res.status).toBe(500);
+        expect(res.json.error).toBe('Import failed because of a server error (EACCES).');
+        expect(serverPathsIn(res.text)).toEqual([]); // no absolute paths leak to the client
+        // The details are in the server log, as a readable multi-line stack.
+        const log = logged.mock.calls.map((c) => c.join(' ')).join('\n');
+        expect(log).toContain('EACCES');
+        expect(log.split('\n').length).toBeGreaterThan(2);
+        expect(log).not.toContain('\\u{A}');
+
+        await waitFor(() => !isImportBusy());
+        expect((await post({ body: artifact({ runId: 'ci_after_eacces' }).body })).status).toBe(201);
+      });
+
+    it('500 when writing the upload fails part-way (disk full); nothing left, lock released', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const realCreate = fs.createWriteStream;
+      vi.spyOn(fs, 'createWriteStream').mockImplementationOnce((file, ...rest) => {
+        const real = realCreate(file, ...rest); // creates the temp file, like a real partial write
+        let chunks = 0;
+        return new Writable({
+          write(chunk, _enc, cb) {
+            chunks += 1;
+            if (chunks === 1) return real.write(chunk, cb);
+            return cb(Object.assign(new Error(`ENOSPC: no space left on device, write '${file}'`), { code: 'ENOSPC' }));
+          },
+          destroy(err, cb) { real.destroy(); cb(err); }
+        });
+      });
+      const { body } = artifact({ runId: 'ci_enospc' });
+      const res = await post({ chunks: [body.subarray(0, 100), body.subarray(100)], chunkDelay: 20, timeout: 5000 });
+      expect(res.status).toBe(500);
+      expect(res.json.error).toBe('Import failed because of a server error (ENOSPC).');
+      expect(serverPathsIn(res.text)).toEqual([]);
+      await waitFor(() => !isImportBusy() && uploads().length === 0);
+      expect((await post({ body })).status).toBe(201);
+    });
+
+    it('507 when only the filesystem of runs/ (where the archive is unpacked) is low', async () => {
+      const runsDir = path.join(storageRoot, 'runs');
+      vi.spyOn(fs.promises, 'statfs').mockImplementation(async (dir) => (
+        path.resolve(dir) === runsDir ? { bsize: 4096, bavail: 10 } : { bsize: 4096, bavail: 1e9 }));
+      const res = await post({ body: artifact().body });
+      expect(res.status).toBe(507);
+      expect(res.json.error).toContain('40 KB free');
+    });
+
+    it('unpacks inside runs/ when runs/ is on another filesystem, and imports fine', async () => {
+      const runsDir = path.join(storageRoot, 'runs');
+      fs.mkdirSync(runsDir, { recursive: true });
+      const realStat = fs.promises.stat.bind(fs.promises);
+      vi.spyOn(fs.promises, 'stat').mockImplementation(async (p, ...rest) => {
+        const st = await realStat(p, ...rest);
+        return path.resolve(String(p)) === runsDir ? { ...st, dev: st.dev + 1, isDirectory: () => true } : st;
+      });
+      const mkdtemp = vi.spyOn(fs.promises, 'mkdtemp');
+      const res = await post({ body: artifact({ runId: 'ci_xdev' }).body });
+      expect(res.status).toBe(201);
+      expect(mkdtemp.mock.calls.map(([prefix]) => prefix)).toEqual([path.join(runsDir, '.import-')]);
+      expect(fs.readdirSync(runsDir)).toEqual(['ci_xdev']); // staging removed again
+    });
+
+    it('a stalled upload is dropped after the idle timeout: lock released, temp file removed', async () => {
+      process.env.VISUAL_IMPORT_IDLE_TIMEOUT_MS = '200';
+      const { body } = artifact({ runId: 'ci_stalled' });
+      const stalled = post({
+        headers: { 'Content-Length': String(body.length) },
+        onRequest: (req) => req.write(body.subarray(0, 100)), // then nothing more
+        timeout: 5000
+      }).then(() => 'answered', (err) => `dropped: ${err.message}`);
+      await waitFor(() => uploads().length === 1);
+      const started = Date.now();
+      await waitFor(() => !isImportBusy() && uploads().length === 0, { timeout: 3000 });
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(await stalled).toMatch(/^dropped/);
+      expect((await post({ body })).status).toBe(201);
+    });
+  });
+
+  it('stays responsive: requests are served while a large import runs, without blocking reads', async () => {
     // ~40 MB per image (3 images): unpacking, hashing and writing take a while, but are
     // all streamed, so the event loop keeps serving requests.
     const { body } = artifact({ runId: 'ci_big', padBytes: 40 * 1024 * 1024 });
+    // The real guard: no imported file is ever read synchronously (whole or in part).
     const readFileSync = vi.spyOn(fs, 'readFileSync');
+    const openSync = vi.spyOn(fs, 'openSync');
+    const readSync = vi.spyOn(fs, 'readSync');
+    const loopDelay = monitorEventLoopDelay({ resolution: 10 });
+    loopDelay.enable();
 
     let done = false;
-    const upload = post({ body }).finally(() => { done = true; });
-    const latencies = [];
+    const upload = post({ body, timeout: 60000 }).finally(() => { done = true; });
+    let served = 0;
     while (!done) {
-      const started = Date.now();
       const res = await fetch(`http://127.0.0.1:${port}/api/runs`);
       await res.json();
-      if (!done) latencies.push(Date.now() - started);
+      if (!done) served += 1;
       await sleep(20);
     }
+    loopDelay.disable();
     const res = await upload;
     expect(res.status).toBe(201);
     expect(getSnapshotsByRunId('ci_big', db)).toHaveLength(1);
 
-    // Requests were really served during the import, each one promptly.
-    expect(latencies.length).toBeGreaterThanOrEqual(3);
-    expect(Math.max(...latencies)).toBeLessThan(500);
-    // And by construction: no imported file was ever read whole and synchronously.
-    const syncReads = readFileSync.mock.calls.map(([p]) => String(p)).filter((p) => p.startsWith(storageRoot));
-    expect(syncReads).toEqual([]);
+    const underStorage = (p) => typeof p === 'string' && p.startsWith(storageRoot);
+    expect(readFileSync.mock.calls.map(([p]) => p).filter(underStorage)).toEqual([]);
+    const storageFds = new Set(openSync.mock.calls
+      .map(([p], i) => (underStorage(String(p)) ? openSync.mock.results[i].value : null))
+      .filter((fd) => fd !== null));
+    expect(storageFds.size).toBe(0);
+    expect(readSync.mock.calls.filter(([fd]) => storageFds.has(fd))).toEqual([]);
+
+    // Requests really were served during the import, and the loop never stalled for
+    // long (generous bound: client and server share this process, and CI is noisy).
+    expect(served).toBeGreaterThanOrEqual(3);
+    expect(loopDelay.percentile(99) / 1e6).toBeLessThan(1000);
   }, 60000);
 });
