@@ -155,20 +155,32 @@ export function runDetailModel({ db, runId, storageRoot = getStorageRoot() }) {
   };
 }
 
-// Baseline hashes for the run page, keyed by path and invalidated by size/mtime/inode,
-// so viewing an imported run doesn't re-hash unchanged files on every request.
+// Baseline/screenshot hashes for the run page, keyed by path and invalidated by
+// dev/inode/size/mtime/ctime, so viewing an imported run doesn't re-hash unchanged files
+// on every request. Least recently used entries are evicted first. This is only a hint
+// for the page: approval always re-hashes (see approveSnapshots in db.js).
 const hashCache = new Map();
-const HASH_CACHE_MAX = 500;
+export const HASH_CACHE_MAX = 4096;
 
-function cachedHash(file) {
+export function cachedHash(file) {
   const st = fs.statSync(file);
-  const key = `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}`;
+  const key = `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
   const hit = hashCache.get(file);
-  if (hit && hit.key === key) return hit.hash;
+  if (hit && hit.key === key) {
+    hashCache.delete(file); // re-insert: Map order is insertion order, oldest first
+    hashCache.set(file, hit);
+    return hit.hash;
+  }
   const hash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-  if (hashCache.size >= HASH_CACHE_MAX) hashCache.clear();
+  hashCache.delete(file);
+  while (hashCache.size >= HASH_CACHE_MAX) hashCache.delete(hashCache.keys().next().value);
   hashCache.set(file, { key, hash });
   return hash;
+}
+
+/** For tests: how many hashes are cached, and whether `file` is one of them. */
+export function hashCacheInfo(file) {
+  return { size: hashCache.size, has: file ? hashCache.has(file) : undefined };
 }
 
 /**

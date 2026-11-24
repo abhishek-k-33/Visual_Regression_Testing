@@ -9,7 +9,7 @@ import { captureScreenshots, getSnapshotFilename } from './capture.js';
 import { compareSnapshot, sha256, DEFAULT_PIXELMATCH_THRESHOLD } from './compare.js';
 import { buildRunManifest, writeRunManifest, toSqliteTimestamp, getToolVersion, MANIFEST_FILENAME } from './manifest.js';
 import { createTestRun, createSnapshot, getDb, closeDb } from '../server/db.js';
-import { importRuns } from '../server/importRuns.js';
+import { importRuns, sanitizeForDisplay } from '../server/importRuns.js';
 import { resolveStorageRoot } from '../server/paths.js';
 import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
 
@@ -332,6 +332,7 @@ program
       db = getDb(path.join(storageRoot, 'data.sqlite'));
       const { runs } = await importRuns(source, { storageRoot, db, runId: options.runId });
 
+      const dashboardPort = process.env.PORT || 4000; // the port `npm start` will use
       const fresh = runs.filter((r) => !r.alreadyImported).length;
       const where = path.relative(process.cwd(), storageRoot) || '.';
       console.log(fresh === 0
@@ -343,11 +344,12 @@ program
         if (run.alreadyImported) notes.push('already imported, nothing changed');
         const plural = run.snapshots === 1 ? '' : 's';
         console.log(`    ${run.id}  ${run.status}, ${run.snapshots} snapshot${plural}${notes.length ? `  (${notes.join('; ')})` : ''}`);
-        console.log(`      http://localhost:4000${run.url}`);
+        console.log(`      http://localhost:${dashboardPort}${run.url}`);
       }
       console.log('\n  Open the dashboard with `npm start` to review them.\n');
     } catch (err) {
-      console.error(`\n[ERROR] Import failed: ${err.message}\n`);
+      // Backstop: messages can quote names from the archive (importRuns already escapes them).
+      console.error(`\n[ERROR] Import failed: ${sanitizeForDisplay(err.message)}\n`);
       process.exitCode = 1;
     } finally {
       if (db) closeDb();

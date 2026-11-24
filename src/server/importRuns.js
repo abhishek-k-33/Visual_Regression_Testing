@@ -34,6 +34,11 @@ import { isInside } from './paths.js';
  * against (see approveSnapshots in db.js).
  *
  * All or nothing per call: if any run in the input is invalid, nothing is imported.
+ *
+ * Before a dashboard upload (M8) uses this: hashing and PNG checks are synchronous, so a
+ * large upload would block the server's event loop while it is validated; it should
+ * move to streamed/async hashing (or a worker), and uploads should be imported one at
+ * a time with a cap on staging disk use.
  */
 
 export const IMPORT_LIMITS = Object.freeze({
@@ -52,8 +57,12 @@ const VIEWPORT_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const HEX_SHA256 = /^[0-9a-f]{64}$/;
 const COMMIT_PATTERN = /^[0-9A-Fa-f]{1,64}$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+// C0/DEL/C1 controls, format characters (bidi overrides U+202A-E, isolates U+2066-9,
+// marks U+200E/F, zero-width chars, BOM...), lone surrogates and line/paragraph
+// separators: refused in every manifest string and archive entry name, and escaped
+// whenever untrusted text is shown (they can rewrite a terminal or disguise text).
+const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
+const UNSAFE_CHARS_GLOBAL = new RegExp(UNSAFE_CHARS.source, 'gu');
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const MAX_MANIFEST_DEPTH = 3; // run.json, <id>/run.json, runs/<id>/run.json
 const MAX_FILE_DEPTH = MAX_MANIFEST_DEPTH + 1; // + baselines/<file>.png
@@ -79,9 +88,21 @@ const badInput = (message) => new ImportError(400, message);
 const tooLarge = (message) => new ImportError(413, message);
 const invalid = (message) => new ImportError(422, message);
 
+/**
+ * Makes untrusted text safe to print to a terminal or log: every control, format,
+ * surrogate or separator character becomes a visible \u{...} escape.
+ *
+ * @param {unknown} text
+ * @returns {string}
+ */
+export function sanitizeForDisplay(text) {
+  return String(text).replace(UNSAFE_CHARS_GLOBAL, (ch) => `\\u{${ch.codePointAt(0).toString(16).toUpperCase()}}`);
+}
+
 /** Untrusted value for an error message: quoted, escaped and shortened. */
 function show(value) {
-  const text = JSON.stringify(value) ?? String(value);
+  // JSON.stringify escapes C0 only; sanitizeForDisplay handles C1, bidi and the rest.
+  const text = sanitizeForDisplay(JSON.stringify(value) ?? String(value));
   return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
@@ -117,7 +138,7 @@ function entrySegments(name) {
   const trimmed = name.endsWith('/') ? name.slice(0, -1) : name;
   const parts = trimmed.split('/');
   if (
-    trimmed.length === 0 || trimmed.length > MAX_ENTRY_NAME || CONTROL_CHARS.test(trimmed) ||
+    trimmed.length === 0 || trimmed.length > MAX_ENTRY_NAME || UNSAFE_CHARS.test(trimmed) ||
     parts.some((p) => p === '' || p === '.' || p === '..' || p.length > 255)
   ) {
     throw badInput(`Unsafe file name in the archive: ${show(name)}. Nothing was imported.`);
@@ -172,6 +193,19 @@ function countEntry(state) {
 /** ENOSPC, EACCES, ... (not yauzl's format errors, not Node's ERR_* stream errors). */
 const isSystemError = (err) => typeof err.code === 'string' && /^E[A-Z]+$/.test(err.code);
 
+// yauzl's own file name checks put the raw entry name into the message.
+const YAUZL_NAME_ERRORS = ['invalid characters in fileName: ', 'absolute path: ', 'invalid relative path: '];
+
+/** Our own message for a yauzl error; never its raw text (it can carry an entry name). */
+function zipFormatError(err) {
+  const message = String(err?.message ?? err);
+  const prefix = YAUZL_NAME_ERRORS.find((p) => message.startsWith(p));
+  if (prefix) {
+    return badInput(`Unsafe file name in the archive: ${show(message.slice(prefix.length))}. Nothing was imported.`);
+  }
+  return badInput(`Invalid zip archive: ${sanitizeForDisplay(message).slice(0, 300)}`);
+}
+
 const S_IFMT = 0o170000;
 const S_IFREG = 0o100000;
 
@@ -184,7 +218,7 @@ async function stageZip(file, state) {
     if (err.code === 'ENOENT' || err.code === 'EACCES' || err.code === 'EISDIR') {
       throw badInput(`Cannot read ${show(file)}: ${err.code}.`);
     }
-    throw badInput(`Not a valid zip archive: ${err.message}`);
+    throw badInput(`Not a valid zip archive: ${sanitizeForDisplay(err.message)}`);
   }
 
   try {
@@ -218,13 +252,64 @@ async function stageZip(file, state) {
     }
   } catch (err) {
     if (err instanceof ImportError || isSystemError(err)) throw err; // ours, or e.g. a full disk
-    throw badInput(`Invalid zip archive: ${err.message}`);
+    throw zipFormatError(err);
   } finally {
     zip.close();
   }
 }
 
-/** Copies a folder's run.json / *.png files, never following symlinks. */
+const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0);
+const isAtOrInside = (child, parent) => child === parent || isInside(child, parent);
+
+/**
+ * Opens a file found while walking `root` for reading, or returns null when it must be
+ * skipped. Defends against the tree changing under us:
+ * - O_NOFOLLOW: the file itself can't be a symlink; O_NONBLOCK: a FIFO swapped in can't
+ *   block the open (and is then skipped as not a regular file).
+ * - After opening, the parent folder's real path must still be inside root and the
+ *   file at <real parent>/<name> must be the very file we opened (same dev/inode), so a
+ *   parent folder swapped for a symlink (before or after the open) is caught.
+ */
+function openInsideRoot(root, parentAbs, name) {
+  let fd;
+  try {
+    fd = fs.openSync(path.join(parentAbs, name), OPEN_FLAGS);
+  } catch (err) {
+    if (['ELOOP', 'ENOENT', 'ENXIO', 'EMLINK'].includes(err.code)) return null; // link, vanished, FIFO/socket
+    throw err;
+  }
+  let keep = false;
+  try {
+    keep = isOpenedFileInsideRoot(fd, root, parentAbs, name);
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      fs.closeSync(fd);
+      throw err;
+    }
+  }
+  if (!keep) {
+    fs.closeSync(fd);
+    return null;
+  }
+  return fd;
+}
+
+function isOpenedFileInsideRoot(fd, root, parentAbs, name) {
+  const opened = fs.fstatSync(fd);
+  if (!opened.isFile()) return false;
+  const realParent = fs.realpathSync(parentAbs);
+  if (!isAtOrInside(realParent, root)) return false;
+  const there = fs.lstatSync(path.join(realParent, name));
+  return there.isFile() && there.dev === opened.dev && there.ino === opened.ino;
+}
+
+/**
+ * Copies a folder's run.json / *.png files. Symlinks are never followed below the
+ * folder given (that folder itself may be a symlink: it is what the user asked for):
+ * entries are checked with lstat, folders are only entered when their real path is
+ * still inside the root, and files are opened with openInsideRoot. Listings are read
+ * lazily so the entry limit applies before a huge folder is loaded.
+ */
 async function stageDir(dir, state) {
   let root;
   try {
@@ -232,44 +317,50 @@ async function stageDir(dir, state) {
     if (!fs.statSync(root).isDirectory()) throw badInput(`${show(dir)} is not a folder.`);
   } catch (err) {
     if (err instanceof ImportError) throw err;
-    throw badInput(`Cannot read the folder ${show(dir)}: ${err.code || err.message}.`);
+    throw badInput(`Cannot read the folder ${show(dir)}: ${sanitizeForDisplay(err.code || err.message)}.`);
   }
   const staging = fs.statSync(state.stagingDir);
 
   async function walk(abs, relParts) {
-    const st = fs.lstatSync(abs);
-    // Importing the storage folder itself must not walk into this import's staging copy.
-    if (st.ino === staging.ino && st.dev === staging.dev) return;
-    for (const dirent of fs.readdirSync(abs, { withFileTypes: true })) {
-      countEntry(state);
-      if (dirent.isSymbolicLink()) continue;
-      const parts = [...relParts, dirent.name];
-      const child = path.join(abs, dirent.name);
-      if (dirent.isDirectory()) {
-        if (parts.length < MAX_FILE_DEPTH) await walk(child, parts);
-        continue;
+    const handle = fs.opendirSync(abs);
+    try {
+      for (let dirent = handle.readSync(); dirent !== null; dirent = handle.readSync()) {
+        countEntry(state);
+        const name = dirent.name;
+        // Names we could never reference (or print safely) are skipped, not staged.
+        if (name.length > 255 || UNSAFE_CHARS.test(name)) continue;
+        const parts = [...relParts, name];
+        const child = path.join(abs, name);
+        let st;
+        try {
+          st = fs.lstatSync(child);
+        } catch (err) {
+          if (err.code === 'ENOENT') continue;
+          throw err;
+        }
+        if (st.isSymbolicLink()) continue;
+        if (st.isDirectory()) {
+          if (parts.length >= MAX_FILE_DEPTH) continue;
+          // Importing the storage folder itself must not walk into this import's staging copy.
+          if (st.ino === staging.ino && st.dev === staging.dev) continue;
+          if (!isAtOrInside(fs.realpathSync(child), root)) continue;
+          await walk(child, parts);
+          continue;
+        }
+        if (!st.isFile()) continue;
+        const kind = classify(parts);
+        if (!kind) continue;
+        const fd = openInsideRoot(root, abs, name);
+        if (fd === null) continue;
+        const stream = fs.createReadStream(null, { fd }); // closes fd when destroyed
+        try {
+          await stageFile(stream, parts, kind, state);
+        } finally {
+          stream.destroy();
+        }
       }
-      if (!dirent.isFile()) continue;
-      const kind = classify(parts);
-      if (!kind) continue;
-      // O_NOFOLLOW + fstat: the file can't be swapped for a symlink after readdir.
-      let fd;
-      try {
-        fd = fs.openSync(child, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-      } catch (err) {
-        if (err.code === 'ELOOP') continue;
-        throw err;
-      }
-      if (!fs.fstatSync(fd).isFile()) {
-        fs.closeSync(fd);
-        continue;
-      }
-      const stream = fs.createReadStream(null, { fd }); // closes fd when destroyed
-      try {
-        await stageFile(stream, parts, kind, state);
-      } finally {
-        stream.destroy();
-      }
+    } finally {
+      handle.closeSync();
     }
   }
 
@@ -288,7 +379,7 @@ function checkString(v, where, { max, nullable = false, pattern, allowEmpty = fa
     throw invalid(`${where} is required.`);
   }
   if (typeof v !== 'string') throw invalid(`${where} must be a string, got ${show(v)}.`);
-  if ((!allowEmpty && v.length === 0) || (max && v.length > max) || CONTROL_CHARS.test(v)) {
+  if ((!allowEmpty && v.length === 0) || (max && v.length > max) || UNSAFE_CHARS.test(v)) {
     throw invalid(`${where} is not a valid value: ${show(v)}.`);
   }
   if (pattern && !pattern.test(v)) throw invalid(`${where} is not valid: ${show(v)}.`);
@@ -490,12 +581,24 @@ function isSameRun(row, parsed) {
  * Picks the local id for a run: its own id, or "<id>-imp2", "-imp3", ... when that is
  * taken by a different run (a DB row or a leftover runs/<id>/ folder). An existing row
  * for the same run means it was imported before.
+ *
+ * Ids are compared case-insensitively ("Run_A" and "run_a" are the same folder on
+ * macOS and Windows), so a run is never given an id that differs from an existing one
+ * only in case.
+ *
+ * @param {object} ctx
+ * @param {Set<string>} ctx.reserved - Lower-cased ids already picked in this import
+ * @param {Set<string>} ctx.folders - Lower-cased names in runs/
  */
-function chooseRunId(parsed, { db, runsDir, reserved, requestedId }) {
-  const taken = (id) => reserved.has(id) || pathExists(path.join(runsDir, id));
+function chooseRunId(parsed, { db, reserved, folders, requestedId }) {
+  const likeRows = db.prepare('SELECT id FROM test_runs WHERE id = ? COLLATE NOCASE');
+  const taken = (id) => {
+    const key = id.toLowerCase();
+    return reserved.has(key) || folders.has(key) || likeRows.all(id).length > 0;
+  };
   if (requestedId) {
-    if (getTestRunById(requestedId, db) || taken(requestedId)) {
-      throw new ImportError(409, `A run with id "${requestedId}" already exists; choose another --run-id.`);
+    if (taken(requestedId)) {
+      throw new ImportError(409, `A run with id "${requestedId}" already exists (ids are compared ignoring case); choose another run id.`);
     }
     return { id: requestedId };
   }
@@ -503,16 +606,67 @@ function chooseRunId(parsed, { db, runsDir, reserved, requestedId }) {
   for (let n = 1; n <= MAX_ID_SUFFIX; n++) {
     const id = n === 1 ? base : `${base}-imp${n}`;
     if (!RUN_ID_PATTERN.test(id)) break;
-    if (reserved.has(id)) continue;
+    if (reserved.has(id.toLowerCase())) continue;
     const row = getTestRunById(id, db);
-    if (row) {
-      if (isSameRun(row, parsed)) return { id, alreadyImported: true };
-      continue;
-    }
+    if (row && isSameRun(row, parsed)) return { id, alreadyImported: true };
     if (taken(id)) continue;
     return { id };
   }
   throw new ImportError(409, `Could not find a free id for run "${base}"; pass a run id explicitly.`);
+}
+
+// ─── Staging folders ─────────────────────────────────────────────────────────
+
+/** Staging folders older than this are leftovers of a crashed import. */
+export const STALE_STAGING_MS = 60 * 60 * 1000;
+const STAGING_PREFIX = '.import-';
+
+/**
+ * Removes `.import-*` folders older than STALE_STAGING_MS from the given folders (left
+ * behind if a process died mid-import). Only real directories (lstat, links are never
+ * followed); failures are only logged, since they must not block a new import.
+ */
+function removeStaleStaging(dirs, now = Date.now()) {
+  for (const dir of dirs) {
+    let names;
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.startsWith(STAGING_PREFIX)) continue;
+      const p = path.join(dir, name);
+      try {
+        const st = fs.lstatSync(p);
+        if (st.isDirectory() && now - st.mtimeMs > STALE_STAGING_MS) fs.rmSync(p, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(`[WARN] Could not remove the old import folder ${sanitizeForDisplay(p)}: ${sanitizeForDisplay(err.message)}`);
+      }
+    }
+  }
+}
+
+/**
+ * Renames a finished run folder into runs/. When runs/ is on another filesystem (e.g.
+ * a symlink to another disk) the rename fails with EXDEV: then the folder is copied to
+ * a hidden temp folder inside runs/ first, so the run still appears in one rename.
+ */
+function moveIntoRuns(out, finalDir, runsDir) {
+  try {
+    fs.renameSync(out, finalDir);
+    return;
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err;
+  }
+  const tmp = fs.mkdtempSync(path.join(runsDir, STAGING_PREFIX));
+  try {
+    fs.cpSync(out, tmp, { recursive: true, errorOnExist: true, force: false });
+    fs.renameSync(tmp, finalDir);
+  } catch (err) {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
@@ -538,10 +692,11 @@ export async function importRuns(source, { storageRoot, db, runId, limits: limit
   const root = path.resolve(storageRoot);
   const runsDir = path.join(root, 'runs');
   fs.mkdirSync(runsDir, { recursive: true });
+  removeStaleStaging([root, runsDir]);
 
-  // Same filesystem as runs/, so the final move is a rename. Never served: /storage
-  // only serves runs/ and baselines/.
-  const stagingDir = fs.mkdtempSync(path.join(root, '.import-'));
+  // Normally the same filesystem as runs/, so the final move is a rename (see
+  // moveIntoRuns otherwise). Never served: /storage only serves runs/ and baselines/.
+  const stagingDir = fs.mkdtempSync(path.join(root, STAGING_PREFIX));
   const state = {
     stagingDir,
     filesDir: path.join(stagingDir, 'files'),
@@ -580,7 +735,8 @@ export async function importRuns(source, { storageRoot, db, runId, limits: limit
       try {
         json = JSON.parse(fs.readFileSync(path.join(state.filesDir, ...parts), 'utf8'));
       } catch (err) {
-        throw invalid(`${label}: not valid JSON (${err.message}).`);
+        // V8's message quotes part of the input, so it is sanitised like any other text.
+        throw invalid(`${label}: not valid JSON (${sanitizeForDisplay(err.message).slice(0, 200)}).`);
       }
       return { ...validateManifest(json, path.join(state.filesDir, ...parts.slice(0, -1)), label, limits), runDir: runDirs[i] };
     });
@@ -588,9 +744,10 @@ export async function importRuns(source, { storageRoot, db, runId, limits: limit
     // From here on everything is synchronous, so a concurrent import in this process
     // can't pick the same id between the check and the rename.
     const reserved = new Set();
+    const folders = new Set(fs.readdirSync(runsDir).map((name) => name.toLowerCase()));
     const plans = parsedRuns.map((parsed) => {
-      const choice = chooseRunId(parsed, { db, runsDir, reserved, requestedId: runId });
-      reserved.add(choice.id);
+      const choice = chooseRunId(parsed, { db, reserved, folders, requestedId: runId });
+      reserved.add(choice.id.toLowerCase());
       return { parsed, ...choice };
     });
 
@@ -634,7 +791,7 @@ function commitRuns(plans, { root, runsDir, db, state }) {
       }
       const finalDir = path.join(runsDir, id);
       if (pathExists(finalDir)) throw new ImportError(409, `runs/${id} appeared while importing; try again.`);
-      fs.renameSync(out, finalDir);
+      moveIntoRuns(out, finalDir, runsDir);
       moved.push(finalDir);
     });
 
@@ -675,7 +832,7 @@ function commitRuns(plans, { root, runsDir, db, state }) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
       } catch (cleanupErr) {
-        console.error(`[WARN] Could not remove ${dir} after a failed import: ${cleanupErr.message}`);
+        console.error(`[WARN] Could not remove ${dir} after a failed import: ${sanitizeForDisplay(cleanupErr.message)}`);
       }
     }
     throw err;
