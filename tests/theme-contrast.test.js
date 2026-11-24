@@ -37,6 +37,10 @@ const PAIRS = [
   ['Approve button', '--success-green', ['--success-tint-bg', '--bg-secondary'], AA_TEXT],
   ['Approve all button', '--success-green', ['--success-tint-bg', '--bg-surface'], AA_TEXT],
   ['Reject button', '--error-red', ['--danger-tint-bg', '--bg-secondary'], AA_TEXT],
+  // Imported runs (M2): "Imported" badge in the runs table and run header; stale-baseline notice
+  ['Imported badge in the runs table', '--primary-on-tint', ['--primary-tint-bg', '--bg-table'], AA_TEXT],
+  ['Imported badge in the run header', '--primary-on-tint', ['--primary-tint-bg', '--bg-surface'], AA_TEXT],
+  ['stale-baseline notice', '--text-primary', ['--status-new-bg', '--bg-surface'], AA_TEXT],
   // Hover states: text on a solid accent fill
   ['hovered Inspect', '--on-accent', ['--primary-blue'], AA_TEXT],
   ['hovered Approve', '--on-accent', ['--success-green'], AA_TEXT],
