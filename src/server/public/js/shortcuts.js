@@ -62,6 +62,16 @@ const cards = () => [...document.querySelectorAll('.snapshot-card')];
 const currentCard = () => document.querySelector('.snapshot-card.is-current');
 const label = (card) => card.querySelector('h2')?.textContent.trim().replace(/^Snapshot /, '') || 'snapshot';
 
+// The card that j/k is currently scrolling into view (a smooth scroll can still be
+// running when the next key arrives). Any scrolling by the reviewer cancels it.
+let scrollingTo = null;
+const cancelOwnScroll = () => { scrollingTo = null; };
+window.addEventListener('scrollend', cancelOwnScroll);
+for (const type of ['wheel', 'touchmove']) window.addEventListener(type, cancelOwnScroll, { passive: true });
+window.addEventListener('keydown', (e) => {
+  if (['PageDown', 'PageUp', ' ', 'Home', 'End', 'ArrowDown', 'ArrowUp'].includes(e.key)) cancelOwnScroll();
+}, true);
+
 function setCurrent(card, { focus = true } = {}) {
   for (const c of cards()) {
     const isCurrent = c === card;
@@ -72,6 +82,7 @@ function setCurrent(card, { focus = true } = {}) {
   if (focus) {
     card.focus({ preventScroll: true });
     const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    scrollingTo = card;
     card.scrollIntoView({ block: 'start', behavior: reduceMotion ? 'auto' : 'smooth' });
   }
 }
@@ -103,9 +114,26 @@ function requireCurrent() {
   return card;
 }
 
+/**
+ * True when at least part of the card is inside the viewport, or j/k is still scrolling
+ * it into view (the reviewer asked for it and hasn't scrolled elsewhere since).
+ */
+function isOnScreen(card) {
+  if (scrollingTo === card) return true;
+  const rect = card.getBoundingClientRect();
+  return rect.bottom > 0 && rect.top < window.innerHeight;
+}
+
 function clickAction(selector, verb) {
   const card = requireCurrent();
   if (!card) return;
+  if (!isOnScreen(card)) {
+    // The reviewer scrolled away from the current snapshot (mouse wheel, scrollbar,
+    // Page Down): never approve or reject something they can't see. Bring it back first.
+    card.scrollIntoView({ block: 'start' });
+    announce(`Showing ${label(card)} again. Press the key again to ${verb} it.`);
+    return;
+  }
   const btn = card.querySelector(selector);
   if (!btn || btn.disabled) {
     announce(`Nothing to ${verb} for ${label(card)}.`);
@@ -122,7 +150,12 @@ function showView(key) {
     announce(`No ${key} view for ${label(card)}.`);
     return;
   }
+  const hadFocusInside = card.contains(document.activeElement);
   tab.click();
+  // The panel that held focus may now be hidden (focus can linger on the hidden element
+  // until the browser drops it to <body>): move it to the card itself.
+  const active = document.activeElement;
+  if (hadFocusInside && (!card.contains(active) || active?.closest('[hidden]'))) card.focus({ preventScroll: true });
   announce(`${tab.textContent.trim()} view.`);
 }
 
@@ -196,9 +229,14 @@ document.addEventListener('pointerdown', (e) => {
   const card = e.target instanceof Element ? e.target.closest('.snapshot-card') : null;
   if (card && !card.classList.contains('is-current')) setCurrent(card, { focus: false });
 });
-const fromHash = window.location.hash.startsWith('#snapshot-')
-  ? document.getElementById(decodeURIComponent(window.location.hash.slice(1)))
-  : null;
-if (fromHash?.classList.contains('snapshot-card')) setCurrent(fromHash, { focus: false });
-
 renderEnabled();
+
+let fromHash = null;
+if (window.location.hash.startsWith('#snapshot-')) {
+  try {
+    fromHash = document.getElementById(decodeURIComponent(window.location.hash.slice(1)));
+  } catch {
+    // Malformed percent-encoding in the URL: just ignore the hash.
+  }
+}
+if (fromHash?.classList.contains('snapshot-card')) setCurrent(fromHash, { focus: false });

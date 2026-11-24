@@ -212,6 +212,48 @@ describe('keyboard & screen-reader behaviour (headless Chromium)', () => {
   });
 
   describe('keyboard shortcuts', () => {
+    it('a never acts on a current card that was scrolled off screen; it scrolls it back first', async () => {
+      ui.createReviewRun('kb-offscreen');
+      const { page, errors } = await open('/runs/kb-offscreen', { contextOptions: { viewport: { width: 1280, height: 500 } } });
+      await page.keyboard.press('j'); // card 1 (first pending) becomes current
+      expect(await currentIndex(page)).toBe(1);
+      await page.waitForTimeout(800); // let j's smooth scroll finish, as a reviewer would
+      await page.mouse.wheel(0, 20000); // scroll away with the wheel: current card unchanged
+      await expect.poll(() => card(page, 1).evaluate((el) => el.getBoundingClientRect().bottom <= 0)).toBe(true);
+
+      await page.keyboard.press('a');
+      expect(await card(page, 1).getAttribute('data-status')).toBe('DIFF'); // not approved
+      await expect.poll(() => card(page, 1).evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return r.bottom > 0 && r.top < window.innerHeight;
+      })).toBe(true);
+      await expect.poll(() => page.locator('#live-region').textContent()).toMatch(/Press the key again to approve/);
+
+      await page.keyboard.press('a'); // now visible: approves
+      await expect.poll(() => card(page, 1).getAttribute('data-status')).toBe('APPROVED');
+      expect(errors).toEqual([]);
+    }, 30000);
+
+    it('keeps focus on the card when 1/2/3 hides the panel that had focus', async () => {
+      ui.createReviewRun('kb-focus');
+      const { page } = await open('/runs/kb-focus');
+      await page.keyboard.press('j');
+      await page.keyboard.press('2');
+      await card(page, 1).locator('[role="slider"]').focus();
+      await page.keyboard.press('1');
+      expect(await card(page, 1).evaluate((el) => el === document.activeElement)).toBe(true);
+    }, 30000);
+
+    it('ignores a malformed #snapshot- hash without breaking the page', async () => {
+      ui.createReviewRun('kb-hash');
+      const { page, errors } = await open('/runs/kb-hash#snapshot-%E0%A4%A', {
+        initScript: () => localStorage.setItem('vrt:shortcuts-enabled', 'false')
+      });
+      expect(errors).toEqual([]);
+      // The off state is still rendered (it used to be skipped by the URIError)
+      await expect.poll(() => page.locator('body').textContent()).toMatch(/Keyboard shortcuts are off/);
+    }, 30000);
+
     it('j/k move the current card (pending first, then every card) and 1/2/3 switch its view', async () => {
       ui.createReviewRun('kb-nav');
       const { page, errors } = await open('/runs/kb-nav');
@@ -427,6 +469,24 @@ describe('keyboard & screen-reader behaviour (headless Chromium)', () => {
   });
 
   describe('action errors', () => {
+    it('approve-all on an out-of-date page marks what it approved, so it cannot be rejected', async () => {
+      const { cards } = ui.createReviewRun('kb-stale');
+      const { page, context } = await open(null);
+      // Another tab already handled two of the three pending snapshots: only one is approved now
+      await context.route('**/api/runs/*/approve-all', (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, approved: [cards[1].id], runStatus: 'FAILED', snapshots: [] })
+      }));
+      await page.goto(`${ui.baseUrl}/runs/kb-stale`);
+      await page.getByRole('button', { name: /Approve all pending \(3\)/ }).click();
+
+      await expect.poll(() => page.getByRole('button', { name: 'Reload page' }).isVisible()).toBe(true);
+      expect(await card(page, 1).getAttribute('data-status')).toBe('APPROVED');
+      expect(await card(page, 1).getByRole('button', { name: 'Reject' }).count()).toBe(0);
+      expect(await card(page, 1).getByRole('button', { name: 'Approve & Update Baseline' }).count()).toBe(0);
+    }, 30000);
+
     it('show in the card role="alert" region instead of alert(), and restore the button', async () => {
       ui.createReviewRun('kb-error');
       const { page, context, dialogs } = await open(null);

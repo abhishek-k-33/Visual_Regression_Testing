@@ -313,8 +313,11 @@ if (approveAllBtn) {
       const data = await sendApproveAll(runId);
 
       if (data.success && !data.simulated && data.approved.length !== count) {
-        // The page was out of date (e.g. approved or rejected in another tab): the cards no
-        // longer show the truth, so offer a reload (the button stays disabled meanwhile).
+        // The page was out of date (e.g. approved or rejected in another tab). The snapshots
+        // that WERE approved must still show it, so their Approve/Reject buttons can't act on
+        // a baseline that was just promoted; then offer a reload for the rest.
+        for (const id of data.approved) markApproved(id, { simulated: false });
+        refreshRunHeader(data.runStatus);
         const reload = document.createElement('button');
         reload.type = 'button';
         reload.className = 'action-error-button';
