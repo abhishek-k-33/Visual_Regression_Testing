@@ -35,10 +35,12 @@ import { isInside } from './paths.js';
  *
  * All or nothing per call: if any run in the input is invalid, nothing is imported.
  *
- * Before a dashboard upload (M8) uses this: hashing and PNG checks are synchronous, so a
- * large upload would block the server's event loop while it is validated; it should
- * move to streamed/async hashing (or a worker), and uploads should be imported one at
- * a time with a cap on staging disk use.
+ * Keeps a server responsive (it also backs POST /api/imports): every file's size,
+ * SHA-256 and PNG header are computed while it is streamed into staging, so validation
+ * never reads whole files synchronously; the remaining synchronous work is metadata
+ * (lstat, rename, mkdir) and the short commit step (id choice -> rename -> one DB
+ * transaction), which must stay synchronous so concurrent imports can't pick the same id.
+ * One-import-at-a-time and disk-space limits for uploads live in uploadImport.js.
  */
 
 export const IMPORT_LIMITS = Object.freeze({
@@ -107,7 +109,7 @@ function show(value) {
 }
 
 const mb = (bytes) => `${Math.round(bytes / (1024 * 1024))} MB`;
-const sha256File = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const PNG_HEADER_BYTES = 24; // signature + IHDR length/type + width + height
 
 function pathExists(p) {
   try {
@@ -156,9 +158,16 @@ async function stageFile(source, parts, kind, state) {
   const maxBytes = kind === 'manifest' ? state.limits.maxManifestBytes : state.limits.maxFileBytes;
   const label = parts.join('/');
   let written = 0;
+  // Hash and keep the first bytes while streaming, so validation never re-reads the file.
+  const hash = crypto.createHash('sha256');
+  let header = Buffer.alloc(0);
   const counter = new Transform({
     transform(chunk, _encoding, callback) {
       written += chunk.length;
+      hash.update(chunk);
+      if (header.length < PNG_HEADER_BYTES) {
+        header = Buffer.concat([header, chunk.subarray(0, PNG_HEADER_BYTES - header.length)]);
+      }
       state.totalBytes += chunk.length;
       if (written > maxBytes) {
         return callback(tooLarge(`${show(label)} is larger than the ${mb(maxBytes)} limit for ${kind === 'manifest' ? 'run.json' : 'an image'}.`));
@@ -180,6 +189,7 @@ async function stageFile(source, parts, kind, state) {
     }
     throw err;
   }
+  state.files.set(label, { size: written, sha256: hash.digest('hex'), header });
   if (kind === 'manifest') state.manifests.push(parts);
 }
 
@@ -404,16 +414,9 @@ function checkBoolean(v, where) {
   return v;
 }
 
-function checkPng(file, rel, where, limits) {
-  const fd = fs.openSync(file, 'r');
-  const header = Buffer.alloc(24);
-  let read;
-  try {
-    read = fs.readSync(fd, header, 0, 24, 0);
-  } finally {
-    fs.closeSync(fd);
-  }
-  if (read < 24 || !header.subarray(0, 8).equals(PNG_SIGNATURE)) {
+/** Checks a staged file's first bytes (recorded while staging) for a sane PNG. */
+function checkPng(header, rel, where, limits) {
+  if (header.length < PNG_HEADER_BYTES || !header.subarray(0, 8).equals(PNG_SIGNATURE)) {
     throw invalid(`${where}: ${show(rel)} is not a PNG image.`);
   }
   if (header.readUInt32BE(8) !== 13 || header.toString('latin1', 12, 16) !== 'IHDR') {
@@ -431,12 +434,14 @@ function checkPng(file, rel, where, limits) {
  * Validates one parsed run.json against the files staged next to it.
  *
  * @param {unknown} manifest - Parsed JSON
- * @param {string} runDir - Absolute staged folder that held the run.json
+ * @param {(rel: string) => ({ size: number, sha256: string, header: Buffer } | undefined)} stagedFile
+ *   What staging recorded for a path relative to the run.json's folder (undefined if
+ *   nothing was staged there)
  * @param {string} label - Where the manifest came from, for messages
  * @param {object} limits
  * @returns {{ run: object, createdAtSql: string, snapshots: object[] }}
  */
-export function validateManifest(manifest, runDir, label, limits = IMPORT_LIMITS) {
+export function validateManifest(manifest, stagedFile, label, limits = IMPORT_LIMITS) {
   const fail = (message) => invalid(`${label}: ${message}`);
   if (!isPlainObject(manifest)) throw fail('run.json must be a JSON object.');
   if (manifest.schema !== MANIFEST_SCHEMA) throw fail(`not a visual-ci run record (schema ${show(manifest.schema)}).`);
@@ -542,15 +547,11 @@ export function validateManifest(manifest, runDir, label, limits = IMPORT_LIMITS
     const files = { current: s.current, diff: s.diff, baselineCopy: compared ? s.baseline_snapshot : null };
     for (const rel of Object.values(files)) {
       if (rel === null) continue;
-      const abs = path.join(runDir, ...rel.split('/'));
-      let st = null;
-      try {
-        st = fs.lstatSync(abs);
-      } catch { /* reported below */ }
-      if (!st || !st.isFile()) throw invalid(`${at}: ${show(rel)} is missing from the input.`);
-      checkPng(abs, rel, at, limits);
+      const info = stagedFile(rel);
+      if (!info) throw invalid(`${at}: ${show(rel)} is missing from the input.`);
+      checkPng(info.header, rel, at, limits);
     }
-    const hashOf = (rel) => sha256File(path.join(runDir, ...rel.split('/')));
+    const hashOf = (rel) => stagedFile(rel).sha256;
     const currentHash = hashOf(s.current);
     if (currentHash !== s.current_sha256) throw invalid(`${at}: ${show(s.current)} does not match current_sha256.`);
     if (s.diff !== null && hashOf(s.diff) !== s.diff_sha256) throw invalid(`${at}: ${show(s.diff)} does not match diff_sha256.`);
@@ -626,11 +627,11 @@ const STAGING_PREFIX = '.import-';
  * behind if a process died mid-import). Only real directories (lstat, links are never
  * followed); failures are only logged, since they must not block a new import.
  */
-function removeStaleStaging(dirs, now = Date.now()) {
+async function removeStaleStaging(dirs, now = Date.now()) {
   for (const dir of dirs) {
     let names;
     try {
-      names = fs.readdirSync(dir);
+      names = await fs.promises.readdir(dir);
     } catch {
       continue;
     }
@@ -638,8 +639,8 @@ function removeStaleStaging(dirs, now = Date.now()) {
       if (!name.startsWith(STAGING_PREFIX)) continue;
       const p = path.join(dir, name);
       try {
-        const st = fs.lstatSync(p);
-        if (st.isDirectory() && now - st.mtimeMs > STALE_STAGING_MS) fs.rmSync(p, { recursive: true, force: true });
+        const st = await fs.promises.lstat(p);
+        if (st.isDirectory() && now - st.mtimeMs > STALE_STAGING_MS) await fs.promises.rm(p, { recursive: true, force: true });
       } catch (err) {
         console.warn(`[WARN] Could not remove the old import folder ${sanitizeForDisplay(p)}: ${sanitizeForDisplay(err.message)}`);
       }
@@ -691,21 +692,25 @@ export async function importRuns(source, { storageRoot, db, runId, limits: limit
   const limits = { ...IMPORT_LIMITS, ...limitOverrides };
   const root = path.resolve(storageRoot);
   const runsDir = path.join(root, 'runs');
-  fs.mkdirSync(runsDir, { recursive: true });
-  removeStaleStaging([root, runsDir]);
+  await fs.promises.mkdir(runsDir, { recursive: true });
+  await removeStaleStaging([root, runsDir]);
 
-  // Normally the same filesystem as runs/, so the final move is a rename (see
-  // moveIntoRuns otherwise). Never served: /storage only serves runs/ and baselines/.
-  const stagingDir = fs.mkdtempSync(path.join(root, STAGING_PREFIX));
+  // On the same filesystem as runs/, so the final move is a rename: next to runs/
+  // normally, inside it when runs/ is another filesystem (e.g. a symlink to another
+  // disk). Never served either way: /storage refuses dot-named path segments.
+  const [rootStat, runsStat] = await Promise.all([fs.promises.stat(root), fs.promises.stat(runsDir)]);
+  const stagingParent = rootStat.dev === runsStat.dev ? root : runsDir;
+  const stagingDir = await fs.promises.mkdtemp(path.join(stagingParent, STAGING_PREFIX));
   const state = {
     stagingDir,
     filesDir: path.join(stagingDir, 'files'),
     limits,
     entries: 0,
     totalBytes: 0,
-    manifests: []
+    manifests: [],
+    files: new Map() // staged path -> { size, sha256, header }
   };
-  fs.mkdirSync(state.filesDir);
+  await fs.promises.mkdir(state.filesDir);
 
   try {
     if (source?.kind === 'zip' && typeof source.file === 'string') await stageZip(source.file, state);
@@ -729,17 +734,20 @@ export async function importRuns(source, { storageRoot, db, runId, limits: limit
     }
 
     // Validate everything before changing anything.
-    const parsedRuns = state.manifests.map((parts, i) => {
+    const parsedRuns = [];
+    for (const [i, parts] of state.manifests.entries()) {
       const label = parts.join('/');
       let json;
       try {
-        json = JSON.parse(fs.readFileSync(path.join(state.filesDir, ...parts), 'utf8'));
+        json = JSON.parse(await fs.promises.readFile(path.join(state.filesDir, ...parts), 'utf8'));
       } catch (err) {
         // V8's message quotes part of the input, so it is sanitised like any other text.
         throw invalid(`${label}: not valid JSON (${sanitizeForDisplay(err.message).slice(0, 200)}).`);
       }
-      return { ...validateManifest(json, path.join(state.filesDir, ...parts.slice(0, -1)), label, limits), runDir: runDirs[i] };
-    });
+      const prefix = runDirs[i] ? `${runDirs[i]}/` : '';
+      const stagedFile = (rel) => state.files.get(prefix + rel);
+      parsedRuns.push({ ...validateManifest(json, stagedFile, label, limits), runDir: runDirs[i] });
+    }
 
     // From here on everything is synchronous, so a concurrent import in this process
     // can't pick the same id between the check and the rename.
@@ -767,7 +775,7 @@ export async function importRuns(source, { storageRoot, db, runId, limits: limit
       })
     };
   } finally {
-    fs.rmSync(stagingDir, { recursive: true, force: true });
+    await fs.promises.rm(stagingDir, { recursive: true, force: true });
   }
 }
 
