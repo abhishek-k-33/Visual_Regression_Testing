@@ -1,5 +1,6 @@
 import express from 'express';
 import { indexModel, runDetailModel, historyModel } from '../viewModels.js';
+import { maxUploadBytes } from '../uploadImport.js';
 
 const router = express.Router();
 
@@ -13,7 +14,8 @@ function renderError(res, heading, err) {
  */
 router.get('/', (req, res) => {
   try {
-    res.render('index', indexModel());
+    // maxUploadBytes: lets the import button refuse an oversized file before uploading it
+    res.render('index', { ...indexModel(), maxUploadBytes: maxUploadBytes() });
   } catch (err) {
     renderError(res, 'Error Loading Dashboard', err);
   }

@@ -129,6 +129,8 @@
   --status-new-bg: rgba(56, 189, 248, 0.14);
   --status-new-border: rgba(56, 189, 248, 0.4);
   --status-new-text: var(--bright-cyan);
+  /* Page dimmed behind the "drop to import" hint */
+  --overlay-backdrop: rgba(11, 16, 32, 0.82);
 
   /* Typography */
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -1591,6 +1593,7 @@ tbody tr:hover {
   --status-rejected-border: rgba(190, 18, 60, 0.35);
   --status-new-bg: rgba(12, 107, 133, 0.08);
   --status-new-border: rgba(12, 107, 133, 0.35);
+  --overlay-backdrop: rgba(241, 245, 249, 0.88);
 }
 
 /* Theme toggle (navbar). Needs JS, so it stays hidden until the head script has run. */
@@ -2238,4 +2241,120 @@ kbd {
 .btn-approve.is-blocked:hover {
   background-color: var(--success-tint-bg);
   color: var(--success-green);
+}
+
+/* ==========================================================================
+   Import a CI run (dashboard, live mode only) - M8
+   ========================================================================== */
+
+.import-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.btn-import {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background-color: var(--primary-tint-bg);
+  color: var(--primary-on-tint);
+  border: 1px solid var(--primary-tint-border);
+  padding: 8px 16px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.btn-import:hover:not(:disabled) {
+  background-color: var(--primary-blue);
+  color: var(--on-accent);
+}
+
+.btn-import:focus-visible {
+  outline: 2px solid var(--bright-cyan);
+  outline-offset: 2px;
+}
+
+.btn-import:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.import-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Progress / result of an import; takes no space while empty */
+.import-status:empty {
+  display: none;
+}
+
+.import-status {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.import-status ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.import-status a {
+  color: var(--bright-cyan);
+}
+
+.import-feedback .action-error:not(:empty) {
+  margin: 0 0 16px;
+}
+
+/* Shown while a file is dragged over the page */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background-color: var(--overlay-backdrop);
+  pointer-events: none;
+}
+
+.drop-overlay[hidden] {
+  display: none;
+}
+
+.drop-overlay-inner {
+  max-width: 520px;
+  padding: 40px 32px;
+  border: 2px dashed var(--primary-blue);
+  border-radius: var(--radius-card);
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  text-align: center;
+}
+
+@media (max-width: 680px) {
+  .page-heading-actions {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .import-control {
+    align-items: stretch;
+    width: 100%;
+  }
+  .btn-import {
+    min-height: 44px;
+    justify-content: center;
+  }
 }

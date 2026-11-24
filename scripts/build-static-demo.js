@@ -33,6 +33,8 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const CLI = path.join(REPO_ROOT, 'src', 'cli', 'index.js');
 const CONFIG = path.join(REPO_ROOT, 'scripts', 'pages-demo.config.json');
 const PUBLIC_DIR = path.join(REPO_ROOT, 'src', 'server', 'public');
+/** Public files that need the live server, never copied into the static build. */
+export const LIVE_ONLY_ASSETS = new Set(['js/import-upload.js']);
 const DEFAULT_REPO_URL = 'https://github.com/abhishek-k-33/Visual_Regression_Testing';
 
 /** The runs the demo is made of, in order. `approve` approves every snapshot after the run. */
@@ -364,9 +366,10 @@ async function renderSite({ outDir, base, repoUrl, storageRoot }) {
     message: 'That page is not part of this demo. Use the Dashboard link above to browse the sample runs.'
   }));
 
-  // Dashboard CSS and JS (not .gitkeep or anything else in public/)
+  // Dashboard CSS and JS (not .gitkeep or anything else in public/). Scripts that only
+  // make sense with a server (importing a CI run) are left out of the read-only build.
   for (const { full, rel } of listFiles(PUBLIC_DIR)) {
-    if (!/\.(css|js)$/.test(rel)) continue;
+    if (!/\.(css|js)$/.test(rel) || LIVE_ONLY_ASSETS.has(rel)) continue;
     const dest = path.join(outDir, ...rel.split('/'));
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.copyFileSync(full, dest);
