@@ -1,7 +1,7 @@
 <%- include('partials/header', { navLink: 'back', crumbs: [{ label: 'Dashboard', href: '/' }, { label: run.id, mono: true }] }) %>
 
   <!-- Main Container -->
-  <main class="container">
+  <main class="container" id="main" tabindex="-1">
     <!-- Run Summary Header Card -->
     <div class="detail-header-card">
       <div class="detail-title-row">
@@ -10,14 +10,14 @@
           <span class="run-status-container" data-run-status="<%= run.status %>">
           <% if (run.status === 'PASSED') { %>
             <span class="status-pill status-pill-passed">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <polyline points="20 6 9 17 4 12"></polyline>
               </svg>
               <span>PASSED</span>
             </span>
           <% } else if (run.status === 'APPROVED') { %>
             <span class="status-pill status-pill-approved">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
                 <polyline points="22 4 12 14.01 9 11.01"></polyline>
               </svg>
@@ -25,7 +25,7 @@
             </span>
           <% } else if (run.status === 'FAILED') { %>
             <span class="status-pill status-pill-failed">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
                 <line x1="6" y1="6" x2="18" y2="18"></line>
               </svg>
@@ -33,7 +33,7 @@
             </span>
           <% } else if (run.status === 'REJECTED') { %>
             <span class="status-pill status-pill-rejected">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
               </svg>
@@ -55,7 +55,7 @@
       <div class="detail-meta-row">
         <% if (run.branch) { %>
           <span class="git-badge">
-            <svg class="git-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg aria-hidden="true" class="git-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="6" y1="3" x2="6" y2="15"></line>
               <circle cx="18" cy="6" r="3"></circle>
               <circle cx="6" cy="18" r="3"></circle>
@@ -69,12 +69,27 @@
         <% } %>
         <span>• Created on <%= run.created_at %></span>
         <span>• <%= snapshots.length %> total snapshot(s)</span>
+        <%# Opens the shortcuts dialog (shortcuts.js); also how to turn them back on once off. -%>
+        <button type="button" class="shortcuts-hint" data-shortcuts-open aria-haspopup="dialog" aria-controls="shortcuts-dialog">Press <kbd>?</kbd> for keyboard shortcuts</button>
       </div>
+      <%# Errors from "Approve all pending" (review-actions.js); empty and invisible until then. -%>
+      <div class="action-error" role="alert" data-action-error></div>
     </div>
 
     <!-- Snapshots Inspection List -->
     <% snapshots.forEach(snap => { %>
-      <div class="snapshot-card" id="snapshot-<%= snap.id %>" data-status="<%= snap.status %>">
+      <%
+        const snapLabel = `${snap.route} at ${snap.viewport}`;
+        const idBase = `snapshot-${snap.id}`;
+        const views = [{ key: 'side-by-side', label: 'Side-by-Side' }];
+        if (snap.baselineUrl) views.push({ key: 'slider', label: 'Interactive Slider' });
+        if (snap.diffUrl) views.push({ key: 'diff', label: 'Diff Highlight' });
+        // WAI-ARIA tabs: the first view is selected; the others are hidden panels.
+        const tabAttrs = (key) => `role="tabpanel" id="${idBase}-panel-${key}" aria-labelledby="${idBase}-tab-${key}" tabindex="0"`;
+      %>
+      <%# tabindex="-1": the j/k shortcuts move focus to the card. -%>
+      <article class="snapshot-card" id="<%= idBase %>" data-status="<%= snap.status %>" tabindex="-1" aria-labelledby="<%= idBase %>-heading">
+        <h2 class="visually-hidden" id="<%= idBase %>-heading">Snapshot <%= snapLabel %></h2>
         <!-- Header: Route, Viewport & Actions -->
         <div class="snapshot-header">
           <div class="snapshot-title">
@@ -87,14 +102,14 @@
             <div class="status-badge-container">
               <% if (snap.status === 'MATCH') { %>
                 <span class="status-pill status-pill-passed">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                     <polyline points="20 6 9 17 4 12"></polyline>
                   </svg>
                   <span>MATCH (0.00%)</span>
                 </span>
               <% } else if (snap.status === 'DIFF') { %>
                 <span class="status-pill status-pill-failed">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                     <line x1="18" y1="6" x2="6" y2="18"></line>
                     <line x1="6" y1="6" x2="18" y2="18"></line>
                   </svg>
@@ -110,7 +125,7 @@
                 </span>
               <% } else if (snap.status === 'APPROVED') { %>
                 <span class="status-pill status-pill-approved">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                     <polyline points="20 6 9 17 4 12"></polyline>
                   </svg>
                   <span>APPROVED</span>
@@ -125,14 +140,14 @@
 
           <div class="snapshot-actions">
             <% if (snap.status === 'DIFF' || snap.status === 'MISSING_BASELINE') { %>
-              <button class="btn btn-approve" data-id="<%= snap.id %>">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <button type="button" class="btn btn-approve" data-id="<%= snap.id %>" aria-describedby="<%= idBase %>-heading">
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                   <polyline points="20 6 9 17 4 12"></polyline>
                 </svg>
                 <span>Approve & Update Baseline</span>
               </button>
-              <button class="btn btn-reject" data-id="<%= snap.id %>">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <button type="button" class="btn btn-reject" data-id="<%= snap.id %>" aria-describedby="<%= idBase %>-heading">
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                   <line x1="18" y1="6" x2="6" y2="18"></line>
                   <line x1="6" y1="6" x2="18" y2="18"></line>
                 </svg>
@@ -140,7 +155,7 @@
               </button>
             <% } else if (snap.status === 'APPROVED') { %>
               <span style="font-size: 13px; color: var(--success-green); font-weight: 600; display: inline-flex; align-items: center; gap: 4px;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                   <polyline points="20 6 9 17 4 12"></polyline>
                 </svg>
                 <span>Baseline Promoted</span>
@@ -148,26 +163,24 @@
             <% } %>
           </div>
         </div>
+        <%# Approve/reject errors for this snapshot (review-actions.js); empty and invisible until then. -%>
+        <div class="action-error" role="alert" data-action-error></div>
 
-        <!-- 3 Interactive Tabs -->
-        <nav class="tabs-nav">
-          <button class="tab-btn active" data-tab="side-by-side">Side-by-Side</button>
-          <% if (snap.baselineUrl) { %>
-            <button class="tab-btn" data-tab="slider">Interactive Slider</button>
-          <% } %>
-          <% if (snap.diffUrl) { %>
-            <button class="tab-btn" data-tab="diff">Diff Highlight</button>
-          <% } %>
-        </nav>
+        <!-- Comparison views: WAI-ARIA tabs (tabs.js) -->
+        <div class="tabs-nav" role="tablist" aria-label="Comparison views for <%= snapLabel %>">
+          <% views.forEach((view, i) => { %>
+            <button type="button" class="tab-btn<%= i === 0 ? ' active' : '' %>" role="tab" id="<%= idBase %>-tab-<%= view.key %>" aria-controls="<%= idBase %>-panel-<%= view.key %>" aria-selected="<%= i === 0 ? 'true' : 'false' %>" tabindex="<%= i === 0 ? 0 : -1 %>" data-tab="<%= view.key %>"><%= view.label %></button>
+          <% }) %>
+        </div>
 
         <!-- Tab 1: Side-by-Side View -->
-        <div class="tab-panel active" data-panel="side-by-side">
+        <div class="tab-panel active" data-panel="side-by-side" <%- tabAttrs('side-by-side') %>>
           <div class="side-by-side">
             <div class="image-preview-container">
               <div class="image-preview-label">Approved Baseline</div>
               <div class="image-frame">
                 <% if (snap.baselineUrl) { %>
-                  <img src="<%= url(snap.baselineUrl) %>" alt="Baseline screenshot">
+                  <img src="<%= url(snap.baselineUrl) %>" alt="Baseline screenshot of <%= snapLabel %>">
                 <% } else { %>
                   <div style="padding: 48px; text-align: center; color: var(--text-muted); font-size: 13px;">
                     <% if (snap.status === 'MISSING_BASELINE') { %>
@@ -184,7 +197,7 @@
               <div class="image-preview-label">Current Test Execution</div>
               <div class="image-frame">
                 <% if (snap.currentUrl) { %>
-                  <img src="<%= url(snap.currentUrl) %>" alt="Current screenshot">
+                  <img src="<%= url(snap.currentUrl) %>" alt="Current screenshot of <%= snapLabel %>">
                 <% } else { %>
                   <div style="padding: 48px; text-align: center; color: var(--text-muted); font-size: 13px;">
                     Screenshot is not in this dashboard's storage folder.
@@ -197,23 +210,23 @@
 
         <!-- Tab 2: Interactive Draggable Slider View -->
         <% if (snap.baselineUrl) { %>
-          <div class="tab-panel" data-panel="slider">
+          <div class="tab-panel" data-panel="slider" <%- tabAttrs('slider') %> hidden>
             <div style="margin-bottom: 14px; font-size: 13px; color: var(--text-secondary); text-align: center;">
-              ⇄ Drag the vertical line left and right to inspect visual changes
+              <span aria-hidden="true">⇄</span> Drag the divider, or focus it and use the arrow keys: current screenshot on the left, baseline on the right
             </div>
             <div class="slider-view-container">
               <div class="slider-wrapper">
                 <!-- Under Image (Baseline) -->
-                <img src="<%= url(snap.baselineUrl) %>" class="slider-img-under" alt="Baseline image">
+                <img src="<%= url(snap.baselineUrl) %>" class="slider-img-under" alt="Baseline screenshot of <%= snapLabel %>">
 
                 <!-- Over Image (Current) with responsive clipping -->
                 <div class="slider-img-over-wrapper">
-                  <img src="<%= url(snap.currentUrl) %>" class="slider-img-over" alt="Current image">
+                  <img src="<%= url(snap.currentUrl) %>" class="slider-img-over" alt="Current screenshot of <%= snapLabel %>">
                 </div>
 
-                <!-- Draggable vertical divider -->
-                <div class="slider-divider">
-                  <div class="slider-handle-pill">⇄</div>
+                <!-- Draggable vertical divider (slider.js): % of the width showing the current screenshot -->
+                <div class="slider-divider" role="slider" tabindex="0" aria-label="Comparison slider for <%= snapLabel %>" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" aria-valuetext="50% current, 50% baseline">
+                  <div class="slider-handle-pill" aria-hidden="true">⇄</div>
                 </div>
               </div>
             </div>
@@ -222,17 +235,40 @@
 
         <!-- Tab 3: Diff Highlight View -->
         <% if (snap.diffUrl) { %>
-          <div class="tab-panel" data-panel="diff">
+          <div class="tab-panel" data-panel="diff" <%- tabAttrs('diff') %> hidden>
             <div style="margin-bottom: 14px; font-size: 13px; color: var(--error-red); font-weight: 600; text-align: center;">
               Diff Highlight: Differing pixels are highlighted in bright neon red (<%= snap.mismatch_percentage.toFixed(2) %>% mismatch)
             </div>
             <div class="image-frame" style="max-width: 1200px; margin: 0 auto;">
-              <img src="<%= url(snap.diffUrl) %>" alt="Diff image">
+              <img src="<%= url(snap.diffUrl) %>" alt="Diff of <%= snapLabel %>: differing pixels highlighted in red">
             </div>
           </div>
         <% } %>
-      </div>
+      </article>
     <% }) %>
   </main>
 
-<%- include('partials/footer', { scripts: ['/js/tabs.js', '/js/slider.js', '/js/review-actions.js'] }) %>
+  <!-- Keyboard shortcuts help (shortcuts.js) -->
+  <dialog id="shortcuts-dialog" class="shortcuts-dialog" aria-labelledby="shortcuts-dialog-title">
+    <div class="shortcuts-dialog-header">
+      <h2 id="shortcuts-dialog-title">Keyboard shortcuts</h2>
+      <button type="button" class="shortcuts-dialog-close" data-shortcuts-close aria-label="Close keyboard shortcuts"><span aria-hidden="true">✕</span></button>
+    </div>
+    <dl class="shortcuts-list">
+      <div><dt><kbd>j</kbd></dt><dd>Next snapshot (the first press goes to the first one awaiting review)</dd></div>
+      <div><dt><kbd>k</kbd></dt><dd>Previous snapshot</dd></div>
+      <div><dt><kbd>a</kbd></dt><dd>Approve the current snapshot and update its baseline</dd></div>
+      <div><dt><kbd>r</kbd></dt><dd>Reject the current snapshot (asks you to confirm)</dd></div>
+      <div><dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>Side-by-side, slider or diff view of the current snapshot</dd></div>
+      <div><dt><kbd>?</kbd></dt><dd>Show this help</dd></div>
+      <div><dt><kbd>Esc</kbd></dt><dd>Close this help</dd></div>
+    </dl>
+    <p class="shortcuts-note">Shortcuts are ignored while you type in a field or hold Ctrl, Alt or Cmd. In the comparison slider, use the arrow keys, Page Up, Page Down, Home and End.</p>
+    <div class="shortcuts-toggle">
+      <input type="checkbox" id="shortcuts-enabled" checked aria-describedby="shortcuts-toggle-note">
+      <label for="shortcuts-enabled">Single-key shortcuts</label>
+    </div>
+    <p class="shortcuts-note" id="shortcuts-toggle-note">Turn them off if they get in the way of a screen reader or speech input. Saved in this browser.</p>
+  </dialog>
+
+<%- include('partials/footer', { scripts: ['/js/tabs.js', '/js/slider.js', '/js/review-actions.js', '/js/shortcuts.js'] }) %>
