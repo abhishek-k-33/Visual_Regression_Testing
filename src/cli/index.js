@@ -4,11 +4,12 @@ import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
-import { loadConfig } from './config.js';
+import { loadConfig, readConfiguredStorageDir } from './config.js';
 import { captureScreenshots, getSnapshotFilename } from './capture.js';
 import { compareSnapshot, sha256, DEFAULT_PIXELMATCH_THRESHOLD } from './compare.js';
 import { buildRunManifest, writeRunManifest, toSqliteTimestamp, getToolVersion, MANIFEST_FILENAME } from './manifest.js';
-import { createTestRun, createSnapshot, getDb } from '../server/db.js';
+import { createTestRun, createSnapshot, getDb, closeDb } from '../server/db.js';
+import { importRuns, sanitizeForDisplay } from '../server/importRuns.js';
 import { resolveStorageRoot } from '../server/paths.js';
 import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
 
@@ -287,6 +288,71 @@ program
     } catch (err) {
       console.error(`\n[ERROR] Test run failed: ${err.message}\n`);
       process.exit(1);
+    }
+  });
+
+/** Zip (by magic bytes or extension) or folder; a run.json file means its folder. */
+function detectImportSource(input) {
+  const abs = path.resolve(process.cwd(), input);
+  let st;
+  try {
+    st = fs.statSync(abs);
+  } catch {
+    throw new Error(`Not found: ${input}`);
+  }
+  if (st.isDirectory()) return { kind: 'dir', path: abs };
+  if (!st.isFile()) throw new Error(`${input} is not a zip file or a folder`);
+  if (path.basename(abs) === MANIFEST_FILENAME) return { kind: 'dir', path: path.dirname(abs) };
+
+  const head = Buffer.alloc(4);
+  const fd = fs.openSync(abs, 'r');
+  try {
+    fs.readSync(fd, head, 0, 4, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const magic = head.toString('latin1');
+  if (magic === 'PK\x03\x04' || magic === 'PK\x05\x06' || path.extname(abs).toLowerCase() === '.zip') {
+    return { kind: 'zip', file: abs };
+  }
+  throw new Error(`${input} is not a zip file or a folder`);
+}
+
+program
+  .command('import')
+  .description('Import CI run(s) (the visual-regression-diffs artifact zip, or a run folder) into the local dashboard')
+  .argument('<path>', 'Artifact .zip, a folder holding <run-id>/run.json, or a run folder')
+  .option('-c, --config <path>', 'Path to visual.config.json (only storageDir is used)')
+  .option('-r, --run-id <id>', 'Local id for the imported run (only when importing a single run)')
+  .action(async (input, options) => {
+    let db;
+    try {
+      const storageRoot = resolveStorageRoot(readConfiguredStorageDir(options.config) || undefined);
+      const source = detectImportSource(input);
+      db = getDb(path.join(storageRoot, 'data.sqlite'));
+      const { runs } = await importRuns(source, { storageRoot, db, runId: options.runId });
+
+      const dashboardPort = process.env.PORT || 4000; // the port `npm start` will use
+      const fresh = runs.filter((r) => !r.alreadyImported).length;
+      const where = path.relative(process.cwd(), storageRoot) || '.';
+      console.log(fresh === 0
+        ? `\n  Nothing new to import into ${where}: already imported`
+        : `\n  Imported ${fresh} run${fresh === 1 ? '' : 's'} into ${where}`);
+      for (const run of runs) {
+        const notes = [];
+        if (run.renamedFrom) notes.push(`renamed from ${run.renamedFrom}: that id was already taken`);
+        if (run.alreadyImported) notes.push('already imported, nothing changed');
+        const plural = run.snapshots === 1 ? '' : 's';
+        console.log(`    ${run.id}  ${run.status}, ${run.snapshots} snapshot${plural}${notes.length ? `  (${notes.join('; ')})` : ''}`);
+        console.log(`      http://localhost:${dashboardPort}${run.url}`);
+      }
+      console.log('\n  Open the dashboard with `npm start` to review them.\n');
+    } catch (err) {
+      // Backstop: messages can quote names from the archive (importRuns already escapes them).
+      console.error(`\n[ERROR] Import failed: ${sanitizeForDisplay(err.message)}\n`);
+      process.exitCode = 1;
+    } finally {
+      if (db) closeDb();
     }
   });
 

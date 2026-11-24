@@ -209,6 +209,34 @@ export function stripJsonComments(jsonString) {
 }
 
 /**
+ * Reads only "storageDir" from a config file, for commands that don't visit a site
+ * (e.g. `import`), so a config without baseUrl still works.
+ *
+ * @param {string} [customPath] - Config path given by the user (must exist)
+ * @returns {string|null} The validated storageDir, or null when no config file is used
+ *   (no customPath and no ./visual.config.json)
+ * @throws {Error} If the file is missing (customPath only), unreadable, not JSON, or
+ *   its storageDir is invalid
+ */
+export function readConfiguredStorageDir(customPath) {
+  const resolvedPath = path.resolve(process.cwd(), customPath || 'visual.config.json');
+  if (!fs.existsSync(resolvedPath)) {
+    if (customPath) throw new Error(`Configuration file not found at: ${resolvedPath}`);
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(stripJsonComments(fs.readFileSync(resolvedPath, 'utf8')));
+  } catch (err) {
+    throw new Error(`Failed to parse configuration file ${resolvedPath} as JSON: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Configuration file ${resolvedPath} must contain a JSON object.`);
+  }
+  return validateStorageDir(parsed.storageDir);
+}
+
+/**
  * Loads, parses, and validates the visual regression configuration file.
  *
  * @param {string} [customPath] - Optional path to visual.config.json

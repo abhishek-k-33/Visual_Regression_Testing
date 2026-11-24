@@ -1,6 +1,8 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  isBaselineStale,
   getAllTestRuns,
   getTestRunById,
   getSnapshotsByRunId,
@@ -8,7 +10,7 @@ import {
   getSnapshotHistory,
   PENDING_STATUSES
 } from './db.js';
-import { getStorageRoot } from './paths.js';
+import { getStorageRoot, isInside } from './paths.js';
 import { getRouteSlug, getSnapshotFilename } from '../cli/naming.js';
 
 // Data shaping for the server-rendered views, kept out of the routes so the same
@@ -106,7 +108,8 @@ export function indexModel({ db } = {}) {
   const runs = getAllTestRuns(db).map((run) => ({
     ...run,
     snapshotCounts: snapshotCounts(run),
-    createdAtIso: sqliteUtcToIso(run.created_at)
+    createdAtIso: sqliteUtcToIso(run.created_at),
+    importedAtIso: sqliteUtcToIso(run.imported_at)
   }));
   const count = (...statuses) => runs.filter((r) => statuses.includes(r.status)).length;
   return {
@@ -133,17 +136,70 @@ export function indexModel({ db } = {}) {
 export function runDetailModel({ db, runId, storageRoot = getStorageRoot() }) {
   const run = getTestRunById(runId, db);
   if (!run) return null;
+  const imported = Boolean(run.imported_at);
   const snapshots = getSnapshotsByRunId(runId, db).map((s) => ({
     ...snapshotViewModel(s, storageRoot),
-    historyUrl: historyPath(s.route, s.viewport)
+    historyUrl: historyPath(s.route, s.viewport),
+    // Imported runs were compared against CI's baseline; approval is refused unless the
+    // local one is still identical, so say so up front instead of failing on click.
+    baselineStale: imported && PENDING_STATUSES.includes(s.status) && localBaselineIsStale(s, storageRoot)
   }));
   return {
     title: `Run Details: ${run.id}`,
-    run: { ...run, createdAtIso: sqliteUtcToIso(run.created_at) },
+    run: { ...run, createdAtIso: sqliteUtcToIso(run.created_at), importedAtIso: sqliteUtcToIso(run.imported_at) },
     snapshots,
     // Snapshots still awaiting review: the "Approve all pending (N)" button
-    pendingCount: snapshots.filter((s) => PENDING_STATUSES.includes(s.status)).length
+    pendingCount: snapshots.filter((s) => PENDING_STATUSES.includes(s.status)).length,
+    // Pending snapshots that can't be approved here (see baselineStale)
+    stalePendingCount: snapshots.filter((s) => s.baselineStale).length
   };
+}
+
+// Baseline/screenshot hashes for the run page, keyed by path and invalidated by
+// dev/inode/size/mtime/ctime, so viewing an imported run doesn't re-hash unchanged files
+// on every request. Least recently used entries are evicted first. This is only a hint
+// for the page: approval always re-hashes (see approveSnapshots in db.js).
+const hashCache = new Map();
+export const HASH_CACHE_MAX = 4096;
+
+export function cachedHash(file) {
+  const st = fs.statSync(file);
+  const key = `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+  const hit = hashCache.get(file);
+  if (hit && hit.key === key) {
+    hashCache.delete(file); // re-insert: Map order is insertion order, oldest first
+    hashCache.set(file, hit);
+    return hit.hash;
+  }
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  hashCache.delete(file);
+  while (hashCache.size >= HASH_CACHE_MAX) hashCache.delete(hashCache.keys().next().value);
+  hashCache.set(file, { key, hash });
+  return hash;
+}
+
+/** For tests: how many hashes are cached, and whether `file` is one of them. */
+export function hashCacheInfo(file) {
+  return { size: hashCache.size, has: file ? hashCache.has(file) : undefined };
+}
+
+/**
+ * Whether approving this snapshot would be refused because the local shared baseline
+ * is not the one the run compared against (same rule as approval, see isBaselineStale).
+ * Rows whose files lie outside this storage root are left to approval to report.
+ */
+export function localBaselineIsStale(snapshot, storageRoot = getStorageRoot()) {
+  if (!snapshot.baseline_path || !snapshot.current_path) return false;
+  const target = path.resolve(snapshot.baseline_path);
+  const source = path.resolve(snapshot.current_path);
+  if (!isInside(target, path.join(storageRoot, 'baselines')) || !isInside(source, path.join(storageRoot, 'runs'))) {
+    return false;
+  }
+  try {
+    return isBaselineStale(snapshot, { source, target, hash: cachedHash });
+  } catch {
+    return false; // unreadable file: approval will report the real error
+  }
 }
 
 // ─── History page (one route + viewport across runs) ────────────────────────

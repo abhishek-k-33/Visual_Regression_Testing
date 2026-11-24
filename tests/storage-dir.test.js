@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import net from 'node:net';
 import { execFile, spawn } from 'node:child_process';
 import { resolveStorageRoot } from '../src/server/paths.js';
 
@@ -81,12 +82,22 @@ describe('custom storageDir is honoured by the CLI and the dashboard', () => {
   }, 30000);
 
   it('dashboard reads storageDir from visual.config.json and serves its screenshots', async () => {
-    const port = 4800 + Math.floor(Math.random() * 500);
+    // A port the OS says is free (a random one could already be taken), and a generous
+    // start-up wait: under a full parallel test run the server can take several seconds.
+    const port = await new Promise((resolve, reject) => {
+      const probe = net.createServer();
+      probe.once('error', reject);
+      probe.listen(0, '127.0.0.1', () => {
+        const { port: free } = probe.address();
+        probe.close(() => resolve(free));
+      });
+    });
     dashboard = spawn('node', [APP], { cwd: workDir, env: cleanEnv({ PORT: String(port) }), stdio: 'ignore' });
     const base = `http://127.0.0.1:${port}`;
 
     let html;
-    for (let i = 0; i < 50 && !html; i++) {
+    const deadline = Date.now() + 25000; // under the 30 s test timeout
+    while (!html && Date.now() < deadline) {
       try {
         const res = await fetch(`${base}/runs/run_custom`);
         if (res.ok) html = await res.text();

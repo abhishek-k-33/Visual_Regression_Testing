@@ -179,6 +179,9 @@
                   <!-- 2. Run ID -->
                   <td data-label="Run ID">
                     <a href="<%= url(`/runs/${encodeURIComponent(run.id)}`) %>" class="run-id-link"><%= run.id %></a>
+                    <% if (run.imported_at) { %>
+                      <span class="imported-badge" title="Imported <%= run.imported_at %> UTC">Imported</span>
+                    <% } %>
                   </td>
 
                   <!-- 3. Git Context -->

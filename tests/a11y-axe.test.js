@@ -16,6 +16,7 @@ const PAGES = [
   { name: 'run detail with diffs (buttons, tabs, slider)', path: '/runs/ui-review' },
   { name: 'run detail, slider tab open', path: '/runs/ui-review', openSlider: true },
   { name: 'run detail, help dialog open', path: '/runs/ui-review', openHelp: true },
+  { name: 'imported run whose local baselines changed (notices, disabled Approve)', path: '/runs/ui-imported' },
   { name: 'history', path: '/history/index/desktop' },
   { name: 'error page (unknown run, 404)', path: '/runs/no-such-run', status: 404 }
 ];
@@ -26,6 +27,11 @@ describe('axe accessibility scan (serious/critical violations)', () => {
 
   beforeAll(async () => {
     ui = await startUiServer();
+    // An imported run (Imported badge on the dashboard too) compared against baselines
+    // that differ from the local ones, so every pending card shows the stale notice.
+    ui.createReviewRun('ui-imported', { createdAt: '2026-11-18 10:00:00' });
+    ui.db.prepare("UPDATE test_runs SET imported_at = '2026-11-24 09:00:00' WHERE id = 'ui-imported'").run();
+    ui.db.prepare("UPDATE snapshots SET baseline_sha256 = ? WHERE run_id = 'ui-imported' AND status = 'DIFF'").run('0'.repeat(64));
     browser = await chromium.launch();
   }, 60000);
 

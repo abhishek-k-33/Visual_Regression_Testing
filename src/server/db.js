@@ -48,7 +48,8 @@ export function initDb(customDbPath) {
       commit_hash TEXT,
       branch TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      status TEXT NOT NULL -- 'PASSED', 'FAILED', 'APPROVED', 'REJECTED'
+      status TEXT NOT NULL, -- 'PASSED', 'FAILED', 'APPROVED', 'REJECTED'
+      imported_at DATETIME            -- set when the run was imported (visual-ci import), else NULL
     );
 
     CREATE TABLE IF NOT EXISTS snapshots (
@@ -69,13 +70,16 @@ export function initDb(customDbPath) {
     CREATE INDEX IF NOT EXISTS idx_snapshots_run_id ON snapshots(run_id);
   `);
 
-  // Migrate databases created before per-run baselines existed. IMMEDIATE locking so a
-  // dashboard and CLI opening the same old database at once don't both add the columns.
+  // Migrate databases created before per-run baselines (and imports) existed. IMMEDIATE
+  // locking so a dashboard and CLI opening the same old database at once don't both add
+  // the columns.
   db.transaction(() => {
     const columns = new Set(db.prepare('PRAGMA table_info(snapshots)').all().map((c) => c.name));
     for (const column of ['baseline_snapshot_path', 'baseline_sha256']) {
       if (!columns.has(column)) db.exec(`ALTER TABLE snapshots ADD COLUMN ${column} TEXT`);
     }
+    const runColumns = new Set(db.prepare('PRAGMA table_info(test_runs)').all().map((c) => c.name));
+    if (!runColumns.has('imported_at')) db.exec('ALTER TABLE test_runs ADD COLUMN imported_at DATETIME');
   }).immediate();
 
   // History page lookups (route + viewport across runs). IF NOT EXISTS keeps it
@@ -118,6 +122,7 @@ export function closeDb() {
  * @param {string} [run.branch] - Git branch
  * @param {string} run.status - 'PASSED', 'FAILED', 'APPROVED', 'REJECTED'
  * @param {string} [run.created_at] - 'YYYY-MM-DD HH:MM:SS' UTC (defaults to now)
+ * @param {string} [run.imported_at] - Same format; only for runs imported from elsewhere
  * @param {Database.Database} [db] - Optional DB instance
  * @returns {object} The created run
  */
@@ -125,8 +130,8 @@ export function createTestRun(run, db = getDb()) {
   // created_at defaults to SQLite's CURRENT_TIMESTAMP ('YYYY-MM-DD HH:MM:SS', UTC);
   // callers may pass the same format so the row matches the run's run.json.
   const stmt = db.prepare(`
-    INSERT INTO test_runs (id, commit_hash, branch, status, created_at)
-    VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+    INSERT INTO test_runs (id, commit_hash, branch, status, created_at, imported_at)
+    VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
   `);
 
   stmt.run(
@@ -134,7 +139,8 @@ export function createTestRun(run, db = getDb()) {
     run.commit_hash || null,
     run.branch || null,
     run.status || 'PASSED',
-    run.created_at || null
+    run.created_at || null,
+    run.imported_at || null
   );
 
   return getTestRunById(run.id, db);
@@ -358,16 +364,30 @@ const STALE_BASELINE_MESSAGE =
  * since the copy then changes nothing.
  */
 function assertBaselineUnchanged(snapshot, source, target) {
-  const exists = fs.existsSync(target);
+  if (isBaselineStale(snapshot, { source, target })) throw new Error(STALE_BASELINE_MESSAGE);
+}
+
+/**
+ * The rule behind assertBaselineUnchanged, without throwing: true when approving would be
+ * refused because the baseline at `target` is no longer the one the run compared against.
+ *
+ * @param {object} snapshot - Snapshot row (baseline_sha256, status)
+ * @param {object} files
+ * @param {string} files.source - This run's screenshot
+ * @param {string} files.target - The shared baseline approval would replace
+ * @param {(file: string) => string} [files.hash] - SHA-256 hex of a file (e.g. cached)
+ * @returns {boolean}
+ */
+export function isBaselineStale(snapshot, { source, target, hash = hashFile }) {
   const recorded = snapshot.baseline_sha256 ||
     (snapshot.status === 'MISSING_BASELINE' ? 'none' : null);
-  if (!recorded) return;
+  if (!recorded) return false;
 
-  const actual = exists ? hashFile(target) : 'none';
-  if (actual === recorded) return;
-  if (exists && actual === hashFile(source)) return; // already this screenshot: no-op
-
-  throw new Error(STALE_BASELINE_MESSAGE);
+  const exists = fs.existsSync(target);
+  const actual = exists ? hash(target) : 'none';
+  if (actual === recorded) return false;
+  if (exists && fs.existsSync(source) && actual === hash(source)) return false; // already this screenshot: no-op
+  return true;
 }
 
 function conflictError(message, conflicts) {
