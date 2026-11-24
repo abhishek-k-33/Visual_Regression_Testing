@@ -27,10 +27,11 @@ router.get('/runs/:id', (req, res) => {
   try {
     const model = runDetailModel({ runId: req.params.id });
     if (!model) {
-      return res.status(404).render('index', {
-        ...indexModel(),
+      // The error page (escapes the id); the dashboard template had no place for the message.
+      return res.status(404).render('layout', {
         title: 'Run Not Found',
-        error: `Test run "${req.params.id}" not found.`
+        heading: 'Run not found',
+        message: `Test run "${req.params.id}" not found.`
       });
     }
     res.render('run-detail', model);

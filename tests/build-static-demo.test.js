@@ -132,6 +132,13 @@ describe('static demo build (end to end)', () => {
     expect(regression).toContain('data-tab="slider"');
     expect(regression).toContain('data-tab="diff"');
 
+    // Keyboard shortcuts (run pages only), with their help dialog and the script itself
+    expect(regression).toContain(`<script type="module" src="${BASE}/js/shortcuts.js"></script>`);
+    expect(regression).toContain('<dialog id="shortcuts-dialog"');
+    expect(regression).toContain('role="slider"');
+    expect(fs.existsSync(path.join(out, 'js', 'shortcuts.js'))).toBe(true);
+    expect(read('index.html')).not.toContain('shortcuts.js');
+
     expect(read('runs/demo-02-pass.html').match(/MATCH \(0\.00%\)/g)).toHaveLength(2);
   });
 

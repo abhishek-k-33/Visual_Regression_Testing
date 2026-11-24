@@ -178,7 +178,7 @@ describe('Express Review Dashboard & REST API', () => {
 
     it('labels dashboard and run times as UTC and shows meaningful snapshot counts', async () => {
       const index = await (await fetch(`${baseUrl}/`)).text();
-      expect(index).toContain('<th style="width: 180px;">Created (UTC)</th>');
+      expect(index).toContain('<th scope="col" style="width: 180px;">Created (UTC)</th>');
       expect(index).toContain('<time datetime="2026-01-01T10:00:00Z">2026-01-01 10:00:00 UTC</time>');
       const row = (id) => index.split('<tr').find((r) => r.includes(`data-run-id="${id}"`));
       // hist-1 only created a baseline: no more "0 match"
@@ -191,6 +191,87 @@ describe('Express Review Dashboard & REST API', () => {
 
       const run = await (await fetch(`${baseUrl}/runs/hist-2`)).text();
       expect(run).toContain('Created on <time datetime="2026-01-02T10:00:00Z">2026-01-02 10:00:00 UTC</time>');
+    });
+  });
+
+  describe('accessibility markup (M5)', () => {
+    let detail;
+    beforeAll(async () => {
+      detail = await (await fetch(`${baseUrl}/runs/api-run-1`)).text();
+    });
+
+    it('every page has a skip link to <main id="main">', async () => {
+      for (const page of ['/', '/runs/api-run-1', '/history/hist_page/tablet', '/runs/nope']) {
+        const html = await (await fetch(`${baseUrl}${page}`)).text();
+        expect(html, page).toMatch(/<body>\s*<a class="skip-link" href="#main">Skip to main content<\/a>/);
+        expect(html.match(/<main [^>]*id="main"/g), page).toHaveLength(1);
+        expect(html.match(/<h1[ >]/g), page).toHaveLength(1);
+      }
+    });
+
+    it('run detail: comparison tabs follow the WAI-ARIA tabs pattern', () => {
+      const id = `snapshot-${snapshotId}`;
+      expect(detail).toContain(`<article class="snapshot-card" id="${id}" data-status="DIFF" tabindex="-1" aria-labelledby="${id}-heading">`);
+      expect(detail).toContain(`<h2 class="visually-hidden" id="${id}-heading">Snapshot / at desktop</h2>`);
+      expect(detail).toContain('role="tablist" aria-label="Comparison views for / at desktop"');
+      for (const [key, selected] of [['side-by-side', true], ['slider', false], ['diff', false]]) {
+        expect(detail).toContain(`role="tab" id="${id}-tab-${key}" aria-controls="${id}-panel-${key}" aria-selected="${selected}" tabindex="${selected ? 0 : -1}"`);
+        const panel = detail.match(new RegExp(`<div class="tab-panel[^"]*" data-panel="${key}" ([^>]*)>`))[1];
+        expect(panel).toContain(`role="tabpanel" id="${id}-panel-${key}" aria-labelledby="${id}-tab-${key}" tabindex="0"`);
+        expect(panel.includes('hidden'), key).toBe(!selected);
+      }
+      expect(detail).not.toContain('<nav class="tabs-nav"');
+    });
+
+    it('run detail: the comparison slider is an ARIA slider named after the route and viewport', () => {
+      expect(detail).toContain('class="slider-divider" role="slider" tabindex="0" aria-label="Comparison slider for / at desktop" ' +
+        'aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" aria-valuetext="50% current, 50% baseline"');
+      expect(detail).toContain('<div class="slider-handle-pill" aria-hidden="true">');
+    });
+
+    it('run detail: screenshot alt text names the route, viewport and image', () => {
+      expect(detail).toContain('alt="Baseline screenshot of / at desktop"');
+      expect(detail).toContain('alt="Current screenshot of / at desktop"');
+      expect(detail).toContain('alt="Diff of / at desktop: differing pixels highlighted in red"');
+      expect(detail).not.toMatch(/alt="(Baseline|Current|Diff) (screenshot|image)"/);
+    });
+
+    it('run detail: decorative SVGs are hidden, buttons are typed and described, errors have alert regions', () => {
+      // Page content after the shared navbar (whose brand icon sits inside a named link)
+      for (const svg of detail.split('</header>')[1].match(/<svg[^>]*>/g)) expect(svg).toContain('aria-hidden="true"');
+      expect(detail).toMatch(/<button type="button" class="btn btn-approve" data-id="\d+" aria-describedby="snapshot-\d+-heading">/);
+      expect(detail).toMatch(/<button type="button" class="btn btn-reject" data-id="\d+" aria-describedby="snapshot-\d+-heading">/);
+      // One per card plus one for "Approve all pending"
+      expect(detail.match(/<div class="action-error" role="alert" data-action-error><\/div>/g)).toHaveLength(2);
+    });
+
+    it('run detail: loads shortcuts.js, shows the hint and renders the help dialog', () => {
+      expect(detail).toContain('<script type="module" src="/js/shortcuts.js"></script>');
+      expect(detail).toContain('<button type="button" class="shortcuts-hint" data-shortcuts-open aria-haspopup="dialog" aria-controls="shortcuts-dialog">Press <kbd>?</kbd> for keyboard shortcuts</button>');
+      expect(detail).toContain('<dialog id="shortcuts-dialog" class="shortcuts-dialog" aria-labelledby="shortcuts-dialog-title">');
+      expect(detail).toContain('<input type="checkbox" id="shortcuts-enabled" checked');
+      expect(detail).toContain('<label for="shortcuts-enabled">Single-key shortcuts</label>');
+    });
+
+    it('dashboard: filter toggle buttons, a labelled search box, hidden icons, no shortcuts script', async () => {
+      const html = await (await fetch(`${baseUrl}/`)).text();
+      expect(html).toContain('<div class="filter-tabs" role="group" aria-label="Filter runs by status">');
+      expect(html).toContain('<button type="button" class="filter-tab active" data-filter="all" aria-pressed="true">');
+      expect(html.match(/aria-pressed="false"/g)).toHaveLength(3);
+      expect(html).not.toContain('role="tab"');
+      expect(html).toContain('<label for="dashboard-search" class="visually-hidden">Filter runs by ID, branch or commit</label>');
+      for (const svg of html.split('</header>')[1].match(/<svg[^>]*>/g)) expect(svg).toContain('aria-hidden="true"');
+      expect(html).toContain('<span>Inspect<span class="visually-hidden"> run api-run-1</span></span>');
+      expect(html).not.toContain('shortcuts.js');
+    });
+
+    it('GET /runs/<unknown> answers 404 with a visible, escaped error message', async () => {
+      const res = await fetch(`${baseUrl}/runs/${encodeURIComponent('no-such-<run>')}`);
+      expect(res.status).toBe(404);
+      const html = await res.text();
+      expect(html).toContain('<h1>Run not found</h1>');
+      expect(html).toContain('<p>Test run &#34;no-such-&lt;run&gt;&#34; not found.</p>');
+      expect(html).not.toContain('test-runs-table'); // not the dashboard any more
     });
   });
 
@@ -341,7 +422,7 @@ describe('Express Review Dashboard & REST API', () => {
         app.render('layout', { title: 'Error', heading: 'Boom', message: '<b>bad</b>' }, (err, out) => (err ? reject(err) : resolve(out)));
       }));
       expect(html).toContain('data-base="/x"');
-      expect(html).toContain('<h2>Boom</h2>');
+      expect(html).toContain('<h1>Boom</h1>'); // the page's one h1 (was an h2 under no h1)
       expect(html).toContain('&lt;b&gt;bad&lt;/b&gt;');
       expect(html).not.toContain('slider.js');
       expectAllLocalUrlsUnder(html, '/x', 'error page');

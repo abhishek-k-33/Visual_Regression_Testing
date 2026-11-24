@@ -31,7 +31,8 @@ const PAIRS = [
   ].flatMap(([name, fg, tint]) =>
     PILL_SURFACES.map((bg) => [`${name} pill on ${tint} over ${bg}`, fg, [tint, bg], AA_TEXT])),
   // Tinted buttons and links: Inspect, Approve, Reject, History
-  ['Inspect button', '--primary-blue', ['--primary-tint-bg', '--bg-table'], AA_TEXT],
+  ['Inspect button', '--primary-on-tint', ['--primary-tint-bg', '--bg-table'], AA_TEXT],
+  ['Inspect-style button on a card (history "View current baseline")', '--primary-on-tint', ['--primary-tint-bg', '--bg-surface'], AA_TEXT],
   ['History link (hover)', '--primary-blue', ['--primary-tint-bg', '--bg-secondary'], AA_TEXT],
   ['Approve button', '--success-green', ['--success-tint-bg', '--bg-secondary'], AA_TEXT],
   ['Approve all button', '--success-green', ['--success-tint-bg', '--bg-surface'], AA_TEXT],

@@ -105,9 +105,10 @@ Visual Regression Testing Project/
 │               ├── common.js      # Base path, API URL and screen-reader announce helpers
 │               ├── theme.js       # Light/dark toggle (every page), remembers the choice
 │               ├── dashboard.js   # Real-time search, filtering, and pagination
-│               ├── tabs.js        # Snapshot view tabs
-│               ├── slider.js      # Draggable split-slider
-│               └── review-actions.js # Approve / Reject buttons and "Approve all pending"
+│               ├── tabs.js        # Snapshot view tabs (WAI-ARIA tabs pattern)
+│               ├── slider.js      # Split slider (ARIA slider: keyboard + pointer events)
+│               ├── review-actions.js # Approve / Reject buttons and "Approve all pending"
+│               └── shortcuts.js   # Run page keyboard shortcuts (j/k/a/r/1-3/?) and help dialog
 ├── scripts/
 │   ├── demo-app.js                # Static demo site (the visual CI target) with original/regressed/redesign variants
 │   ├── serve-demo.js              # Serves the demo site on :4567 (npm run demo:serve)
@@ -141,6 +142,9 @@ Visual Regression Testing Project/
     ├── responsive-theme.test.js   # Chromium: no sideways scroll at 360/375px in both themes, 44px tap targets, theme toggle
     ├── helpers/                   # Shared test helpers (CSS token/contrast math, seeded dashboard storage)
     ├── reporter.test.js           # Markdown reporter & CI step summary tests
+    ├── a11y-axe.test.js           # axe-core scan of every page type in headless Chromium
+    ├── keyboard-ui.test.js        # Keyboard & screen-reader behaviour: tabs, slider, shortcuts, skip link
+    ├── helpers/ui-fixture.js      # Browser-test fixture: app on a free port, temp storage, generated PNGs
     ├── verify-phase-1.js          # Phase 1 deliverable verification script
     ├── verify-phase-2.js          # Phase 2 deliverable verification script
     ├── verify-phase-3.js          # Phase 3 deliverable verification script
@@ -328,14 +332,14 @@ The dashboard provides a **Linear/Vercel-inspired developer interface**:
   - **Total Runs**: Displays overall test executions with blue gradient and play icon.
   - **Passed / Approved**: Shows successful runs with emerald green gradient and check icon.
   - **Visual Regressions**: Highlights failing runs with coral red gradient and alert icon.
-- **Real-Time Toolbar**: Client-side filtering tabs (`All`, `Passed`, `Approved`, `Regressions`) and quick search input.
+- **Real-Time Toolbar**: Client-side filter toggle buttons (`All`, `Passed`, `Approved`, `Regressions`) and quick search input.
 - **Test Runs Table**: Displays status pills, cyan monospace Run IDs, Git context badges (`🌿 branch`, `#commit`; long branch names are truncated, full name on hover), snapshot counts per status (only the ones present: diff, rejected, new baseline, approved, match), creation times (UTC), and prominent **Inspect** buttons.
 - **Pagination**: Minimal footer with item range indicator and navigation controls.
 
 ### Run Detail Studio (`GET /runs/:id`)
-For every route and viewport, three interactive visual tabs are available:
+An unknown run id returns the error page with status `404`. For every route and viewport, three interactive visual tabs are available:
 1. **Side-by-Side View**: Compares the baseline *as it was when the run happened* with the current execution in aligned frames. Each run keeps a copy of the baseline it compared against in `runs/<id>/baselines/`, so later approvals don't change what an old run shows. (Runs recorded before this was added show the current baseline instead.)
-2. **Interactive Overlay Slider**: Draggable vertical divider (mouse and touch enabled) to wipe between before and after images in real time.
+2. **Interactive Overlay Slider**: Draggable vertical divider (mouse, pen and touch via Pointer Events) to wipe between before and after images in real time. It is also a keyboard slider (see below).
 3. **Diff Highlight View**: Full-resolution image canvas with differing pixels painted in bright neon red alongside exact mismatch percentages.
 4. **One-Click Baseline Promotion**: Clicking **"Approve & Update Baseline"** copies the current screenshot over the baseline file on disk and transitions the status to `APPROVED`. If the baseline has changed since the run (e.g. a newer run was approved first), approval is refused with `409 Conflict` rather than silently reverting the newer baseline; re-run the tests and review the fresh result. Approving is still allowed when the baseline already equals the run's screenshot. Runs recorded before this check existed are not protected.
 5. **Approve all pending**: when a run has snapshots awaiting review (`DIFF` or `MISSING_BASELINE`), the run header shows **"Approve all pending (N)"**. After a confirmation it approves them all at once, **all or nothing**: every snapshot is checked first, and if any baseline has changed since the run, nothing is approved and the conflicting route/viewport pairs are listed. If a baseline changes while the batch is running, or copying a file or saving to the database fails part-way, every baseline already replaced is put back (old baselines are kept as hidden backups until the batch succeeds; if one can't be restored, the error says which and where its backup is). Approved and rejected snapshots are left as they are. In the static demo it is simulated like the single buttons.
@@ -370,6 +374,27 @@ How one route has looked at one viewport over time, e.g. `/history/index/desktop
 - **One row per run** (latest 100, newest first; a card per run on phones, thumbnail on top): link to that run's snapshot card, time (UTC), branch and commit, status pill, mismatch %, and a lazy-loaded thumbnail of the screenshot.
 - **Baseline changed marker**: shown on a run that was compared against a different baseline than the run before it (e.g. the first run after an approval), and as a dashed line on the sparkline. Runs recorded before baseline hashes existed are not marked.
 
+### Accessibility & Keyboard Shortcuts
+The dashboard can be used with the keyboard alone and with a screen reader:
+- **Skip link**: the first <kbd>Tab</kbd> on every page shows *Skip to main content*, which jumps to the page's `<main id="main">` landmark. Every focusable element shows a visible focus ring (`:focus-visible`).
+- **Comparison tabs** follow the WAI-ARIA tabs pattern: only the selected tab is in the Tab order; <kbd>←</kbd>/<kbd>→</kbd> move between tabs (wrapping), <kbd>Home</kbd>/<kbd>End</kbd> jump to the first/last, and the inactive panels are `hidden`.
+- **Comparison slider** is a `role="slider"` named after the route and viewport, with values like *40% current, 60% baseline*: <kbd>←</kbd>/<kbd>→</kbd> (and <kbd>↓</kbd>/<kbd>↑</kbd>) ±5, <kbd>Page Down</kbd>/<kbd>Page Up</kbd> ±20, <kbd>Home</kbd> 0, <kbd>End</kbd> 100.
+- **Screen readers**: screenshots have alt text naming the route, viewport and image (baseline, current or diff); decorative icons are hidden; dashboard filters are `aria-pressed` toggle buttons and the search box has a label. Approve/reject results are announced through a polite live region; errors appear next to the snapshot (or the run header) in a `role="alert"` region instead of a blocking `alert()`. Screenshot frames that scroll (tall pages) can be focused and scrolled from the keyboard.
+
+**Run page shortcuts** (press <kbd>?</kbd> or the *Press ? for keyboard shortcuts* button in the run header for the help dialog):
+
+| Key | Does |
+| :--- | :--- |
+| <kbd>j</kbd> / <kbd>k</kbd> | Next / previous snapshot card. The first <kbd>j</kbd> goes to the first card still awaiting review; after that every card in page order. The current card is outlined and focused. |
+| <kbd>a</kbd> | Approve the current snapshot (same as its **Approve & Update Baseline** button) |
+| <kbd>r</kbd> | Reject the current snapshot (same as its **Reject** button, including the confirmation) |
+| <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> | Side-by-side, slider or diff view of the current snapshot |
+| <kbd>?</kbd> | Open the shortcuts help; <kbd>Esc</kbd> closes it |
+
+Clicking or tabbing into a card also makes it the current one. Shortcuts are ignored while you type in a field, with <kbd>Ctrl</kbd>/<kbd>Alt</kbd>/<kbd>Cmd</kbd> held, on key repeat and while a dialog is open. There is deliberately no shortcut for *Approve all pending*. Single-key shortcuts can conflict with screen readers and speech input (WCAG 2.1.4), so the help dialog has a switch to turn them off; the choice is saved in the browser's `localStorage` (if storage is blocked, the switch still works until reload). They work the same in the static demo, where approvals are simulated.
+
+`tests/a11y-axe.test.js` runs [axe-core](https://github.com/dequelabs/axe-core) on the dashboard, a run page (also with the slider and the help dialog open), a history page and the error page, and fails on any *serious* or *critical* violation, with every rule enabled (including `color-contrast`) in both the dark and light themes.
+
 ---
 
 ## 🚀 GitHub Actions CI Pipeline
@@ -397,7 +422,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 263 Vitest unit & integration tests
+# Run all 303 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -431,16 +456,18 @@ node tests/verify-phase-5.js
  ✓ tests/per-run-baselines.test.js (11 tests)
  ✓ tests/approve-all.test.js (21 tests)
  ✓ tests/approve-all-api.test.js (12 tests)
- ✓ tests/server.test.js (42 tests)
+ ✓ tests/server.test.js (50 tests)
  ✓ tests/storage-dir.test.js (3 tests)
  ✓ tests/urls.test.js (3 tests)
  ✓ tests/viewModels.test.js (32 tests)
  ✓ tests/theme-contrast.test.js (9 tests)
  ✓ tests/responsive-theme.test.js (9 tests)
  ✓ tests/reporter.test.js (11 tests)
+ ✓ tests/a11y-axe.test.js (12 tests)
+ ✓ tests/keyboard-ui.test.js (20 tests)
 
- Test Files  20 passed (20)
-      Tests  263 passed (263)
+ Test Files  22 passed (22)
+      Tests  303 passed (303)
 ```
 
 ---

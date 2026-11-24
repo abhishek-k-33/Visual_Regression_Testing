@@ -1,6 +1,6 @@
 /**
  * Client-side interactivity for Visual CI Dashboard:
- * - Real-time filtering by status tab (All, Passed, Approved, Failed)
+ * - Real-time filtering by status toggle buttons (All, Passed, Approved, Failed; aria-pressed)
  * - Search bar filter (Run ID, branch, commit)
  * - Client-side table pagination
  *
@@ -90,11 +90,13 @@ function initDashboard() {
     if (nextBtn) nextBtn.disabled = currentPage >= totalPages;
   }
 
-  // Filter tabs click
+  // Filter buttons: toggle buttons (aria-pressed), exactly one pressed at a time
   filterTabs.forEach((tab) => {
     tab.addEventListener('click', () => {
-      filterTabs.forEach((t) => t.classList.remove('active'));
-      tab.classList.add('active');
+      filterTabs.forEach((t) => {
+        t.classList.toggle('active', t === tab);
+        t.setAttribute('aria-pressed', String(t === tab));
+      });
       currentFilter = tab.getAttribute('data-filter');
       currentPage = 1;
       updateTable();
