@@ -13,6 +13,7 @@ An open-source, self-hosted visual regression testing engine and interactive rev
 - 🗄️ **High-Performance SQLite Persistence**: Embedded SQLite storage (`better-sqlite3`) with Write-Ahead Logging (WAL) mode for fast, concurrent run tracking, Git commit/branch context, and snapshot history.
 - 🖥️ **Linear/Vercel-Inspired Review Dashboard**: Full-width developer dashboard (dark and light themes, phone-friendly layout, WCAG AA contrast) featuring real-time search, status filtering, pagination, Side-by-Side comparison, Draggable Split Sliders, and Diff Highlight visualizers.
 - 🔄 **One-Click Baseline Promotion**: Promote approved visual regressions to new golden baselines on disk directly from the web interface.
+- 📥 **Review CI Runs Locally**: `visual-ci import visual-regression-diffs.zip` recreates a failed CI run (screenshots, diffs and the baselines CI compared against) in your local dashboard, after validating every file in the artifact.
 - 🔒 **Security Basics**: Baseline promotion restricted to PNGs inside `storage/runs/` → `storage/baselines/` (symlink-aware), `/storage` serves only screenshot PNGs, localhost-only binding by default, and parameterized SQL queries.
 
 ---
@@ -76,7 +77,7 @@ Visual Regression Testing Project/
 │   └── PHASE_5_EXECUTION.md       # GitHub Actions CI & Markdown Reporting
 ├── src/
 │   ├── cli/                       # CLI commands and screenshot engine
-│   │   ├── index.js               # CLI entry point (`visual-ci capture`, `visual-ci test`)
+│   │   ├── index.js               # CLI entry point (`visual-ci capture`, `visual-ci test`, `visual-ci import`)
 │   │   ├── capture.js             # Playwright multi-viewport capture engine
 │   │   ├── compare.js             # Pixel comparison and canvas dimension normalizer
 │   │   ├── manifest.js            # Writes run.json, the per-run record that travels with CI artifacts
@@ -86,6 +87,7 @@ Visual Regression Testing Project/
 │   └── server/                    # Web review dashboard & REST API
 │       ├── app.js                 # Express server configuration
 │       ├── db.js                  # SQLite schema and queries
+│       ├── importRuns.js          # Imports CI runs (artifact zip or folder) safely: validation, limits, id collisions
 │       ├── paths.js               # Storage root and PNG path allowlist checks
 │       ├── security.js            # Host allowlist + CSRF checks for the unauthenticated dashboard
 │       ├── viewModels.js          # Shapes DB rows into what the templates render (incl. /storage URLs)
@@ -133,6 +135,7 @@ Visual Regression Testing Project/
     ├── config.test.js             # Config validation and path traversal tests
     ├── db.test.js                 # SQLite queries and path jail tests
     ├── manifest.test.js           # run.json written by the CLI for every test run
+    ├── import.test.js             # visual-ci import: real CI run, malicious zips, manifest validation, approval, CLI
     ├── docker.test.js             # Docker image tag matches the pinned Playwright version
     ├── server.test.js             # Express REST API and dashboard view tests (incl. route history)
     ├── storage-dir.test.js        # Custom storageDir honoured by CLI and dashboard
@@ -145,6 +148,7 @@ Visual Regression Testing Project/
     ├── a11y-axe.test.js           # axe-core scan of every page type in headless Chromium
     ├── keyboard-ui.test.js        # Keyboard & screen-reader behaviour: tabs, slider, shortcuts, skip link
     ├── helpers/ui-fixture.js      # Browser-test fixture: app on a free port, temp storage, generated PNGs
+    ├── helpers/zip.js             # Tiny zip writer for tests (builds malicious archives on the fly)
     ├── verify-phase-1.js          # Phase 1 deliverable verification script
     ├── verify-phase-2.js          # Phase 2 deliverable verification script
     ├── verify-phase-3.js          # Phase 3 deliverable verification script
@@ -311,7 +315,35 @@ Baselines captured outside the container (or approved in the dashboard after a n
 
 With rootful Docker on Linux, files the container writes into `storage/` are owned by root. Hand them back with `sudo chown -R "$(id -u):$(id -g)" storage` (not needed with Docker Desktop or rootless Podman).
 
-### 6. Build the Static Demo (GitHub Pages)
+### 6. Review a CI Run Locally (`visual-ci import`)
+When the visual check fails in GitHub Actions, review it in your own dashboard instead of unpacking images by hand:
+
+1. Open the failed workflow run on GitHub and download the **`visual-regression-diffs`** artifact (bottom of the run's *Summary* page). You get `visual-regression-diffs.zip`.
+2. Import it from your checkout of the branch:
+   ```bash
+   npx visual-ci import ~/Downloads/visual-regression-diffs.zip
+   # or: node src/cli/index.js import ~/Downloads/visual-regression-diffs.zip
+   ```
+   It prints each imported run with its dashboard link, e.g. `http://localhost:4000/runs/run_1732440000000`.
+3. Start the dashboard (`npm start`) and open that link. Imported runs carry an **Imported** badge on the dashboard and in the run header.
+
+```text
+visual-ci import <path> [options]
+
+  <path>                 The artifact .zip, a folder holding <run-id>/run.json (e.g. an unpacked
+                         artifact), a single run folder, or its run.json
+  -c, --config <path>    Config to read storageDir from (only storageDir is used; no baseUrl needed)
+  -r, --run-id <id>      Local id for the run (only when importing a single run)
+```
+
+- **Where it goes:** the same storage folder the dashboard uses (`VISUAL_STORAGE_DIR`, else `storageDir` from the config, else `./storage`). Screenshots, diffs and the per-run baseline copies go to `runs/<id>/`; your shared `baselines/` folder is never written by an import.
+- **Ids:** a run keeps its CI id. If that id is already used by a different local run, it is imported as `<id>-imp2` (then `-imp3`, ...). Importing the same artifact again changes nothing and says *already imported*. `--run-id` picks the id yourself (it must be free).
+- **Approving an imported run:** approval copies the CI screenshot into your local `baselines/`, then you commit it as usual. It only works while your local baseline is **exactly the one CI compared against** (CI's hash is kept from `run.json`). If it differs (your branch is behind or ahead of the commit CI tested, or the baseline was changed or approved since), the run page says *"Your local baseline differs from the one CI compared against, so approving would be refused"* and disables **Approve** for that snapshot (and **Approve all pending**); the API answers `409 Conflict`. Check out the commit CI tested (or update your branch) or re-run the tests locally, then review that result. Reject still works.
+- **Only artifacts with `run.json`:** artifacts from before `run.json` existed can't be imported (*"no run.json found"*); re-run CI.
+- **What is checked:** the archive is untrusted. Only `run.json` and `*.png` files are extracted, into a private staging folder inside the storage root that is removed afterwards. Absolute paths, `..`, backslashes, symlinks and duplicate entries are refused or skipped; at most 2000 entries, 50 MB per image, 1 MB per `run.json` and 500 MB in total, counted while unpacking, not taken from the archive's headers. Every `run.json` is validated strictly (schema and version, run id, routes, viewports, statuses, numbers); file names are re-derived from each snapshot's route and viewport rather than trusted; every referenced image must be a real PNG (at most 16384 x 65536 pixels) whose SHA-256 matches the manifest, and the compared baseline's hash must be present. If any run in the input fails a check, nothing is imported.
+- **Reused by the dashboard later:** the work is done by `importRuns(source, { storageRoot, db, runId })` in `src/server/importRuns.js`, which reports failures with an HTTP-style `status` (`400` unreadable or unsafe input, `409` id taken, `413` too large, `422` no valid run).
+
+### 7. Build the Static Demo (GitHub Pages)
 Builds the read-only dashboard behind the [live demo](https://abhishek-k-33.github.io/Visual_Regression_Testing/) into `_site/` (git-ignored):
 
 ```bash
@@ -342,7 +374,8 @@ An unknown run id returns the error page with status `404`. For every route and 
 2. **Interactive Overlay Slider**: Draggable vertical divider (mouse, pen and touch via Pointer Events) to wipe between before and after images in real time. It is also a keyboard slider (see below).
 3. **Diff Highlight View**: Full-resolution image canvas with differing pixels painted in bright neon red alongside exact mismatch percentages.
 4. **One-Click Baseline Promotion**: Clicking **"Approve & Update Baseline"** copies the current screenshot over the baseline file on disk and transitions the status to `APPROVED`. If the baseline has changed since the run (e.g. a newer run was approved first), approval is refused with `409 Conflict` rather than silently reverting the newer baseline; re-run the tests and review the fresh result. Approving is still allowed when the baseline already equals the run's screenshot. Runs recorded before this check existed are not protected.
-5. **Approve all pending**: when a run has snapshots awaiting review (`DIFF` or `MISSING_BASELINE`), the run header shows **"Approve all pending (N)"**. After a confirmation it approves them all at once, **all or nothing**: every snapshot is checked first, and if any baseline has changed since the run, nothing is approved and the conflicting route/viewport pairs are listed. If a baseline changes while the batch is running, or copying a file or saving to the database fails part-way, every baseline already replaced is put back (old baselines are kept as hidden backups until the batch succeeds; if one can't be restored, the error says which and where its backup is). Approved and rejected snapshots are left as they are. In the static demo it is simulated like the single buttons.
+5. **Imported runs** (`visual-ci import`): marked **Imported** (with the import time in the header). For each snapshot awaiting review, the page checks whether your local baseline is still the one CI compared against; if not, it shows a notice and disables Approve (and Approve all pending), since approval would be refused with `409`.
+6. **Approve all pending**: when a run has snapshots awaiting review (`DIFF` or `MISSING_BASELINE`), the run header shows **"Approve all pending (N)"**. After a confirmation it approves them all at once, **all or nothing**: every snapshot is checked first, and if any baseline has changed since the run, nothing is approved and the conflicting route/viewport pairs are listed. If a baseline changes while the batch is running, or copying a file or saving to the database fails part-way, every baseline already replaced is put back (old baselines are kept as hidden backups until the batch succeeds; if one can't be restored, the error says which and where its backup is). Approved and rejected snapshots are left as they are. In the static demo it is simulated like the single buttons.
 
 **REST API** (writes need the `X-Requested-With` header, see *Cross-site protection* above):
 
@@ -393,7 +426,7 @@ The dashboard can be used with the keyboard alone and with a screen reader:
 
 Clicking or tabbing into a card also makes it the current one. Shortcuts are ignored while you type in a field, with <kbd>Ctrl</kbd>/<kbd>Alt</kbd>/<kbd>Cmd</kbd> held, on key repeat and while a dialog is open. There is deliberately no shortcut for *Approve all pending*. Single-key shortcuts can conflict with screen readers and speech input (WCAG 2.1.4), so the help dialog has a switch to turn them off; the choice is saved in the browser's `localStorage` (if storage is blocked, the switch still works until reload). They work the same in the static demo, where approvals are simulated.
 
-`tests/a11y-axe.test.js` runs [axe-core](https://github.com/dequelabs/axe-core) on the dashboard, a run page (also with the slider and the help dialog open), a history page and the error page, and fails on any *serious* or *critical* violation, with every rule enabled (including `color-contrast`) in both the dark and light themes.
+`tests/a11y-axe.test.js` runs [axe-core](https://github.com/dequelabs/axe-core) on the dashboard, a run page (also with the slider and the help dialog open), an imported run with stale-baseline notices, a history page and the error page, and fails on any *serious* or *critical* violation, with every rule enabled (including `color-contrast`) in both the dark and light themes.
 
 ---
 
@@ -407,11 +440,11 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 - **Same rendering as baselines**: Builds the project's Docker image and runs the tests inside it.
 - **Strict mode**: A missing baseline fails the job instead of silently passing.
 - **Rich Markdown Step Summaries**: Generates a formatted table of every tested route, viewport, mismatch percentage, and pass/fail badge directly in the GitHub Actions run summary (`GITHUB_STEP_SUMMARY`).
-- **Diff Artifact Downloads**: On any visual regression failure, `storage/runs/` is zipped and uploaded as a workflow artifact (`visual-regression-diffs`) for quick inspection. Each run folder includes `run.json`, a machine-readable record of the run (status, git info, and per snapshot: route, viewport, status, mismatch, file names and the compared baseline's hash), so a CI run can be re-created without its database.
+- **Diff Artifact Downloads**: On any visual regression failure, `storage/runs/` is zipped and uploaded as a workflow artifact (`visual-regression-diffs`) for quick inspection. Each run folder includes `run.json`, a machine-readable record of the run (status, git info, and per snapshot: route, viewport, status, mismatch, file names and the compared baseline's hash), so a CI run can be re-created without its database: `visual-ci import visual-regression-diffs.zip` loads it into your local dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-visual-ci-import)).
 
 ### Live demo on GitHub Pages (`.github/workflows/pages.yml`)
 
-- **Build**: on pushes and pull requests to `main` that touch `src/`, `scripts/`, the package files or the workflow, runs `scripts/build-static-demo.js` (see [Build the Static Demo](#6-build-the-static-demo-github-pages)) with the repository name as the base path, and uploads `_site` as the Pages artifact. On pull requests it only builds, so a change that breaks the demo fails the PR.
+- **Build**: on pushes and pull requests to `main` that touch `src/`, `scripts/`, the package files or the workflow, runs `scripts/build-static-demo.js` (see [Build the Static Demo](#7-build-the-static-demo-github-pages)) with the repository name as the base path, and uploads `_site` as the Pages artifact. On pull requests it only builds, so a change that breaks the demo fails the PR.
 - **Deploy**: on `main` (or a manual run from `main`), deploys the artifact with `actions/deploy-pages` and smoke-tests that the dashboard and the `demo-05-regression` run page return `200`.
 - **Setup**: the repository's Pages source must be set to *GitHub Actions* (Settings → Pages).
 
@@ -422,7 +455,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 303 Vitest unit, integration & browser tests
+# Run all 373 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -453,6 +486,7 @@ node tests/verify-phase-5.js
  ✓ tests/db.test.js (19 tests)
  ✓ tests/docker.test.js (3 tests)
  ✓ tests/manifest.test.js (19 tests)
+ ✓ tests/import.test.js (68 tests)
  ✓ tests/per-run-baselines.test.js (11 tests)
  ✓ tests/approve-all.test.js (21 tests)
  ✓ tests/approve-all-api.test.js (12 tests)
@@ -463,11 +497,11 @@ node tests/verify-phase-5.js
  ✓ tests/theme-contrast.test.js (9 tests)
  ✓ tests/responsive-theme.test.js (9 tests)
  ✓ tests/reporter.test.js (11 tests)
- ✓ tests/a11y-axe.test.js (12 tests)
+ ✓ tests/a11y-axe.test.js (14 tests)
  ✓ tests/keyboard-ui.test.js (20 tests)
 
- Test Files  22 passed (22)
-      Tests  303 passed (303)
+ Test Files  23 passed (23)
+      Tests  373 passed (373)
 ```
 
 ---
