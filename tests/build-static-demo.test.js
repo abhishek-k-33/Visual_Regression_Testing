@@ -161,6 +161,16 @@ describe('static demo build (end to end)', () => {
     }
   });
 
+  it('has no "Import CI run" control and does not ship its script (no server to import into)', () => {
+    expect(fs.existsSync(path.join(out, 'js', 'import-upload.js'))).toBe(false);
+    for (const rel of walk(out).filter((f) => f.endsWith('.html'))) {
+      const html = read(rel);
+      expect(html, rel).not.toContain('import-run-btn');
+      expect(html, rel).not.toContain('data-drop-overlay');
+      expect(html, rel).not.toContain('import-upload.js');
+    }
+  });
+
   it('contains no database, summaries, manifests or unexpected files', () => {
     const files = walk(out);
     expect(files.filter((f) => /\.sqlite|\.db$|\.md$|run\.json$/i.test(f))).toEqual([]);

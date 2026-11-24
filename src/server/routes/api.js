@@ -1,5 +1,8 @@
 import express from 'express';
+import { getStorageRoot } from '../paths.js';
+import { handleImportUpload } from '../uploadImport.js';
 import {
+  getDb,
   getAllTestRuns,
   getTestRunById,
   getSnapshotsByRunId,
@@ -10,8 +13,9 @@ import {
 
 const router = express.Router();
 
-// Runs are recorded by the CLI writing to SQLite directly; there is deliberately
-// no endpoint for creating runs, since that would let clients choose file paths.
+// Runs are recorded by the CLI writing to SQLite directly, or imported from a CI
+// artifact (POST /api/imports, validated by importRuns); there is deliberately no
+// endpoint that creates runs from client-chosen file paths.
 
 function errorStatus(err) {
   if (Number.isInteger(err.status) && err.status >= 400 && err.status < 600) return err.status;
@@ -95,6 +99,19 @@ router.post('/runs/:id/approve-all', (req, res) => {
     if (Array.isArray(err.conflicts)) body.conflicts = err.conflicts;
     res.status(errorStatus(err)).json(body);
   }
+});
+
+/**
+ * POST /api/imports
+ * Body: the raw CI artifact zip (Content-Type application/zip, application/x-zip-compressed
+ * or application/octet-stream). No body parser runs on this route: the request stream
+ * goes straight to a capped temp file (see uploadImport.js).
+ * 201 { success, runs: [{ id, url, status, snapshots, renamedFrom?, alreadyImported? }] }
+ * (200 when every run was already imported); errors { success: false, error } with
+ * 400/409/413/415/422/503 (Retry-After)/507.
+ */
+router.post('/imports', (req, res) => {
+  handleImportUpload(req, res, { storageRoot: getStorageRoot(), db: getDb() });
 });
 
 /**

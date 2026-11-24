@@ -18,6 +18,21 @@
       </div>
 
       <div class="page-heading-actions">
+        <% if (mode !== 'static') { %>
+          <%# Import a CI artifact (import-upload.js); not in the read-only static build. -%>
+          <div class="import-control" data-max-upload-bytes="<%= locals.maxUploadBytes || '' %>">
+            <button type="button" class="btn-import" id="import-run-btn" aria-describedby="import-hint">
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+              <span class="import-label">Import CI run</span>
+            </button>
+            <p class="import-hint" id="import-hint">The <code>visual-regression-diffs</code> .zip from a failed CI run, or drop it on this page</p>
+            <input type="file" id="import-file" accept=".zip,application/zip,application/x-zip-compressed" hidden>
+          </div>
+        <% } %>
         <div class="action-pill">
           <span class="action-pill-dot"></span>
           <span>Engine Active</span>
@@ -26,6 +41,17 @@
         </div>
       </div>
     </div>
+
+    <% if (mode !== 'static') { %>
+      <div class="import-feedback">
+        <%# Progress and results of an import; errors go to the alert region. -%>
+        <div class="import-status" role="status" data-import-status></div>
+        <div class="action-error" role="alert" data-import-error></div>
+      </div>
+      <div class="drop-overlay" data-drop-overlay hidden>
+        <div class="drop-overlay-inner">Drop the artifact .zip to import it</div>
+      </div>
+    <% } %>
 
     <!-- Exactly 3 Statistics Cards (KPIs) -->
     <section class="kpi-grid" aria-label="Run statistics">
@@ -254,4 +280,4 @@
     </div>
   </main>
 
-<%- include('partials/footer', { scripts: ['/js/dashboard.js'] }) %>
+<%- include('partials/footer', { scripts: mode === 'static' ? ['/js/dashboard.js'] : ['/js/dashboard.js', '/js/import-upload.js'] }) %>

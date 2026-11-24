@@ -13,7 +13,7 @@ An open-source, self-hosted visual regression testing engine and interactive rev
 - 🗄️ **High-Performance SQLite Persistence**: Embedded SQLite storage (`better-sqlite3`) with Write-Ahead Logging (WAL) mode for fast, concurrent run tracking, Git commit/branch context, and snapshot history.
 - 🖥️ **Linear/Vercel-Inspired Review Dashboard**: Full-width developer dashboard (dark and light themes, phone-friendly layout, WCAG AA contrast) featuring real-time search, status filtering, pagination, Side-by-Side comparison, Draggable Split Sliders, and Diff Highlight visualizers.
 - 🔄 **One-Click Baseline Promotion**: Promote approved visual regressions to new golden baselines on disk directly from the web interface.
-- 📥 **Review CI Runs Locally**: `visual-ci import visual-regression-diffs.zip` recreates a failed CI run (screenshots, diffs and the baselines CI compared against) in your local dashboard, after validating every file in the artifact.
+- 📥 **Review CI Runs Locally**: drop the `visual-regression-diffs.zip` artifact on the dashboard (or run `visual-ci import visual-regression-diffs.zip`) to recreate a failed CI run (screenshots, diffs and the baselines CI compared against) locally, after validating every file in the artifact.
 - 🔒 **Security Basics**: Baseline promotion restricted to PNGs inside `storage/runs/` → `storage/baselines/` (symlink-aware), `/storage` serves only screenshot PNGs, localhost-only binding by default, and parameterized SQL queries.
 
 ---
@@ -88,6 +88,7 @@ Visual Regression Testing Project/
 │       ├── app.js                 # Express server configuration
 │       ├── db.js                  # SQLite schema and queries
 │       ├── importRuns.js          # Imports CI runs (artifact zip or folder) safely: validation, limits, id collisions
+│       ├── uploadImport.js        # POST /api/imports: capped streaming upload, one import at a time, disk guard
 │       ├── paths.js               # Storage root and PNG path allowlist checks
 │       ├── security.js            # Host allowlist + CSRF checks for the unauthenticated dashboard
 │       ├── viewModels.js          # Shapes DB rows into what the templates render (incl. /storage URLs)
@@ -109,6 +110,7 @@ Visual Regression Testing Project/
 │               ├── dashboard.js   # Real-time search, filtering, and pagination
 │               ├── tabs.js        # Snapshot view tabs (WAI-ARIA tabs pattern)
 │               ├── slider.js      # Split slider (ARIA slider: keyboard + pointer events)
+│               ├── import-upload.js  # "Import CI run" button and drag-and-drop upload (live dashboard only)
 │               ├── review-actions.js # Approve / Reject buttons and "Approve all pending"
 │               └── shortcuts.js   # Run page keyboard shortcuts (j/k/a/r/1-3/?) and help dialog
 ├── scripts/
@@ -136,6 +138,8 @@ Visual Regression Testing Project/
     ├── db.test.js                 # SQLite queries and path jail tests
     ├── manifest.test.js           # run.json written by the CLI for every test run
     ├── import.test.js             # visual-ci import: real CI run, malicious zips, manifest validation, approval, CLI
+    ├── upload-import.test.js      # POST /api/imports: CSRF, 413/415/503/507, aborts, sanitised errors, responsiveness
+    ├── import-ui.test.js          # Chromium: import by file picker and drag-and-drop, progress, errors, axe, static mode
     ├── docker.test.js             # Docker image tag matches the pinned Playwright version
     ├── server.test.js             # Express REST API and dashboard view tests (incl. route history)
     ├── storage-dir.test.js        # Custom storageDir honoured by CLI and dashboard
@@ -149,6 +153,7 @@ Visual Regression Testing Project/
     ├── keyboard-ui.test.js        # Keyboard & screen-reader behaviour: tabs, slider, shortcuts, skip link
     ├── helpers/ui-fixture.js      # Browser-test fixture: app on a free port, temp storage, generated PNGs
     ├── helpers/zip.js             # Tiny zip writer for tests (builds malicious archives on the fly)
+    ├── helpers/fake-run.js        # Writes a valid CI run folder (images + run.json) without a browser
     ├── verify-phase-1.js          # Phase 1 deliverable verification script
     ├── verify-phase-2.js          # Phase 2 deliverable verification script
     ├── verify-phase-3.js          # Phase 3 deliverable verification script
@@ -235,6 +240,8 @@ The app reads these from the environment (it does not load a `.env` file):
 | `HOST` | `127.0.0.1` | Dashboard | Interface to bind; `0.0.0.0` exposes it on your network (no authentication). |
 | `ALLOWED_HOSTS` | *(none)* | Dashboard | Comma-separated hostnames allowed in the `Host` header besides `localhost` and IP addresses. |
 | `VISUAL_STORAGE_DIR` | *(unset)* | CLI & dashboard | Overrides `storageDir` for both (e.g. to point the dashboard at a config passed with `--config`). |
+| `VISUAL_IMPORT_MAX_UPLOAD_BYTES` | `209715200` (200 MB) | Dashboard | Largest artifact zip the dashboard accepts for import (`POST /api/imports`). The CLI import has no upload cap. |
+| `VISUAL_IMPORT_IDLE_TIMEOUT_MS` | `30000` (30 s) | Dashboard | An import upload that receives no data for this long is dropped (frees the one-import-at-a-time slot). |
 | `DEMO_PORT` | `4567` | Demo site | Port for `npm run demo:serve` / `npm run demo`. |
 | `CI` | *(unset)* | CLI | When `true`, `test` defaults to `--strict`. |
 
@@ -315,17 +322,19 @@ Baselines captured outside the container (or approved in the dashboard after a n
 
 With rootful Docker on Linux, files the container writes into `storage/` are owned by root. Hand them back with `sudo chown -R "$(id -u):$(id -g)" storage` (not needed with Docker Desktop or rootless Podman).
 
-### 6. Review a CI Run Locally (`visual-ci import`)
+### 6. Review a CI Run Locally (dashboard upload or `visual-ci import`)
 When the visual check fails in GitHub Actions, review it in your own dashboard instead of unpacking images by hand:
 
 1. Open the failed workflow run on GitHub and download the **`visual-regression-diffs`** artifact (bottom of the run's *Summary* page). You get `visual-regression-diffs.zip`.
-2. Import it from your checkout of the branch:
-   ```bash
-   npx visual-ci import ~/Downloads/visual-regression-diffs.zip
-   # or: node src/cli/index.js import ~/Downloads/visual-regression-diffs.zip
-   ```
-   It prints each imported run with its dashboard link, e.g. `http://localhost:4000/runs/run_1732440000000` (using `PORT` if you set it).
-3. Start the dashboard (`npm start`) and open that link. Imported runs carry an **Imported** badge on the dashboard and in the run header.
+2. Import it, from your checkout of the branch, in either of two ways:
+   - **In the dashboard** (`npm start`, then [http://localhost:4000](http://localhost:4000)): click **Import CI run** and pick the zip, or drop the zip anywhere on the dashboard page. When it is done the dashboard opens the imported run (or lists them, if the artifact held several); errors are shown under the page heading.
+   - **On the command line:**
+     ```bash
+     npx visual-ci import ~/Downloads/visual-regression-diffs.zip
+     # or: node src/cli/index.js import ~/Downloads/visual-regression-diffs.zip
+     ```
+     It prints each imported run with its dashboard link, e.g. `http://localhost:4000/runs/run_1732440000000` (using `PORT` if you set it).
+3. Imported runs carry an **Imported** badge on the dashboard and in the run header.
 
 ```text
 visual-ci import <path> [options]
@@ -341,8 +350,11 @@ visual-ci import <path> [options]
 - **Approving an imported run:** approval copies the CI screenshot into your local `baselines/`, then you commit it as usual. It only works while your local baseline is **exactly the one CI compared against** (CI's hash is kept from `run.json`). If it differs (your branch is behind or ahead of the commit CI tested, or the baseline was changed or approved since), the run page says *"Your local baseline differs from the one CI compared against, so approving would be refused"* and disables **Approve** for that snapshot (and **Approve all pending**); the API answers `409 Conflict`. Check out the commit CI tested (or update your branch) or re-run the tests locally, then review that result. Reject still works.
 - **Only artifacts with `run.json`:** artifacts from before `run.json` existed can't be imported (*"no run.json found"*); re-run CI.
 - **What is checked:** the archive is untrusted. Only `run.json` and `*.png` files are extracted, into a private staging folder inside the storage root that is removed afterwards. Absolute paths, `..`, backslashes, control or invisible formatting characters in names (e.g. terminal escape sequences, bidi overrides), symlinks and duplicate entries are refused or skipped; anything quoted from the archive in a message is escaped. When importing a folder, symlinks are never followed below the folder you name, and a folder or file swapped for a symlink or a pipe while it is being read is skipped; at most 2000 entries, 50 MB per image, 1 MB per `run.json` and 500 MB in total, counted while unpacking, not taken from the archive's headers. Every `run.json` is validated strictly (schema and version, run id, routes, viewports, statuses, numbers; no control or bidi characters in any string); file names are re-derived from each snapshot's route and viewport rather than trusted; every referenced image must be a real PNG (at most 16384 x 65536 pixels) whose SHA-256 matches the manifest, and the compared baseline's hash must be present. If any run in the input fails a check, nothing is imported.
-- **Reused by the dashboard later:** the work is done by `importRuns(source, { storageRoot, db, runId })` in `src/server/importRuns.js`, which reports failures with an HTTP-style `status` (`400` unreadable or unsafe input, `409` id taken, `413` too large, `422` no valid run). Before an upload endpoint uses it, two things are still to do: hashing and the PNG checks run synchronously (a large upload would block the server while it is checked), and concurrent uploads should be queued one at a time with a cap on staging disk space.
-- **Interrupted imports:** files are unpacked into a hidden `.import-*` folder in the storage root and removed afterwards; folders left by a crashed import are cleaned up by the next import once they are an hour old.
+- **Dashboard upload limits:** the zip may be at most **200 MB** (`VISUAL_IMPORT_MAX_UPLOAD_BYTES`; the page refuses a bigger file before sending it, and the server stops reading once the limit is passed). **One import at a time:** a second upload while one is running is refused with `503` and `Retry-After` (not queued); try again when the first has finished. **Idle timeout:** an upload that sends nothing for 30 s (`VISUAL_IMPORT_IDLE_TIMEOUT_MS`) is disconnected and its temp file removed, so a stalled client can't hold the one-import slot. **Disk guard:** an upload is refused with `507` when the storage folder's disk, or the disk of `runs/` (where the archive is unpacked, if it is a different one), has less than max(2 x the upload limit, 1 GB) free (skipped where the platform can't tell). Server-side failures answer `500` with only an error code; the details are in the dashboard's log. The command-line import has none of these limits besides the archive checks above.
+- **Who can import:** anyone who can reach the dashboard can import runs, the same trust level as approving baselines (there is no login). Keep the default `HOST=127.0.0.1` unless you are on a trusted network; uploads get the same cross-site (CSRF) and DNS-rebinding protection as approvals (see *Cross-site protection* above).
+- **The server stays responsive while importing:** each file's SHA-256 and PNG header are computed while it is unpacked, so validation never reads whole files synchronously, and the dashboard keeps answering other requests during an import.
+- **Same code for both:** the work is done by `importRuns(source, { storageRoot, db, runId })` in `src/server/importRuns.js`, which reports failures with an HTTP-style `status` (`400` unreadable or unsafe input, `409` id taken, `413` too large, `422` no valid run).
+- **Interrupted imports:** an upload is streamed to a hidden `.upload-*` file and the archive unpacked into a hidden `.import-*` folder in the storage root; both are removed afterwards whatever happens (also when the browser cancels the upload), and leftovers of a crashed process are cleaned up by the next import once they are an hour old. Hidden (dot-named) paths are never served under `/storage`.
 
 ### 7. Build the Static Demo (GitHub Pages)
 Builds the read-only dashboard behind the [live demo](https://abhishek-k-33.github.io/Visual_Regression_Testing/) into `_site/` (git-ignored):
@@ -365,6 +377,7 @@ The dashboard provides a **Linear/Vercel-inspired developer interface**:
   - **Total Runs**: Displays overall test executions with blue gradient and play icon.
   - **Passed / Approved**: Shows successful runs with emerald green gradient and check icon.
   - **Visual Regressions**: Highlights failing runs with coral red gradient and alert icon.
+- **Import CI run**: button (and drop target for the whole page) that uploads a CI artifact zip; see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import). Not shown in the read-only static demo.
 - **Real-Time Toolbar**: Client-side filter toggle buttons (`All`, `Passed`, `Approved`, `Regressions`) and quick search input.
 - **Test Runs Table**: Displays status pills, cyan monospace Run IDs, Git context badges (`🌿 branch`, `#commit`; long branch names are truncated, full name on hover), snapshot counts per status (only the ones present: diff, rejected, new baseline, approved, match), creation times (UTC), and prominent **Inspect** buttons.
 - **Pagination**: Minimal footer with item range indicator and navigation controls.
@@ -386,6 +399,7 @@ An unknown run id returns the error page with status `404`. For every route and 
 | `GET /api/runs/:id` | One run and its snapshots |
 | `POST /api/snapshots/:id/approve` | Promotes one screenshot to the baseline (`409` if the baseline changed since the run) |
 | `POST /api/snapshots/:id/reject` | Marks one snapshot rejected |
+| `POST /api/imports` | Imports a CI artifact: the raw zip as the body (`Content-Type: application/zip`, `application/x-zip-compressed` or `application/octet-stream`, no multipart). `201 { success, runs: [{ id, url, status, snapshots, renamedFrom?, alreadyImported? }] }`, or `200` when every run was already imported; errors `{ success: false, error }` with `400`/`422` (unreadable or invalid artifact), `413` (over the upload limit or an archive limit), `415` (wrong content type), `503` + `Retry-After` (another import is running), `507` (low disk space), `500` (server-side failure; generic message, details in the log). Example: `curl -X POST -H 'X-Requested-With: cli' -H 'Content-Type: application/zip' --data-binary @visual-regression-diffs.zip http://localhost:4000/api/imports` |
 | `POST /api/runs/:id/approve-all` | Approves every pending snapshot of the run, all or nothing: `200 { success, approved: [ids], runStatus, snapshots }` (`approved: []` when nothing is pending), `409 { success: false, error, conflicts: [{ id, route, viewport }] }`, `404` for an unknown run |
 
 Each snapshot card links to the **History** of its route and viewport (see below), and has an `id="snapshot-<id>"` anchor that the history page links to.
@@ -441,7 +455,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 - **Same rendering as baselines**: Builds the project's Docker image and runs the tests inside it.
 - **Strict mode**: A missing baseline fails the job instead of silently passing.
 - **Rich Markdown Step Summaries**: Generates a formatted table of every tested route, viewport, mismatch percentage, and pass/fail badge directly in the GitHub Actions run summary (`GITHUB_STEP_SUMMARY`).
-- **Diff Artifact Downloads**: On any visual regression failure, `storage/runs/` is zipped and uploaded as a workflow artifact (`visual-regression-diffs`) for quick inspection. Each run folder includes `run.json`, a machine-readable record of the run (status, git info, and per snapshot: route, viewport, status, mismatch, file names and the compared baseline's hash), so a CI run can be re-created without its database: `visual-ci import visual-regression-diffs.zip` loads it into your local dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-visual-ci-import)).
+- **Diff Artifact Downloads**: On any visual regression failure, `storage/runs/` is zipped and uploaded as a workflow artifact (`visual-regression-diffs`) for quick inspection. Each run folder includes `run.json`, a machine-readable record of the run (status, git info, and per snapshot: route, viewport, status, mismatch, file names and the compared baseline's hash), so a CI run can be re-created without its database: `visual-ci import visual-regression-diffs.zip` loads it into your local dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import)).
 
 ### Live demo on GitHub Pages (`.github/workflows/pages.yml`)
 
@@ -456,7 +470,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 409 Vitest unit, integration & browser tests
+# Run all 445 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -483,11 +497,13 @@ node tests/verify-phase-5.js
  ✓ tests/capture-integration.test.js (6 tests)
  ✓ tests/cli-strict.test.js (5 tests)
  ✓ tests/demo-app.test.js (5 tests)
- ✓ tests/build-static-demo.test.js (13 tests)
+ ✓ tests/build-static-demo.test.js (14 tests)
  ✓ tests/db.test.js (19 tests)
  ✓ tests/docker.test.js (3 tests)
  ✓ tests/manifest.test.js (19 tests)
  ✓ tests/import.test.js (103 tests)
+ ✓ tests/upload-import.test.js (24 tests)
+ ✓ tests/import-ui.test.js (11 tests)
  ✓ tests/per-run-baselines.test.js (11 tests)
  ✓ tests/approve-all.test.js (21 tests)
  ✓ tests/approve-all-api.test.js (12 tests)
@@ -501,8 +517,8 @@ node tests/verify-phase-5.js
  ✓ tests/a11y-axe.test.js (14 tests)
  ✓ tests/keyboard-ui.test.js (20 tests)
 
- Test Files  23 passed (23)
-      Tests  409 passed (409)
+ Test Files  25 passed (25)
+      Tests  445 passed (445)
 ```
 
 ---
