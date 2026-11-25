@@ -154,6 +154,13 @@ describe('Reporter Module (Phase 5)', () => {
       expect(fs.readFileSync(runSummaryPath, 'utf8')).toBe(markdown);
     });
 
+    it('returns no summary path when the summary could not be written', () => {
+      const runsDir = path.join(tmpDir, 'runs', 'unwritable_run');
+      fs.mkdirSync(path.join(runsDir, 'summary.md'), { recursive: true }); // a folder in the way
+      const { runSummaryPath } = writeSummaryReport('# Report', { runsDir });
+      expect(runSummaryPath).toBeNull();
+    });
+
     it('appends to GITHUB_STEP_SUMMARY when the environment variable is set', () => {
       const stepSummaryFile = path.join(tmpDir, 'step_summary.md');
       fs.writeFileSync(stepSummaryFile, 'Existing CI text\n', 'utf8');

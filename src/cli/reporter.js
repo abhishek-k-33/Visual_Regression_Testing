@@ -122,7 +122,8 @@ export function generateSummaryMarkdown(options) {
  * @param {Object} options
  * @param {string} options.runsDir
  * @param {string} [options.summaryFileName='summary.md']
- * @returns {{ runSummaryPath: string, stepSummaryWritten: boolean }}
+ * @returns {{ runSummaryPath: string|null, stepSummaryWritten: boolean }} runSummaryPath is
+ *   null when the summary could not be written
  */
 export function writeSummaryReport(markdown, options = {}) {
   const { runsDir, summaryFileName = 'summary.md' } = options;
@@ -130,12 +131,13 @@ export function writeSummaryReport(markdown, options = {}) {
   let stepSummaryWritten = false;
 
   if (runsDir) {
+    const target = path.join(runsDir, summaryFileName);
     try {
-      runSummaryPath = path.join(runsDir, summaryFileName);
-      fs.mkdirSync(path.dirname(runSummaryPath), { recursive: true });
-      fs.writeFileSync(runSummaryPath, markdown, 'utf8');
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, markdown, 'utf8');
+      runSummaryPath = target; // only once it exists
     } catch (err) {
-      console.warn(`  [WARN] Failed to write summary to ${runSummaryPath}: ${err.message}`);
+      console.warn(`  [WARN] Failed to write summary to ${target}: ${err.message}`);
     }
   }
 
