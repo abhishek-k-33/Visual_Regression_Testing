@@ -65,6 +65,7 @@ Visual Regression Testing Project/
 ├── Dockerfile                     # Standardized Playwright + Ubuntu font container
 ├── docker-compose.yml             # Orchestration for dashboard & test runner
 ├── .dockerignore                  # Docker build context exclusions
+├── action.yml                     # The GitHub Action (composite): runs visual-ci in the Docker image, uploads the run
 ├── .github/                       # GitHub automation
 │   └── workflows/
 │       ├── visual-ci.yml          # GitHub Actions visual regression pipeline
@@ -89,6 +90,8 @@ Visual Regression Testing Project/
 │   │   ├── naming.js              # Screenshot file names; rejects route/viewport pairs that would collide
 │   │   ├── config.js              # Config loader with comment-stripping parser
 │   │   └── reporter.js            # Markdown report generator & GITHUB_STEP_SUMMARY
+│   ├── ci/
+│   │   └── actionReport.js        # The action's result step: JSON result -> outputs, container -> runner paths, upload decision
 │   └── server/                    # Web review dashboard & REST API
 │       ├── app.js                 # Express server configuration
 │       ├── db.js                  # SQLite schema and queries
@@ -151,6 +154,8 @@ Visual Regression Testing Project/
     ├── upload-import.test.js      # POST /api/imports: CSRF, 413/415/503/507, aborts, sanitised errors, responsiveness
     ├── import-ui.test.js          # Chromium: import by file picker and drag-and-drop, progress, errors, axe, static mode
     ├── docker.test.js             # Docker image tag matches the pinned Playwright version
+    ├── action.test.js             # action.yml + visual-ci.yml: structure, no expressions in scripts, each step's bash run with a fake docker, end to end
+    ├── action-report.test.js      # Action outputs from the JSON result: path mapping, upload modes, missing/invalid results
     ├── server.test.js             # Express REST API and dashboard view tests (incl. route history)
     ├── storage-dir.test.js        # Custom storageDir honoured by CLI and dashboard
     ├── urls.test.js               # Base-path URL helpers
@@ -527,6 +532,134 @@ Clicking or tabbing into a card also makes it the current one. Shortcuts are ign
 
 ---
 
+## 🧩 Use it in your repo (GitHub Action)
+
+The repository is also a GitHub Action (`action.yml`). It runs `visual-ci test` against an app your job has already started, inside this project's Docker image (the same fonts and rendering as your committed baselines), writes the step summary, and uploads the run's screenshots and diffs as an artifact you can import into the dashboard.
+
+```yaml
+      - uses: actions/checkout@v4
+      - run: npm ci && npm start &                 # start your app in the background
+      - uses: abhishek-k-33/Visual_Regression_Testing@v1
+        with:
+          base-url: http://127.0.0.1:3000
+          wait-on: http://127.0.0.1:3000/
+```
+
+> **`@v1` does not exist yet:** it is created with the first release. Until then use `@main`, or better a full commit SHA (`@<40-character sha>`), which can't change under you.
+
+Your repository needs a `visual.config.json` (routes, viewports, threshold; see *Configuration* above) and committed baselines in `storage/baselines/` (see [Baselines](#baselines-in-your-repo) below). A complete workflow:
+
+```yaml
+name: Visual regression
+on: [pull_request]
+permissions:
+  contents: read            # the artifact upload needs no token permission
+jobs:
+  visual:
+    runs-on: ubuntu-latest  # Linux only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci && npm run build
+      - run: npm start > app.log 2>&1 &
+      - id: visual
+        uses: abhishek-k-33/Visual_Regression_Testing@main
+        with:
+          base-url: http://127.0.0.1:3000
+          wait-on: http://127.0.0.1:3000/
+      - if: always()
+        run: echo "visual-ci: $STATUS, $CHANGED changed, artifact $URL"
+        env:
+          STATUS: ${{ steps.visual.outputs.status }}
+          CHANGED: ${{ steps.visual.outputs.changed }}
+          URL: ${{ steps.visual.outputs.artifact-url }}
+```
+
+### Inputs
+
+| Input | Default | Description |
+| :--- | :--- | :--- |
+| `base-url` | *(required)* | URL of the app to test (`http://` or `https://`). Overrides `baseUrl` in the config. |
+| `config` | `visual.config.json` | Config file, relative to `working-directory`. |
+| `working-directory` | `.` | Folder (relative to the repository root, no `..`) to run in. Holds the config, and `storage/` unless the config sets `storageDir`. |
+| `strict` | `true` | `true`: a route with no baseline fails the check (`MISSING_BASELINE`). `false`: it gets a new baseline from this run. |
+| `update-baselines` | `false` | `true`: replace every baseline with this run's screenshots; the check passes. See [Baselines](#baselines-in-your-repo). |
+| `run-id` | `gh-<run_id>-<run_attempt>` | Run id: letters, digits, `-` and `_`, at most 128. Set a different one for each use when the action runs more than once in a job. |
+| `wait-on` | *(none)* | `http(s)` URL to poll (every second, 5 s per try) until it answers with a 2xx/3xx status, before testing. |
+| `wait-timeout` | `60` | Seconds to wait for `wait-on` before failing (whole number). |
+| `artifact-name` | `visual-regression-diffs` | Artifact name. Must be unique in the workflow run: set it per job in a matrix. |
+| `upload-artifact` | `on-failure` | When to upload the run folder: `on-failure`, `always` or `never` (see below). |
+| `retention-days` | *(repository default)* | Days to keep the artifact, 1-90. |
+| `image` | *(build)* | A prebuilt image to `docker pull` and use instead of building this action's `Dockerfile` (saves a minute or two per job). It must contain this tool at `/app`, at the same version as the action. |
+
+Inputs are validated before anything runs (booleans must be exactly `true` or `false`, the run id must match the CLI's rule, numbers must be whole numbers); an invalid input fails the job with an error naming the input, never echoing its value. Inputs reach the action's shell scripts only through environment variables, so a value can't inject commands.
+
+### Outputs
+
+| Output | Description |
+| :--- | :--- |
+| `status` | `passed`, `failed` (visual differences, or a missing baseline in strict mode) or `error`. |
+| `exit-code` | `0` passed, `1` visual differences, `2` error. The action (and so the job) fails unless it is `0`. |
+| `total` | Snapshots (routes x viewports) checked. |
+| `changed` | Snapshots with differences above the threshold. |
+| `new-baselines` | Baselines created or replaced by this run. |
+| `run-id` | The run id used. |
+| `report-path` | The JSON result ([schema `visual-ci-result` v1](#json-result---json)) on the runner, in `$RUNNER_TEMP`. Empty if none was written. |
+| `summary-path` | The run's Markdown summary on the runner. Empty if none was written. |
+| `run-dir` | The run folder (screenshots, diffs, `run.json`) on the runner. Empty if it does not exist. |
+| `artifact-name` | Name of the uploaded artifact; empty when nothing was uploaded. |
+| `artifact-id` | ID of the uploaded artifact; empty when nothing was uploaded. |
+| `artifact-url` | Download URL of the uploaded artifact; empty when nothing was uploaded. |
+
+All paths are absolute paths on the runner. The outputs are set even when the job fails, so later steps with `if: always()` can use them. A missing or unreadable JSON result is reported as `status: error` with an error annotation, never as a pass.
+
+### What it does
+
+1. Fails unless the runner is Linux, then validates the inputs.
+2. If `wait-on` is set, polls it with `curl` until it answers or `wait-timeout` passes.
+3. Builds the image from the action's own `Dockerfile` (`docker build -t visual-ci-action:local "$GITHUB_ACTION_PATH"`), or pulls `image`.
+4. Runs `node /app/src/cli/index.js test --json ... --strict|--no-strict` in it with `docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -e CI=true`, the workspace mounted at `/github/workspace` (working directory `/github/workspace/<working-directory>`), `$RUNNER_TEMP` at `/runner-temp` and the step summary file. `--network host` lets the container reach your app on `localhost`; `--user` keeps every file it writes owned by the runner user (no root-owned `storage/`). The branch and commit come from `GITHUB_HEAD_REF`/`GITHUB_REF_NAME` and `GITHUB_SHA`.
+5. Reads the JSON result (`actions/github-script`, `src/ci/actionReport.js`) and sets the outputs. The CLI records paths relative to its working directory, so `storage/runs/<id>` becomes `$GITHUB_WORKSPACE/<working-directory>/storage/runs/<id>`; a container path under `/github/workspace` or `/runner-temp` is mapped to `$GITHUB_WORKSPACE` or `$RUNNER_TEMP`, and anything else has no runner path (empty output).
+6. Uploads the run folder with `actions/upload-artifact`.
+7. Ends with the CLI's exit code: the job passes on `0` and fails on `1` or `2` (or when no result was recorded).
+
+**Artifact upload (`upload-artifact`):**
+
+- `on-failure` (default): uploaded when the exit code is `1` or `2`, i.e. visual differences, a missing baseline in strict mode, or an error after the run folder was created (e.g. a page that could not load: you get the screenshots taken so far). Nothing is uploaded on a pass.
+- `always`: uploaded whatever the result, including a pass.
+- `never`: never uploaded.
+
+In every mode only the folder of **this** run is uploaded (`<storage>/runs/<run-id>`, and only if the result names it and it is a real folder inside the workspace), not the whole `storage/`. When the run never got that far (invalid config, image build failed) there is nothing to upload. `run.json` sits at the root of the zip, so the downloaded artifact imports as is: `npx visual-ci import visual-regression-diffs.zip` or **Import CI run** in the dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import)).
+
+### Baselines in your repo
+
+Baselines are PNGs in `<working-directory>/storage/baselines/` (or your `storageDir`), committed to git. They must be rendered by **the same Docker image** the action uses, or fonts and anti-aliasing will differ. Two ways to create or update them:
+
+- **Locally, with the image:** build it from this repository and run it against your app from your project folder:
+  ```bash
+  docker build -t visual-ci https://github.com/abhishek-k-33/Visual_Regression_Testing.git#main
+  docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
+    -v "$PWD:/work" -w /work visual-ci \
+    node /app/src/cli/index.js test --update-baselines -u http://127.0.0.1:3000
+  git add storage/baselines && git commit -m "test: update visual baselines"
+  ```
+  (With Docker Desktop on macOS or Windows, drop `--network host` and use `-u http://host.docker.internal:3000`.)
+- **From CI:** run the action once with `update-baselines: true` and `upload-artifact: always` (for example from a `workflow_dispatch` workflow). Download the artifact: its `<route>-<viewport>.png` screenshots are the new baselines. Copy them into `storage/baselines/` and commit them, or `visual-ci import` the zip first to look at them in the dashboard. (A later step in the same job can also commit `storage/baselines/` itself, which needs `contents: write`.)
+
+With the default `strict: true`, a route without a baseline fails the check instead of quietly creating one.
+
+### Limitations
+
+- **Linux runners only** (`ubuntu-*` or a self-hosted Linux runner with Docker): it needs `docker run --network host`, which macOS and Windows runners don't have. The Docker daemon must run containers as the `--user` it is given (rootful Docker, as on GitHub's runners).
+- **Your app must already be running**, started in an earlier step and reachable from the runner (e.g. `http://127.0.0.1:<port>`; a `services:` container with a published port works too). Use `wait-on` so the check doesn't start before it is up.
+- **Pull request comments are not part of the action yet**, and pull requests from forks are not yet supported for them; both come next (A3). The action itself only needs `contents: read`.
+- The image is built in every job (a minute or two) unless you pass `image`.
+- `VISUAL_STORAGE_DIR` from the job's environment is not passed into the container: set `storageDir` in the config instead.
+
+---
+
 ## 🚀 GitHub Actions CI Pipeline
 
 The project includes pre-configured automation for GitHub Actions (`.github/workflows/visual-ci.yml`):
@@ -534,10 +667,10 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 - **Automatic PR & Push Testing**: Runs the Vitest suite and the visual regression checks whenever a PR or commit is pushed to `main`.
 - **Tests a real target**: Serves the bundled demo site and captures it, rather than an external website that can change underneath the tests.
 - **Committed baselines**: Baselines come from the git checkout, so every commit is compared against the baselines approved for it.
-- **Same rendering as baselines**: Builds the project's Docker image and runs the tests inside it.
+- **Dogfoods the action**: the `visual-tests` job starts the demo site and runs this repository's own action (`uses: ./`, see [Use it in your repo](#-use-it-in-your-repo-github-action)), which builds the project's Docker image and runs the tests inside it, so the rendering matches the baselines.
 - **Strict mode**: A missing baseline fails the job instead of silently passing.
 - **Rich Markdown Step Summaries**: Generates a formatted table of every tested route, viewport, mismatch percentage, and pass/fail badge directly in the GitHub Actions run summary (`GITHUB_STEP_SUMMARY`).
-- **Diff Artifact Downloads**: On any visual regression failure, `storage/runs/` is zipped and uploaded as a workflow artifact (`visual-regression-diffs`) for quick inspection. Each run folder includes `run.json`, a machine-readable record of the run (status, git info, and per snapshot: route, viewport, status, mismatch, file names and the compared baseline's hash), so a CI run can be re-created without its database: `visual-ci import visual-regression-diffs.zip` loads it into your local dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import)).
+- **Diff Artifact Downloads**: On any visual regression failure (or error), the run's folder (`storage/runs/<run-id>/`) is uploaded as a workflow artifact (`visual-regression-diffs`, kept 7 days) for quick inspection. The run folder includes `run.json`, a machine-readable record of the run (status, git info, and per snapshot: route, viewport, status, mismatch, file names and the compared baseline's hash), so a CI run can be re-created without its database: `visual-ci import visual-regression-diffs.zip` loads it into your local dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import)).
 
 ### Live demo on GitHub Pages (`.github/workflows/pages.yml`)
 
@@ -552,7 +685,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 519 Vitest unit, integration & browser tests
+# Run all 677 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -587,6 +720,8 @@ node tests/verify-phase-5.js
  ✓ tests/build-static-demo.test.js (14 tests)
  ✓ tests/db.test.js (19 tests)
  ✓ tests/docker.test.js (3 tests)
+ ✓ tests/action.test.js (111 tests)
+ ✓ tests/action-report.test.js (47 tests)
  ✓ tests/manifest.test.js (19 tests)
  ✓ tests/import.test.js (103 tests)
  ✓ tests/upload-import.test.js (24 tests)
@@ -604,8 +739,8 @@ node tests/verify-phase-5.js
  ✓ tests/a11y-axe.test.js (14 tests)
  ✓ tests/keyboard-ui.test.js (20 tests)
 
- Test Files  30 passed (30)
-      Tests  519 passed (519)
+ Test Files  32 passed (32)
+      Tests  677 passed (677)
 ```
 
 ---

@@ -21,6 +21,7 @@ import { writeZip, folderEntries } from './helpers/zip.js';
 const REPO = path.resolve('.');
 const action = YAML.parse(fs.readFileSync('action.yml', 'utf8'));
 const workflow = YAML.parse(fs.readFileSync('.github/workflows/visual-ci.yml', 'utf8'));
+const readme = fs.readFileSync('README.md', 'utf8');
 const steps = action.runs.steps;
 const stepById = (id) => steps.find((s) => s.id === id);
 const stepByName = (name) => steps.find((s) => s.name === name);
@@ -252,6 +253,37 @@ describe('visual-ci.yml dogfoods the action', () => {
     const text = JSON.stringify(job);
     expect(text).not.toMatch(/docker (build|run)/);
     expect(text).not.toContain('actions/upload-artifact');
+  });
+});
+
+describe('README documents the action', () => {
+  const section = (() => {
+    const at = readme.search(/^## .*Use it in your repo \(GitHub Action\)/m);
+    if (at === -1) return '';
+    const next = readme.slice(at + 3).search(/^## /m);
+    return next === -1 ? readme.slice(at) : readme.slice(at, at + 3 + next);
+  })();
+
+  it('has a "Use it in your repo (GitHub Action)" section with a usage snippet', () => {
+    expect(section).not.toBe('');
+    expect(section).toContain('uses: abhishek-k-33/Visual_Regression_Testing@v1');
+    expect(section).toMatch(/base-url:/);
+    expect(section).toMatch(/wait-on:/);
+    expect(section).toMatch(/@main/);
+  });
+
+  it.each(Object.keys(EXPECTED_INPUTS))('documents the input %s', (name) => {
+    expect(section).toMatch(new RegExp(`^\\| \`${name}\` \\|`, 'm'));
+  });
+
+  it.each(EXPECTED_OUTPUTS)('documents the output %s', (name) => {
+    expect(section).toMatch(new RegExp(`^\\| \`${name}\` \\|`, 'm'));
+  });
+
+  it('documents baselines and limitations', () => {
+    expect(section).toMatch(/update-baselines: true/);
+    expect(section).toMatch(/Linux/);
+    expect(section).toMatch(/fork/i);
   });
 });
 
