@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   EXIT, ERROR_CODES, RESULT_SCHEMA, RESULT_VERSION, CliError,
-  buildResult, writeResult, classifyError, sanitizeMessage, toResultPath
+  buildResult, writeResult, classifyError, sanitizeMessage, toResultPath, toError
 } from '../src/cli/result.js';
 import { loadConfig } from '../src/cli/config.js';
 import { assertValidRunId } from '../src/cli/capture.js';
@@ -65,6 +65,17 @@ describe('classifyError', () => {
     expect(() => assertValidRunId('../escape')).toThrow(/Invalid runId/);
     expect(classifyError((() => { try { assertValidRunId('a/b'); } catch (e) { return e; } })())).toBe('INVALID_ARGUMENT');
     expect(() => assertValidRunId('run_ok-1')).not.toThrow();
+  });
+});
+
+describe('toError', () => {
+  it('keeps errors, wraps anything else that was thrown, so the result still says error', () => {
+    const err = new CliError('INTERNAL', 'x');
+    expect(toError(err)).toBe(err);
+    for (const thrown of [undefined, null, 'text', 42]) {
+      const r = buildResult({ error: toError(thrown) });
+      expect(r).toMatchObject({ status: 'error', exit_code: 2, error: { code: 'INTERNAL', message: String(thrown) } });
+    }
   });
 });
 
