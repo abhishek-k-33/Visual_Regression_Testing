@@ -1,0 +1,329 @@
+# Visual CI as a GitHub Action: runs `visual-ci test` against an app the job has
+# already started, inside the project's Docker image (the same rendering as the
+# committed baselines), and uploads this run's folder as an artifact.
+#
+# Composite on purpose: a Docker action's container sits on a job network and can't
+# reach an app listening on the runner's localhost; `docker run --network host` can.
+#
+# Security: inputs and github.* values reach shell scripts only through `env:`, never
+# as expressions inside `run:` (tests/action.test.js enforces it).
+name: Visual CI Regression Check
+description: Screenshot your running app in a pinned Playwright Docker image, compare with committed baselines, upload the diffs.
+author: abhishek-k-33
+
+branding:
+  icon: eye
+  color: purple
+
+inputs:
+  base-url:
+    description: URL of the app to test (http:// or https://), e.g. http://127.0.0.1:3000. Overrides baseUrl in the config. Start the app in an earlier step.
+    required: true
+  config:
+    description: Path to the visual.config.json, relative to working-directory.
+    required: false
+    default: visual.config.json
+  working-directory:
+    description: Folder (relative to the repository root) to run in. Holds the config, and storage/ unless the config sets storageDir.
+    required: false
+    default: '.'
+  strict:
+    description: 'true: a route with no baseline fails the check. false: it gets a new baseline from this run. (true or false)'
+    required: false
+    default: 'true'
+  update-baselines:
+    description: 'true: replace every baseline with this run''s screenshots (the check passes). Commit or import the result. (true or false)'
+    required: false
+    default: 'false'
+  run-id:
+    description: Run id (letters, digits, - and _, at most 128). Empty means gh-<run_id>-<run_attempt>. Set it when the action runs more than once in a job.
+    required: false
+    default: ''
+  wait-on:
+    description: Optional http(s) URL to poll until it answers with a success status before testing.
+    required: false
+    default: ''
+  wait-timeout:
+    description: Seconds to wait for wait-on before failing (a whole number).
+    required: false
+    default: '60'
+  artifact-name:
+    description: Name of the uploaded artifact. Must be unique within the workflow run (set it per job in a matrix).
+    required: false
+    default: visual-regression-diffs
+  upload-artifact:
+    description: 'When to upload this run''s folder: on-failure (visual differences or an error), always, or never.'
+    required: false
+    default: on-failure
+  retention-days:
+    description: Days to keep the artifact (1-90). Empty means the repository's default.
+    required: false
+    default: ''
+  image:
+    description: Optional prebuilt image to pull and run instead of building this action's Dockerfile. It must contain this tool at /app.
+    required: false
+    default: ''
+  # Reserved for A3 (pull request comment): comment, comment-id, github-token.
+
+outputs:
+  status:
+    description: passed, failed (visual differences or a missing baseline in strict mode) or error.
+    value: ${{ steps.parse.outputs.status }}
+  exit-code:
+    description: 0 passed, 1 visual differences, 2 error. The action fails unless it is 0.
+    value: ${{ steps.parse.outputs.exit-code }}
+  total:
+    description: Number of snapshots (routes x viewports) checked.
+    value: ${{ steps.parse.outputs.total }}
+  changed:
+    description: Number of snapshots with visual differences above the threshold.
+    value: ${{ steps.parse.outputs.changed }}
+  new-baselines:
+    description: Number of baselines created or replaced by this run.
+    value: ${{ steps.parse.outputs.new-baselines }}
+  run-id:
+    description: The run id used.
+    value: ${{ steps.parse.outputs.run-id }}
+  report-path:
+    description: Absolute path of the JSON result (schema visual-ci-result v1) on the runner, in RUNNER_TEMP. Empty if none was written.
+    value: ${{ steps.parse.outputs.report-path }}
+  summary-path:
+    description: Absolute path of the run's Markdown summary on the runner. Empty if none was written.
+    value: ${{ steps.parse.outputs.summary-path }}
+  run-dir:
+    description: Absolute path of the run folder (screenshots, diffs, run.json) on the runner. Empty if it does not exist.
+    value: ${{ steps.parse.outputs.run-dir }}
+  artifact-name:
+    description: Name of the uploaded artifact. Empty when nothing was uploaded.
+    value: ${{ steps.parse.outputs.artifact-name }}
+  artifact-id:
+    description: ID of the uploaded artifact. Empty when nothing was uploaded.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-url:
+    description: Download URL of the uploaded artifact. Empty when nothing was uploaded.
+    value: ${{ steps.upload.outputs.artifact-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the runner
+      shell: bash
+      env:
+        VISUAL_CI_RUNNER_OS: ${{ runner.os }}
+      run: |
+        if [ "$VISUAL_CI_RUNNER_OS" != "Linux" ]; then
+          echo "::error title=visual-ci::This action needs a Linux runner (it runs Docker with --network host); this one is ${VISUAL_CI_RUNNER_OS}."
+          exit 1
+        fi
+
+    - name: Validate inputs
+      id: validate
+      shell: bash
+      env:
+        INPUT_BASE_URL: ${{ inputs.base-url }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_STRICT: ${{ inputs.strict }}
+        INPUT_UPDATE_BASELINES: ${{ inputs.update-baselines }}
+        INPUT_RUN_ID: ${{ inputs.run-id }}
+        INPUT_WAIT_ON: ${{ inputs.wait-on }}
+        INPUT_WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        INPUT_UPLOAD_ARTIFACT: ${{ inputs.upload-artifact }}
+        INPUT_RETENTION_DAYS: ${{ inputs.retention-days }}
+        INPUT_IMAGE: ${{ inputs.image }}
+      run: |
+        # Messages never echo an input: it could hold credentials or workflow commands.
+        failed=0
+        fail() { echo "::error title=visual-ci::$1"; failed=1; }
+        url_re='^https?://[^[:space:][:cntrl:]]+$'
+
+        if [ -z "$INPUT_BASE_URL" ]; then
+          fail "base-url is required."
+        elif ! [[ "$INPUT_BASE_URL" =~ $url_re ]]; then
+          fail "base-url must be an http:// or https:// URL without spaces."
+        fi
+
+        if [ -z "$INPUT_CONFIG" ] || [[ "$INPUT_CONFIG" == /* ]] || [[ "$INPUT_CONFIG" =~ [[:cntrl:]] ]]; then
+          fail "config must be a path relative to working-directory."
+        fi
+
+        wd="${INPUT_WORKING_DIRECTORY:-.}"
+        if [[ "$wd" == /* ]] || ! [[ "$wd" =~ ^[A-Za-z0-9._/@+\ -]+$ ]] || [[ "/$wd/" == */../* ]]; then
+          fail "working-directory must be a folder inside the repository (relative, no '..', letters, digits, space and . _ - @ + /)."
+        elif [ ! -d "$GITHUB_WORKSPACE/$wd" ]; then
+          fail "working-directory does not exist in the workspace (check out the repository first)."
+        fi
+
+        for name in strict update-baselines; do
+          var="INPUT_$(echo "$name" | tr 'a-z-' 'A-Z_')"
+          case "${!var}" in
+            true|false) ;;
+            *) fail "$name must be true or false." ;;
+          esac
+        done
+
+        case "$INPUT_UPLOAD_ARTIFACT" in
+          on-failure|always|never) ;;
+          *) fail "upload-artifact must be on-failure, always or never." ;;
+        esac
+
+        run_id="$INPUT_RUN_ID"
+        if [ -z "$run_id" ]; then
+          run_id="gh-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+        fi
+        # The CLI's rule (capture.js) plus the 128-character cap of visual-ci import.
+        if ! [[ "$run_id" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
+          fail "run-id may only contain letters, digits, '-' and '_' (at most 128)."
+        fi
+
+        if [ -n "$INPUT_WAIT_ON" ] && ! [[ "$INPUT_WAIT_ON" =~ $url_re ]]; then
+          fail "wait-on must be an http:// or https:// URL without spaces."
+        fi
+        if ! [[ "$INPUT_WAIT_TIMEOUT" =~ ^[1-9][0-9]{0,4}$ ]]; then
+          fail "wait-timeout must be a whole number of seconds (1-99999)."
+        fi
+
+        if ! [[ "$INPUT_ARTIFACT_NAME" =~ ^[A-Za-z0-9._-][A-Za-z0-9._\ -]{0,99}$ ]]; then
+          fail "artifact-name may only contain letters, digits, space and . _ - (at most 100)."
+        fi
+        if [ -n "$INPUT_RETENTION_DAYS" ] && ! { [[ "$INPUT_RETENTION_DAYS" =~ ^[1-9][0-9]?$ ]] && [ "$INPUT_RETENTION_DAYS" -le 90 ]; }; then
+          fail "retention-days must be a whole number from 1 to 90, or empty."
+        fi
+        if [ -n "$INPUT_IMAGE" ] && ! [[ "$INPUT_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$ ]]; then
+          fail "image must be an image reference such as ghcr.io/owner/visual-ci:1.0.0."
+        fi
+
+        if [ "$failed" -ne 0 ]; then
+          exit 1
+        fi
+        # Only validated values are written: none can contain a newline.
+        {
+          echo "run-id=$run_id"
+          echo "working-directory=$wd"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Wait for the app
+      if: ${{ inputs.wait-on != '' }}
+      shell: bash
+      env:
+        WAIT_ON: ${{ inputs.wait-on }}
+        WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
+      run: |
+        deadline=$(( $(date +%s) + WAIT_TIMEOUT ))
+        until curl -sf -o /dev/null --max-time 5 -- "$WAIT_ON"; do
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "::error title=visual-ci::wait-on: the app did not answer within ${WAIT_TIMEOUT}s."
+            exit 1
+          fi
+          sleep 1
+        done
+        echo "wait-on: the app is answering."
+
+    - name: Prepare the visual-ci image
+      id: image
+      shell: bash
+      env:
+        INPUT_IMAGE: ${{ inputs.image }}
+      run: |
+        if [ -n "$INPUT_IMAGE" ]; then
+          ref="$INPUT_IMAGE"
+          docker pull "$ref"
+        else
+          # Built from this action's own checkout (Dockerfile + .dockerignore at its root).
+          ref="visual-ci-action:local"
+          docker build -t "$ref" "$GITHUB_ACTION_PATH"
+        fi
+        echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+    - name: Run visual-ci
+      id: run
+      shell: bash
+      env:
+        IMAGE_REF: ${{ steps.image.outputs.ref }}
+        RUN_ID: ${{ steps.validate.outputs.run-id }}
+        WORKING_DIRECTORY: ${{ steps.validate.outputs.working-directory }}
+        INPUT_BASE_URL: ${{ inputs.base-url }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_STRICT: ${{ inputs.strict }}
+        INPUT_UPDATE_BASELINES: ${{ inputs.update-baselines }}
+      run: |
+        # The exit code is the result (0 pass, 1 diffs, 2 error): record it, never fail here,
+        # so the result can be read and the run folder uploaded before the last step decides.
+        set +e
+        report="visual-ci-$RUN_ID.json"
+        # The CLI removes an old result itself, except after a usage error: never read a stale one.
+        rm -f -- "$RUNNER_TEMP/$report"
+
+        args=(test "--json=/runner-temp/$report" "--config=$INPUT_CONFIG" "--base-url=$INPUT_BASE_URL" "--run-id=$RUN_ID")
+        if [ "$INPUT_STRICT" = true ]; then args+=(--strict); else args+=(--no-strict); fi
+        if [ "$INPUT_UPDATE_BASELINES" = true ]; then args+=(--update-baselines); fi
+
+        summary=()
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$GITHUB_STEP_SUMMARY" ]; then
+          summary=(-e GITHUB_STEP_SUMMARY=/github/step-summary.md -v "$GITHUB_STEP_SUMMARY:/github/step-summary.md")
+        fi
+
+        # --network host: reach the app on the runner's localhost. --user: files in the
+        # workspace stay owned by the runner user; HOME=/tmp gives Chromium a writable home.
+        docker run --rm --network host \
+          --user "$(id -u):$(id -g)" \
+          -e HOME=/tmp -e CI=true \
+          -e GITHUB_ACTIONS -e GITHUB_SHA -e GITHUB_REF_NAME -e GITHUB_HEAD_REF \
+          "${summary[@]}" \
+          -v "$GITHUB_WORKSPACE:/github/workspace" \
+          -v "$RUNNER_TEMP:/runner-temp" \
+          -w "/github/workspace/$WORKING_DIRECTORY" \
+          "$IMAGE_REF" \
+          node /app/src/cli/index.js "${args[@]}"
+        code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+    - name: Read the visual-ci result
+      id: parse
+      if: ${{ !cancelled() && steps.validate.outcome == 'success' }}
+      uses: actions/github-script@v7
+      env:
+        # github.action_path: inside this step GITHUB_ACTION_PATH is github-script's own folder.
+        VISUAL_CI_ACTION_PATH: ${{ github.action_path }}
+        VISUAL_CI_EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        VISUAL_CI_RUN_ID: ${{ steps.validate.outputs.run-id }}
+        VISUAL_CI_WORKING_DIRECTORY: ${{ steps.validate.outputs.working-directory }}
+        VISUAL_CI_UPLOAD_ARTIFACT: ${{ inputs.upload-artifact }}
+        VISUAL_CI_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      with:
+        script: |
+          const path = require('path');
+          const { pathToFileURL } = require('url');
+          const file = path.join(process.env.VISUAL_CI_ACTION_PATH, 'src', 'ci', 'actionReport.js');
+          const { run } = await import(pathToFileURL(file).href);
+          run({ core });
+
+    - name: Upload the run folder
+      id: upload
+      if: ${{ !cancelled() && steps.parse.outputs.upload == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        # Only this run's folder; run.json ends up at the zip root, so `visual-ci import` takes the zip as is.
+        path: ${{ steps.parse.outputs.upload-path }}
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: warn
+
+    - name: Set the result
+      if: ${{ !cancelled() && steps.validate.outcome == 'success' }}
+      shell: bash
+      env:
+        EXIT_CODE: ${{ steps.parse.outputs.exit-code }}
+        CHANGED: ${{ steps.parse.outputs.changed }}
+      run: |
+        if ! [[ "$EXIT_CODE" =~ ^[0-9]+$ ]]; then
+          echo "::error title=visual-ci::No result was recorded (an earlier step failed)."
+          exit 2
+        fi
+        case "$EXIT_CODE" in
+          0) echo "visual-ci: passed." ;;
+          1) echo "::error title=visual-ci::Visual differences found (${CHANGED:-0} changed snapshot(s), or a missing baseline). Review the artifact or the step summary." ;;
+          *) echo "::error title=visual-ci::visual-ci failed with an error (exit code $EXIT_CODE). See the log above." ;;
+        esac
+        exit "$EXIT_CODE"
