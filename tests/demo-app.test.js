@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import crypto from 'node:crypto';
+import net from 'node:net';
+import { spawn } from 'node:child_process';
 import { createDemoServer, renderDemoHtml, normalizeDemoVariant, DEMO_VARIANTS } from '../scripts/demo-app.js';
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -60,5 +62,51 @@ describe('demo site variants', () => {
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
+  });
+});
+
+describe('serve-demo.js (npm run demo:serve)', () => {
+  const freePort = () => new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
+  });
+
+  // Starts the script, waits for its "listening" line, fetches the page, stops it.
+  async function serve(env) {
+    const port = await freePort();
+    const child = spawn(process.execPath, ['scripts/serve-demo.js'], { env: { ...process.env, DEMO_PORT: String(port), ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
+    const ready = await Promise.race([
+      new Promise((resolve) => child.stdout.on('data', () => { if (out.includes('listening')) resolve(true); })),
+      exited.then(() => false)
+    ]);
+    if (!ready) return { code: await exited, out };
+    try {
+      return { html: await (await fetch(`http://127.0.0.1:${port}/`)).text(), out };
+    } finally {
+      child.kill('SIGTERM');
+      await exited;
+    }
+  }
+
+  it('serves the original page by default', async () => {
+    const { html, out } = await serve({ DEMO_VARIANT: '' });
+    expect(sha256(html)).toBe(ORIGINAL_SHA256);
+    expect(out).toContain('Demo site (original) listening');
+  });
+
+  it('serves the variant named by DEMO_VARIANT (the action self-test serves "regressed")', async () => {
+    const { html, out } = await serve({ DEMO_VARIANT: 'regressed' });
+    expect(sha256(html)).toBe(REGRESSED_SHA256);
+    expect(out).toContain('Demo site (regressed) listening');
+  });
+
+  it('refuses an unknown DEMO_VARIANT with exit 2', async () => {
+    const { code, out } = await serve({ DEMO_VARIANT: 'bogus' });
+    expect(code).toBe(2);
+    expect(out).toContain('DEMO_VARIANT must be one of original, regressed, redesign');
   });
 });
