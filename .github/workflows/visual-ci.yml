@@ -45,8 +45,12 @@ jobs:
     steps:
       # Baselines are committed in storage/baselines/, so the checkout brings in
       # exactly the baselines approved for this commit.
+      # No git credentials left in .git/config: the workspace is mounted into the
+      # browser container.
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4

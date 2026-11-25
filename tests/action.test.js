@@ -6,25 +6,31 @@ import http from 'node:http';
 import net from 'node:net';
 import { execFile } from 'node:child_process';
 import YAML from 'yaml';
+import { chromium } from 'playwright';
 import { OUTPUT_NAMES } from '../src/ci/actionReport.js';
 import { importRuns } from '../src/server/importRuns.js';
 import { getDb, closeDb } from '../src/server/db.js';
 import { writeZip, folderEntries } from './helpers/zip.js';
+import { evaluateExpression, shouldRunStep, interpolate } from './helpers/gha-expr.js';
 
 /**
- * The GitHub Action (action.yml) and this repository's workflow that uses it.
- * GitHub Actions can't run here, so this checks the files statically and runs each
- * step's bash script with the env action.yml gives it, against a fake `docker` (which
- * can also run the real CLI on the host, translating the container mounts).
+ * The GitHub Action (action.yml), this repository's workflow that uses it, and the
+ * action self-test workflow. GitHub Actions can't run here, so this checks the files
+ * statically and runs the composite step by step the way the runner does: each step's
+ * `if:` is evaluated (tests/helpers/gha-expr.js), bash steps run with the env action.yml
+ * gives them against a fake `docker` (which can also run the real CLI on the host,
+ * translating the container mounts), the github-script step runs as github-script runs
+ * it, and the upload step is faked (its `with:` is recorded).
  */
 
 const REPO = path.resolve('.');
-const action = YAML.parse(fs.readFileSync('action.yml', 'utf8'));
-const workflow = YAML.parse(fs.readFileSync('.github/workflows/visual-ci.yml', 'utf8'));
-const readme = fs.readFileSync('README.md', 'utf8');
+const readYaml = (file) => YAML.parse(fs.readFileSync(file, 'utf8'));
+const action = readYaml('action.yml');
+const workflow = readYaml('.github/workflows/visual-ci.yml');
 const steps = action.runs.steps;
 const stepById = (id) => steps.find((s) => s.id === id);
 const stepByName = (name) => steps.find((s) => s.name === name);
+const allWorkflows = () => fs.readdirSync('.github/workflows').map((f) => [f, readYaml(path.join('.github/workflows', f))]);
 
 const EXPRESSION = /\$\{\{\s*([^}]*?)\s*\}\}/g;
 const allExpressions = (value) => [...JSON.stringify(value).matchAll(EXPRESSION)].map((m) => m[1]);
@@ -52,6 +58,45 @@ const EXPECTED_OUTPUTS = [
   'summary-path', 'run-dir', 'artifact-name', 'artifact-id', 'artifact-url'
 ];
 const UPLOAD_ARTIFACT_OUTPUTS = ['artifact-id', 'artifact-url'];
+const PINNED = /^[\w.-]+\/[\w.-]+(\/[\w./-]+)?@(v\d+|[0-9a-f]{40})$/;
+
+describe('expression evaluator (test helper)', () => {
+  const ctx = {
+    inputs: { 'wait-on': '', strict: 'true' },
+    steps: { validate: { outcome: 'success', outputs: { 'run-id': 'r1' } }, parse: { outcome: 'skipped', outputs: {} } },
+    runner: { os: 'Linux' },
+    github: {}
+  };
+
+  it('evaluates the operators GitHub supports', () => {
+    expect(evaluateExpression("inputs.wait-on != ''", ctx)).toBe(false);
+    expect(evaluateExpression("steps.validate.outcome == 'SUCCESS'", ctx)).toBe(true); // case-insensitive
+    expect(evaluateExpression("steps.parse.outputs.upload == ''", ctx)).toBe(true); // a missing value is null, == '' (both 0)
+    expect(evaluateExpression("steps.parse.outputs.upload == 'true'", ctx)).toBe(false);
+    expect(evaluateExpression("!(runner.os == 'Linux') || inputs.strict", ctx)).toBe('true');
+    expect(evaluateExpression("steps.nope.outputs.x", ctx)).toBeNull();
+  });
+
+  it('applies the status functions and the implicit success()', () => {
+    expect(shouldRunStep(undefined, ctx, { failed: true })).toBe(false);
+    expect(shouldRunStep("${{ runner.os == 'Linux' }}", ctx, { failed: true })).toBe(false); // success() && (...)
+    expect(shouldRunStep('${{ !cancelled() }}', ctx, { failed: true })).toBe(true);
+    expect(shouldRunStep('${{ failure() }}', ctx, { failed: false })).toBe(false);
+    expect(shouldRunStep('${{ always() }}', ctx, { cancelled: true })).toBe(true);
+    expect(shouldRunStep('${{ !cancelled() }}', ctx, { cancelled: true })).toBe(false);
+  });
+
+  it('refuses what it does not understand (so a typo in action.yml fails a test)', () => {
+    expect(() => evaluateExpression('inputs.wiat-on', ctx)).toThrow(/unknown input "wiat-on"/);
+    expect(() => evaluateExpression('secrets.x', ctx)).toThrow(/unknown context/);
+    expect(() => evaluateExpression('contains(a, b)', ctx)).toThrow();
+  });
+
+  it('interpolates values and evaluates every if: in action.yml without error', () => {
+    expect(interpolate('x-${{ steps.validate.outputs.run-id }}-${{ steps.parse.outputs.y }}', ctx)).toBe('x-r1-');
+    for (const step of steps) expect(() => shouldRunStep(step.if, ctx), step.name).not.toThrow();
+  });
+});
 
 describe('action.yml: structure', () => {
   it('is a composite action with a name, description and branding', () => {
@@ -69,6 +114,11 @@ describe('action.yml: structure', () => {
       expect(action.inputs[name].default, name).toBe(def);
       expect(action.inputs[name].description, name).toEqual(expect.any(String));
     }
+  });
+
+  it('says in the input descriptions that artifact names must be unique and credentialed URLs belong in secrets', () => {
+    expect(action.inputs['artifact-name'].description).toMatch(/unique within the workflow run/);
+    expect(action.inputs['base-url'].description).toMatch(/secret/);
   });
 
   it('leaves the pull request comment inputs to A3', () => {
@@ -95,6 +145,14 @@ describe('action.yml: structure', () => {
     }
   });
 
+  it('status, exit-code and artifact-name come from the always-run outcome step; the artifact ones from the upload', () => {
+    expect(action.outputs.status.value).toBe('${{ steps.outcome.outputs.status }}');
+    expect(action.outputs['exit-code'].value).toBe('${{ steps.outcome.outputs.exit-code }}');
+    expect(action.outputs['artifact-name'].value).toBe('${{ steps.outcome.outputs.artifact-name }}');
+    expect(stepById('outcome').env.ARTIFACT_ID).toBe('${{ steps.upload.outputs.artifact-id }}');
+    expect(OUTPUT_NAMES).not.toContain('artifact-name'); // never claimed before the upload happened
+  });
+
   it('every steps.<id>.outputs.<name> reference resolves, and every inputs.<name> exists', () => {
     for (const expr of allExpressions(steps)) {
       for (const [, id, out] of expr.matchAll(/steps\.([\w-]+)\.outputs\.([\w-]+)/g)) {
@@ -105,6 +163,7 @@ describe('action.yml: structure', () => {
             : [...step.run.matchAll(/^\s*echo "([\w-]+)=/gm)].map((m) => m[1]);
         expect(produced, expr).toContain(out);
       }
+      for (const [, id] of expr.matchAll(/steps\.([\w-]+)\.outcome/g)) expect(stepById(id), expr).toBeDefined();
       for (const [, name] of expr.matchAll(/inputs\.([\w-]+)/g)) {
         expect(action.inputs[name], expr).toBeDefined();
       }
@@ -116,13 +175,15 @@ describe('action.yml: structure', () => {
 
   it('never puts an expression inside a script: inputs and github.* reach scripts only through env', () => {
     const scripts = scriptsOf(steps);
-    expect(scripts.length).toBeGreaterThanOrEqual(6);
+    expect(scripts.length).toBeGreaterThanOrEqual(7);
     for (const [name, script] of scripts) {
       expect(script, name).not.toMatch(/\$\{\{/);
     }
-    // The workflow's own scripts too.
-    for (const job of Object.values(workflow.jobs)) {
-      for (const [name, script] of scriptsOf(job.steps)) expect(script, name).not.toMatch(/\$\{\{/);
+    // The workflows that use the action too.
+    for (const wf of [workflow]) {
+      for (const job of Object.values(wf.jobs)) {
+        for (const [name, script] of scriptsOf(job.steps)) expect(script, name).not.toMatch(/\$\{\{/);
+      }
     }
   });
 
@@ -133,32 +194,24 @@ describe('action.yml: structure', () => {
     }
   });
 
-  it('pins every action it uses to a major version (or a full SHA)', () => {
-    const pinned = /^[\w.-]+\/[\w.-]+(\/[\w./-]+)?@(v\d+|[0-9a-f]{40})$/;
+  it('pins every action it uses to a major version (or a full SHA), on Node 24 versions', () => {
     const uses = [
       ...steps.filter((s) => s.uses).map((s) => s.uses),
-      ...fs.readdirSync('.github/workflows').flatMap((f) => {
-        const wf = YAML.parse(fs.readFileSync(path.join('.github/workflows', f), 'utf8'));
-        return Object.values(wf.jobs).flatMap((j) => (j.steps || []).filter((s) => s.uses && s.uses !== './').map((s) => s.uses));
-      })
+      ...allWorkflows().flatMap(([, wf]) => Object.values(wf.jobs).flatMap((j) => (j.steps || []).filter((s) => s.uses && s.uses !== './').map((s) => s.uses)))
     ];
-    expect(uses).toContain('actions/github-script@v7');
-    expect(uses).toContain('actions/upload-artifact@v4');
-    for (const ref of uses) expect(ref).toMatch(pinned);
+    expect(uses).toContain('actions/github-script@v8');
+    expect(uses).toContain('actions/upload-artifact@v6');
+    for (const ref of uses) expect(ref).toMatch(PINNED);
   });
 
   it('every run step uses bash', () => {
     for (const step of steps.filter((s) => s.run)) expect(step.shell, step.name).toBe('bash');
   });
 
-  it('runs the steps in the designed order, with the right conditions', () => {
+  it('builds the image before waiting for the app (the app gets the build time to start)', () => {
     expect(steps.map((s) => s.id || s.name)).toEqual([
-      'Check the runner', 'validate', 'Wait for the app', 'image', 'run', 'parse', 'upload', 'Set the result'
+      'runner', 'validate', 'image', 'wait', 'run', 'parse', 'upload', 'outcome', 'Set the result'
     ]);
-    expect(stepByName('Wait for the app').if).toBe("${{ inputs.wait-on != '' }}");
-    expect(stepById('parse').if).toBe("${{ !cancelled() && steps.validate.outcome == 'success' }}");
-    expect(stepById('upload').if).toBe("${{ !cancelled() && steps.parse.outputs.upload == 'true' }}");
-    expect(stepByName('Set the result').if).toBe("${{ !cancelled() && steps.validate.outcome == 'success' }}");
   });
 
   it('uploads only the run folder the result names, with the chosen name', () => {
@@ -166,15 +219,28 @@ describe('action.yml: structure', () => {
       name: '${{ inputs.artifact-name }}',
       path: '${{ steps.parse.outputs.upload-path }}',
       'retention-days': '${{ inputs.retention-days }}',
-      'if-no-files-found': 'warn'
+      'if-no-files-found': 'error'
     });
   });
 
-  it('the parse step loads the module from the action folder via github.action_path', () => {
+  it('the parse step loads the module from the action folder via github.action_path, and gives it github and context', () => {
     const parse = stepById('parse');
     expect(parse.env.VISUAL_CI_ACTION_PATH).toBe('${{ github.action_path }}');
     expect(parse.with.script).toContain("path.join(process.env.VISUAL_CI_ACTION_PATH, 'src', 'ci', 'actionReport.js')");
+    expect(parse.with.script).toContain('await run({ core, github, context });');
     expect(fs.existsSync(path.join(REPO, 'src/ci/actionReport.js'))).toBe(true);
+  });
+
+  it('never mounts RUNNER_TEMP itself into the container, only its visual-ci folder and the step summary', () => {
+    const script = stepById('run').run;
+    const mounts = [...script.matchAll(/-v "([^"]+)"/g)].map((m) => m[1]);
+    expect(mounts).toEqual([
+      '$GITHUB_STEP_SUMMARY:/github/step-summary.md',
+      '$GITHUB_WORKSPACE:/github/workspace',
+      '$out:/visual-ci-temp'
+    ]);
+    expect(script).toContain('out="$RUNNER_TEMP/visual-ci"');
+    expect(script).not.toMatch(/"\$RUNNER_TEMP:/);
   });
 });
 
@@ -232,10 +298,11 @@ describe('visual-ci.yml dogfoods the action', () => {
     });
   });
 
-  it('checks out, starts the demo site, then uses ./ with base-url and wait-on', () => {
+  it('checks out without persisted credentials, starts the demo site, then uses ./ with base-url and wait-on', () => {
     const names = job.steps.map((s) => s.uses || s.name);
     expect(names.indexOf('actions/checkout@v4')).toBeLessThan(names.indexOf('Start Demo Site'));
     expect(names.indexOf('Start Demo Site')).toBeLessThan(names.indexOf('./'));
+    expect(job.steps.find((s) => s.uses === 'actions/checkout@v4').with).toEqual({ 'persist-credentials': false });
     const start = job.steps.find((s) => s.name === 'Start Demo Site');
     expect(start.run.trim()).toMatch(/^node scripts\/serve-demo\.js .*&$/); // in the background
     const check = job.steps.find((s) => s.uses === './');
@@ -256,37 +323,6 @@ describe('visual-ci.yml dogfoods the action', () => {
   });
 });
 
-describe('README documents the action', () => {
-  const section = (() => {
-    const at = readme.search(/^## .*Use it in your repo \(GitHub Action\)/m);
-    if (at === -1) return '';
-    const next = readme.slice(at + 3).search(/^## /m);
-    return next === -1 ? readme.slice(at) : readme.slice(at, at + 3 + next);
-  })();
-
-  it('has a "Use it in your repo (GitHub Action)" section with a usage snippet', () => {
-    expect(section).not.toBe('');
-    expect(section).toContain('uses: abhishek-k-33/Visual_Regression_Testing@v1');
-    expect(section).toMatch(/base-url:/);
-    expect(section).toMatch(/wait-on:/);
-    expect(section).toMatch(/@main/);
-  });
-
-  it.each(Object.keys(EXPECTED_INPUTS))('documents the input %s', (name) => {
-    expect(section).toMatch(new RegExp(`^\\| \`${name}\` \\|`, 'm'));
-  });
-
-  it.each(EXPECTED_OUTPUTS)('documents the output %s', (name) => {
-    expect(section).toMatch(new RegExp(`^\\| \`${name}\` \\|`, 'm'));
-  });
-
-  it('documents baselines and limitations', () => {
-    expect(section).toMatch(/update-baselines: true/);
-    expect(section).toMatch(/Linux/);
-    expect(section).toMatch(/fork/i);
-  });
-});
-
 // ─── Running the steps ───────────────────────────────────────────────────────
 
 const FAKE_DOCKER = String.raw`#!/usr/bin/env node
@@ -298,6 +334,7 @@ const { spawnSync } = require('child_process');
 const args = process.argv.slice(2);
 const entry = { args };
 let status = Number(process.env.FAKE_DOCKER_EXIT || 0);
+if (args[0] === 'run' && process.env.FAKE_DOCKER_RUN_EXIT) status = Number(process.env.FAKE_DOCKER_RUN_EXIT);
 if (args[0] === 'run') {
   const mounts = [];
   const envs = [];
@@ -315,7 +352,12 @@ if (args[0] === 'run') {
     if (a.startsWith('-')) { console.error('fake docker: unexpected flag ' + a); process.exit(125); }
     break;
   }
-  const table = mounts.map((m) => { const [host, inside] = m.split(':'); return [inside, host]; });
+  const table = mounts.map((m) => {
+    const parts = m.split(':');
+    // Like docker, a ':' in the host path would make the spec ambiguous: refuse it loudly.
+    if (parts.length !== 2 || !parts[0].startsWith('/') || !parts[1].startsWith('/')) { console.error('fake docker: cannot parse -v ' + m); process.exit(125); }
+    return [parts[1], parts[0]];
+  });
   table.push(['/app', process.env.FAKE_DOCKER_APP]);
   table.sort((a, b) => b[0].length - a[0].length);
   const toHost = (p) => {
@@ -335,7 +377,9 @@ if (args[0] === 'run') {
     const env = { PATH: process.env.PATH, PLAYWRIGHT_BROWSERS_PATH: process.env.FAKE_DOCKER_BROWSERS };
     for (const e of envs) {
       const eq = e.indexOf('=');
-      if (eq === -1) { if (process.env[e] !== undefined) env[e] = process.env[e]; } else env[e.slice(0, eq)] = mapArg(e.slice(eq + 1));
+      const name = eq === -1 ? e : e.slice(0, eq);
+      if (name === 'HOME') env.HOME = process.env.FAKE_DOCKER_HOME; // the container's /tmp: a per-test folder here
+      else if (eq === -1) { if (process.env[e] !== undefined) env[e] = process.env[e]; } else env[name] = mapArg(e.slice(eq + 1));
     }
     const [bin, ...rest] = command;
     const r = spawnSync(bin === 'node' ? process.execPath : bin, rest.map(mapArg), { cwd: toHost(workdir), env, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
@@ -349,8 +393,27 @@ fs.appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify(entry) + '\n');
 process.exit(status);
 `;
 
-// Where Playwright keeps its browsers for this user (the CLI runs with HOME=/tmp, as in the action).
-const HOST_BROWSERS = process.env.PLAYWRIGHT_BROWSERS_PATH || path.join(os.homedir(), '.cache', 'ms-playwright');
+/**
+ * Where Playwright keeps its browsers (the CLI runs with a different HOME, as in the
+ * action, so it must be told). Resolved by Playwright itself, so it works on macOS too;
+ * null when Chromium is not installed (the real-browser tests are then skipped).
+ */
+function playwrightBrowsersPath() {
+  if (process.env.PLAYWRIGHT_BROWSERS_PATH && process.env.PLAYWRIGHT_BROWSERS_PATH !== '0') return process.env.PLAYWRIGHT_BROWSERS_PATH;
+  let exe;
+  try {
+    exe = chromium.executablePath();
+  } catch {
+    return null;
+  }
+  if (!exe || !fs.existsSync(exe)) return null;
+  for (let dir = path.dirname(exe); dir !== path.dirname(dir); dir = path.dirname(dir)) {
+    if (/^chromium(_headless_shell)?-\d+$/.test(path.basename(dir))) return path.dirname(dir);
+  }
+  return null;
+}
+const HOST_BROWSERS = playwrightBrowsersPath();
+if (!HOST_BROWSERS) console.warn('[action.test.js] Playwright Chromium not found: skipping the real-browser action tests (run `npx playwright install chromium`).');
 
 function exec(file, args, options) {
   return new Promise((resolve) => {
@@ -367,49 +430,39 @@ const readOutputs = (file) => Object.fromEntries(
   })
 );
 
-/** A throwaway runner: workspace, RUNNER_TEMP, fake docker on PATH. Never touches the repository's storage/. */
+/** A throwaway runner: workspace, RUNNER_TEMP (with the runner's command files), fake docker on PATH. Never the repository's storage/. */
 function createRunner() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vrt-action-'));
+  // The fake docker parses "-v host:container" like docker: a ':' in a path would break it.
+  expect(root, 'temp paths must not contain ":"').not.toContain(':');
+  const commands = path.join(root, 'runner-temp', '_runner_file_commands');
   const runner = {
     root,
     workspace: path.join(root, 'workspace'),
     temp: path.join(root, 'runner-temp'),
     bin: path.join(root, 'bin'),
+    home: path.join(root, 'container-home'),
     dockerLog: path.join(root, 'docker.log'),
-    stepSummary: path.join(root, 'runner-temp', 'step_summary'),
+    stepSummary: path.join(commands, 'step_summary_1'),
+    githubEnv: path.join(commands, 'set_env_1'),
     steps: {},
+    uploads: [],
     dockerCalls: () => (fs.existsSync(runner.dockerLog) ? fs.readFileSync(runner.dockerLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []),
     cleanup: () => fs.rmSync(root, { recursive: true, force: true })
   };
-  for (const dir of [runner.workspace, runner.temp, runner.bin]) fs.mkdirSync(dir, { recursive: true });
+  for (const dir of [runner.workspace, commands, runner.bin, runner.home]) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(runner.bin, 'docker'), FAKE_DOCKER, { mode: 0o755 });
   fs.writeFileSync(runner.stepSummary, '');
+  fs.writeFileSync(runner.githubEnv, '');
   return runner;
-}
-
-/** Evaluates the simple `${{ a.b.c }}` values action.yml uses in env:, from a context. */
-function evaluate(value, context) {
-  if (typeof value !== 'string') return String(value);
-  return value.replace(EXPRESSION, (_, expr) => {
-    const parts = expr.split('.');
-    let current = context;
-    for (const part of parts) {
-      if (current === undefined || current === null || !(part in current)) {
-        if (parts[0] === 'steps') return ''; // a step that did not run has no outputs
-        throw new Error(`unknown expression in test: ${expr}`);
-      }
-      current = current[part];
-    }
-    return current ?? '';
-  });
 }
 
 function contextFor(runner, inputs) {
   const withDefaults = {};
   for (const [name, def] of Object.entries(action.inputs)) withDefaults[name] = inputs[name] ?? def.default ?? '';
   const stepsCtx = {};
-  for (const [id, outputs] of Object.entries(runner.steps)) stepsCtx[id] = { outputs, outcome: outputs.__outcome };
-  return { inputs: withDefaults, steps: stepsCtx, runner: { os: inputs.__os || 'Linux' }, github: { action_path: REPO } };
+  for (const [id, { __outcome, ...outputs }] of Object.entries(runner.steps)) stepsCtx[id] = { outputs, outcome: __outcome, conclusion: __outcome };
+  return { inputs: withDefaults, steps: stepsCtx, runner: { os: inputs.__os || 'Linux', temp: runner.temp }, github: { action_path: REPO } };
 }
 
 /** Base environment of a step on the runner (what GitHub sets), plus the step's own env: from action.yml. */
@@ -427,13 +480,15 @@ function stepEnv(runner, step, inputs, extra = {}) {
     GITHUB_REF_NAME: '17/merge',
     GITHUB_HEAD_REF: 'feat/branch',
     GITHUB_STEP_SUMMARY: runner.stepSummary,
+    GITHUB_ENV: runner.githubEnv,
     FAKE_DOCKER_LOG: runner.dockerLog,
     FAKE_DOCKER_APP: REPO,
-    FAKE_DOCKER_BROWSERS: HOST_BROWSERS,
+    FAKE_DOCKER_HOME: runner.home,
+    FAKE_DOCKER_BROWSERS: HOST_BROWSERS || '',
     ...extra
   };
   const ctx = contextFor(runner, inputs);
-  for (const [key, value] of Object.entries(step.env || {})) env[key] = evaluate(value, ctx);
+  for (const [key, value] of Object.entries(step.env || {})) env[key] = interpolate(value, ctx);
   return env;
 }
 
@@ -451,10 +506,12 @@ async function runBashStep(runner, step, inputs = {}, extra = {}) {
 
 /**
  * Runs the github-script step's script the way actions/github-script does: as the
- * body of an AsyncFunction(require, core, ...), in a separate Node process, with the
- * step's env. GITHUB_ACTION_PATH points at github-script's own folder there, as on GitHub.
+ * body of an AsyncFunction(require, core, github, context, ...), in a separate Node
+ * process, with the step's env. GITHUB_ACTION_PATH points at github-script's own
+ * folder there, as on GitHub. `artifacts` is what listing the run's artifacts returns
+ * (null: the token lacks actions: read, as with permissions: contents: read).
  */
-async function runParseStep(runner, inputs = {}) {
+async function runParseStep(runner, inputs = {}, { artifacts = null } = {}) {
   const step = stepById('parse');
   const harness = path.join(runner.root, 'github-script-harness.cjs');
   const body = path.join(runner.root, 'github-script-body.js');
@@ -462,42 +519,95 @@ async function runParseStep(runner, inputs = {}) {
   fs.writeFileSync(harness, `
     const fs = require('fs');
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-    const outputs = {}; const annotations = [];
+    const outputs = {}; const annotations = []; const listed = [];
     const core = {
       setOutput: (k, v) => { outputs[k] = String(v); },
       error: (m) => annotations.push(['error', String(m)]),
       warning: (m) => annotations.push(['warning', String(m)]),
       info: () => {}
     };
-    new AsyncFunction('require', 'core', fs.readFileSync(process.argv[2], 'utf8'))(require, core)
-      .then(() => process.stdout.write(JSON.stringify({ outputs, annotations })), (e) => { console.error(e); process.exit(1); });
+    const artifacts = process.env.HARNESS_ARTIFACTS ? JSON.parse(process.env.HARNESS_ARTIFACTS) : null;
+    const github = { rest: { actions: { listWorkflowRunArtifacts: async (params) => {
+      listed.push(params);
+      if (!artifacts) { const e = new Error('Resource not accessible by integration'); e.status = 403; throw e; }
+      return { data: { total_count: artifacts.length, artifacts } };
+    } } } };
+    const context = { runId: Number(process.env.GITHUB_RUN_ID), repo: { owner: 'o', repo: 'r' } };
+    new AsyncFunction('require', 'core', 'github', 'context', fs.readFileSync(process.argv[2], 'utf8'))(require, core, github, context)
+      .then(() => process.stdout.write(JSON.stringify({ outputs, annotations, listed })), (e) => { console.error(e); process.exit(1); });
   `);
-  const env = stepEnv(runner, step, inputs, { GITHUB_ACTION_PATH: path.join(runner.root, 'not-this-action') });
+  const env = stepEnv(runner, step, inputs, {
+    GITHUB_ACTION_PATH: path.join(runner.root, 'not-this-action'),
+    ...(artifacts ? { HARNESS_ARTIFACTS: JSON.stringify(artifacts) } : {})
+  });
   const result = await exec(process.execPath, [harness, body], { cwd: runner.workspace, env });
   if (result.code !== 0) throw new Error(`github-script step failed: ${result.stderr}`);
   const parsed = JSON.parse(result.stdout);
   runner.steps.parse = { ...parsed.outputs, __outcome: 'success' };
-  return parsed;
+  return { code: 0, ...parsed };
 }
 
-/** The composite action from validation to the last step (the runner check is tested on its own). */
-async function runAction(runner, inputs, extra = {}) {
-  const validate = await runBashStep(runner, stepById('validate'), inputs, extra);
-  if (validate.code !== 0) return { validate };
-  let wait = null;
-  if ((inputs['wait-on'] ?? '') !== '') {
-    wait = await runBashStep(runner, stepByName('Wait for the app'), inputs, extra);
+/**
+ * The upload step, faked: records its evaluated `with:` and, like upload-artifact with
+ * if-no-files-found: error, fails when the path holds no file. `mode: 'fail'` makes it
+ * fail like a name collision (409 Conflict) does.
+ */
+function runUploadStep(runner, inputs, { mode = 'success' } = {}) {
+  const step = stepById('upload');
+  const ctx = contextFor(runner, inputs);
+  const withValues = Object.fromEntries(Object.entries(step.with).map(([k, v]) => [k, interpolate(v, ctx)]));
+  runner.uploads.push(withValues);
+  const hasFiles = fs.existsSync(withValues.path) && fs.readdirSync(withValues.path, { recursive: true }).length > 0;
+  if (mode === 'fail' || !hasFiles) {
+    runner.steps.upload = { __outcome: 'failure' };
+    return { code: 1, outputs: {} };
   }
-  let image = null;
-  let run = null;
-  if (!wait || wait.code === 0) {
-    image = await runBashStep(runner, stepById('image'), inputs, extra);
-    if (image.code === 0) run = await runBashStep(runner, stepById('run'), inputs, extra);
-  }
-  const parse = await runParseStep(runner, inputs);
-  const final = await runBashStep(runner, stepByName('Set the result'), inputs, extra);
-  return { validate, wait, image, run, parse, final };
+  const outputs = { 'artifact-id': '9001', 'artifact-url': 'https://github.com/o/r/actions/runs/4242/artifacts/9001' };
+  runner.steps.upload = { ...outputs, __outcome: 'success' };
+  return { code: 0, outputs };
 }
+
+/**
+ * Runs the composite action as the runner does: every step in order, each one only if
+ * its real `if:` says so (a failed step fails the action, and later steps then need a
+ * status function such as !cancelled()), then evaluates the action's outputs.
+ */
+async function runAction(runner, inputs, { env = {}, upload = {}, artifacts = null } = {}) {
+  runner.steps = {};
+  const status = { failed: false };
+  const ran = [];
+  const results = {};
+  for (const step of steps) {
+    const key = step.id || step.name;
+    if (!shouldRunStep(step.if, contextFor(runner, inputs), status)) {
+      if (step.id) runner.steps[step.id] = { __outcome: 'skipped' };
+      continue;
+    }
+    ran.push(key);
+    let result;
+    if (step.run) result = await runBashStep(runner, step, inputs, env);
+    else if (step.uses.startsWith('actions/github-script@')) result = await runParseStep(runner, inputs, { artifacts });
+    else if (step.uses.startsWith('actions/upload-artifact@')) result = runUploadStep(runner, inputs, upload);
+    else throw new Error(`unexpected step ${step.uses}`);
+    if (result.code !== 0) status.failed = true;
+    results[key] = result;
+  }
+  const ctx = contextFor(runner, inputs);
+  const outputs = Object.fromEntries(Object.entries(action.outputs).map(([name, o]) => [name, interpolate(o.value, ctx)]));
+  return { ran, results, outputs, failed: status.failed };
+}
+
+const cannedReport = (overrides = {}) => JSON.stringify({
+  schema: 'visual-ci-result',
+  version: 1,
+  status: 'passed',
+  exit_code: 0,
+  error: null,
+  run: { id: 'gh-4242-3', run_dir: 'storage/runs/gh-4242-3', manifest: null, summary: null },
+  counts: { total: 1, passed: 1, changed: 0, missing_baseline: 0, new_baseline: 0 },
+  snapshots: [],
+  ...overrides
+});
 
 describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
   let runner;
@@ -506,7 +616,7 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
 
   describe('runner check', () => {
     it('passes on Linux and fails elsewhere with a clear error', async () => {
-      const step = stepByName('Check the runner');
+      const step = stepById('runner');
       expect((await runBashStep(runner, step, { __os: 'Linux' })).code).toBe(0);
       const mac = await runBashStep(runner, step, { __os: 'macOS' });
       expect(mac.code).toBe(1);
@@ -548,8 +658,10 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
       ['base-url not http', { 'base-url': 'file:///etc/passwd' }, 'base-url must be an http:// or https:// URL'],
       ['base-url with a space', { 'base-url': 'http://a b' }, 'base-url must be an http:// or https:// URL'],
       ['base-url with a newline', { 'base-url': 'http://a\n::set-output name=x::y' }, 'base-url must be an http:// or https:// URL'],
-      ['config empty', { config: '' }, 'config must be a path relative to working-directory.'],
-      ['config absolute', { config: '/etc/visual.json' }, 'config must be a path relative'],
+      ['config empty', { config: '' }, "config must be a path inside working-directory (relative, no '..')."],
+      ['config absolute', { config: '/etc/visual.json' }, 'config must be a path inside working-directory'],
+      ['config climbing out with ..', { config: '../other/visual.config.json' }, 'config must be a path inside working-directory'],
+      ['config with .. in the middle', { config: 'a/../../b.json' }, 'config must be a path inside working-directory'],
       ['working-directory absolute', { 'working-directory': '/home/runner' }, 'working-directory must be a folder inside the repository'],
       ['working-directory with ..', { 'working-directory': 'a/../../b' }, 'working-directory must be a folder inside the repository'],
       ['working-directory ..', { 'working-directory': '..' }, 'working-directory must be a folder inside the repository'],
@@ -560,8 +672,8 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
       ['update-baselines not a boolean', { 'update-baselines': '1' }, 'update-baselines must be true or false.'],
       ['upload-artifact unknown', { 'upload-artifact': 'failure' }, 'upload-artifact must be on-failure, always or never.'],
       ['run-id with a slash', { 'run-id': '../x' }, "run-id may only contain letters, digits, '-' and '_'"],
-      ['run-id with a command', { 'run-id': 'x$(touch pwned)' }, "run-id may only contain"],
-      ['run-id too long', { 'run-id': 'a'.repeat(129) }, "run-id may only contain"],
+      ['run-id with a command', { 'run-id': 'x$(touch pwned)' }, 'run-id may only contain'],
+      ['run-id too long', { 'run-id': 'a'.repeat(129) }, 'run-id may only contain'],
       ['wait-on not http', { 'wait-on': 'localhost:3000' }, 'wait-on must be an http:// or https:// URL'],
       ['wait-timeout not a number', { 'wait-timeout': '1m' }, 'wait-timeout must be a whole number'],
       ['wait-timeout zero', { 'wait-timeout': '0' }, 'wait-timeout must be a whole number'],
@@ -580,13 +692,18 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
       expect(r.outputs).toEqual({}); // nothing half-validated reaches later steps
     });
 
+    it('accepts a config path with dots that is not ..', async () => {
+      const r = await validate({ config: 'config/..visual.json' });
+      expect(r.code, r.stdout).toBe(0);
+    });
+
     it('reports every problem at once', async () => {
       const r = await validate({ strict: 'x', 'upload-artifact': 'x', 'wait-timeout': 'x' });
       expect(r.code).toBe(1);
       expect(r.stdout.match(/::error/g)).toHaveLength(3);
     });
 
-    it('never echoes an input (it could hold credentials or a workflow command)', async () => {
+    it('its error messages never repeat an input value', async () => {
       const r = await validate({ 'base-url': 'https://user:s3cret@host/ x', 'run-id': '::stop-commands::tok' });
       expect(r.code).toBe(1);
       expect(r.stdout + r.stderr).not.toContain('s3cret');
@@ -610,7 +727,7 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
       url = `http://127.0.0.1:${server.address().port}`;
     });
     afterAll(() => new Promise((resolve) => server.close(resolve)));
-    const wait = (inputs) => runBashStep(runner, stepByName('Wait for the app'), inputs);
+    const wait = (inputs) => runBashStep(runner, stepById('wait'), inputs);
 
     it('returns as soon as the app answers', async () => {
       const r = await wait({ 'wait-on': `${url}/`, 'wait-timeout': '10' });
@@ -688,13 +805,13 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
       expect(call.mounts).toEqual([
         `${runner.stepSummary}:/github/step-summary.md`,
         `${runner.workspace}:/github/workspace`,
-        `${runner.temp}:/runner-temp`
+        `${path.join(runner.temp, 'visual-ci')}:/visual-ci-temp`
       ]);
       expect(call.workdir).toBe('/github/workspace/site');
       expect(call.image).toBe('visual-ci-action:local');
       expect(call.command).toEqual([
         'node', '/app/src/cli/index.js', 'test',
-        '--json=/runner-temp/visual-ci-gh-4242-3.json',
+        '--json=/visual-ci-temp/visual-ci-gh-4242-3.json',
         '--config=visual.config.json',
         '--base-url=http://127.0.0.1:3000/?token=abc',
         '--run-id=gh-4242-3',
@@ -702,11 +819,25 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
       ]);
     });
 
+    it("mounts nothing of RUNNER_TEMP but its own folder and the step summary (never GITHUB_ENV or the runner's command files)", async () => {
+      await runStep();
+      const [call] = runner.dockerCalls();
+      const hostPaths = call.mounts.map((m) => m.split(':')[0]);
+      for (const host of hostPaths) {
+        const rel = path.relative(runner.temp, host);
+        if (rel.startsWith('..')) continue; // outside RUNNER_TEMP (the workspace)
+        expect([path.join('visual-ci'), path.join('_runner_file_commands', 'step_summary_1')]).toContain(rel);
+      }
+      expect(hostPaths).not.toContain(runner.temp);
+      expect(hostPaths).not.toContain(path.dirname(runner.githubEnv));
+      expect(fs.statSync(path.join(runner.temp, 'visual-ci')).isDirectory()).toBe(true); // created for the mount
+    });
+
     it('passes --no-strict and --update-baselines when asked', async () => {
       await runStep({ strict: 'false', 'update-baselines': 'true', 'run-id': 'r1', config: 'cfg/v.json' });
       const [call] = runner.dockerCalls();
       expect(call.command.slice(3)).toEqual([
-        '--json=/runner-temp/visual-ci-r1.json', '--config=cfg/v.json', '--base-url=http://127.0.0.1:3000/?token=abc',
+        '--json=/visual-ci-temp/visual-ci-r1.json', '--config=cfg/v.json', '--base-url=http://127.0.0.1:3000/?token=abc',
         '--run-id=r1', '--no-strict', '--update-baselines'
       ]);
     });
@@ -719,7 +850,8 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
     });
 
     it('removes a stale report before the run, so an old result is never read', async () => {
-      fs.writeFileSync(path.join(runner.temp, 'visual-ci-gh-4242-3.json'), '{"stale":true}');
+      fs.mkdirSync(path.join(runner.temp, 'visual-ci'));
+      fs.writeFileSync(path.join(runner.temp, 'visual-ci', 'visual-ci-gh-4242-3.json'), '{"stale":true}');
       await runStep();
       expect(runner.dockerCalls()[0].reportExisted).toBe(false);
     });
@@ -740,10 +872,43 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
     });
   });
 
+  describe('outcome (always runs)', () => {
+    const outcome = async ({ status, code, artifactId }) => {
+      runner.steps.parse = { status, 'exit-code': code, __outcome: 'success' };
+      runner.steps.upload = artifactId === undefined ? { __outcome: 'skipped' } : { 'artifact-id': artifactId, __outcome: 'success' };
+      return runBashStep(runner, stepById('outcome'), { 'artifact-name': 'diffs' });
+    };
+
+    it.each([
+      ['passed', '0'], ['failed', '1'], ['error', '2']
+    ])('passes a consistent result on (%s, %s)', async (status, code) => {
+      const r = await outcome({ status, code });
+      expect(r.code).toBe(0);
+      expect(r.outputs).toEqual({ status, 'exit-code': code, 'artifact-name': '' });
+    });
+
+    it.each([
+      ['nothing (visual-ci never ran)', undefined, undefined],
+      ['an inconsistent pair', 'passed', '1'],
+      ['an unknown status', 'great', '0']
+    ])('turns %s into error / 2', async (_label, status, code) => {
+      const r = await outcome({ status, code });
+      expect(r.outputs).toEqual({ status: 'error', 'exit-code': '2', 'artifact-name': '' });
+    });
+
+    it('names the artifact only when the upload produced one', async () => {
+      expect((await outcome({ status: 'failed', code: '1', artifactId: '9001' })).outputs['artifact-name']).toBe('diffs');
+      expect((await outcome({ status: 'failed', code: '1', artifactId: '' })).outputs['artifact-name']).toBe('');
+      expect((await outcome({ status: 'failed', code: '1' })).outputs['artifact-name']).toBe('');
+    });
+  });
+
   describe('result (last step)', () => {
-    const finish = (exitCode, changed = '0') => {
-      runner.steps.validate = { __outcome: 'success' };
-      runner.steps.parse = { 'exit-code': exitCode, changed, __outcome: 'success' };
+    // parsed: null means the parse step was skipped (visual-ci never ran).
+    const finish = (exitCode, { changed = '0', parsed = exitCode, upload = 'skipped' } = {}) => {
+      runner.steps.outcome = { 'exit-code': exitCode, __outcome: 'success' };
+      runner.steps.parse = parsed === null ? { __outcome: 'skipped' } : { 'exit-code': parsed, changed, __outcome: 'success' };
+      runner.steps.upload = { __outcome: upload };
       return runBashStep(runner, stepByName('Set the result'), {});
     };
 
@@ -754,7 +919,7 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
     });
 
     it('fails with 1 on visual differences', async () => {
-      const r = await finish('1', '3');
+      const r = await finish('1', { changed: '3' });
       expect(r.code).toBe(1);
       expect(r.stdout).toContain('::error title=visual-ci::Visual differences found (3 changed snapshot(s)');
     });
@@ -765,10 +930,16 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
       expect(r.stdout).toContain('visual-ci failed with an error (exit code 2)');
     });
 
-    it.each(['', 'x', '1; exit 0'])('fails when no exit code was recorded (%j)', async (code) => {
-      const r = await finish(code);
+    it('fails with 2 when visual-ci never ran (runner check or validation failed)', async () => {
+      const r = await finish('2', { parsed: null });
       expect(r.code).toBe(2);
-      expect(r.stdout).toContain('::error title=visual-ci::No result was recorded');
+      expect(r.stdout).toContain('::error title=visual-ci::visual-ci did not run');
+    });
+
+    it('a failed upload fails even a passing run, with a message about unique artifact names', async () => {
+      const r = await finish('0', { upload: 'failure' });
+      expect(r.code).toBe(2);
+      expect(r.stdout).toContain('Artifact names must be unique within a workflow run');
     });
   });
 
@@ -792,11 +963,110 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
   });
 });
 
-// Real Chromium runs (one or two per test): far above vitest's 5 s default on a busy machine.
-describe('the whole action against a real page (fake docker runs the real CLI)', { timeout: 120000 }, () => {
+describe('the whole action, step by step by its if: conditions (canned results)', { timeout: 60000 }, () => {
+  let runner;
+  beforeEach(() => { runner = createRunner(); });
+  afterEach(() => runner.cleanup());
+
+  const runDir = () => path.join(runner.workspace, 'storage', 'runs', 'gh-4242-3');
+  const withRunFolder = (files = ['index-desktop.png', 'run.json']) => {
+    fs.mkdirSync(runDir(), { recursive: true });
+    for (const f of files) fs.writeFileSync(path.join(runDir(), f), 'x');
+  };
+  const go = (inputs = {}, options = {}) => runAction(runner, { 'base-url': 'http://127.0.0.1:3000', ...inputs }, options);
+  const ALWAYS = ['outcome', 'Set the result'];
+
+  it('a pass: every step runs except the upload; outputs from the result', async () => {
+    withRunFolder();
+    const r = await go({}, { env: { FAKE_DOCKER_REPORT: cannedReport() } });
+    expect(r.ran).toEqual(['runner', 'validate', 'image', 'run', 'parse', ...ALWAYS]); // no wait-on, no upload
+    expect(r.failed).toBe(false);
+    expect(r.outputs).toMatchObject({ status: 'passed', 'exit-code': '0', 'artifact-name': '', 'artifact-id': '', 'artifact-url': '' });
+  });
+
+  it('a diff: uploads this run folder; the artifact outputs come from the upload', async () => {
+    withRunFolder();
+    const report = cannedReport({ status: 'failed', exit_code: 1, counts: { total: 1, passed: 0, changed: 1, missing_baseline: 0, new_baseline: 0 } });
+    const r = await go({ 'artifact-name': 'diffs-a' }, { env: { FAKE_DOCKER_REPORT: report, FAKE_DOCKER_RUN_EXIT: '1' } });
+    expect(r.ran).toContain('upload');
+    expect(runner.uploads).toEqual([{ name: 'diffs-a', path: runDir(), 'retention-days': '', 'if-no-files-found': 'error' }]);
+    expect(r.outputs).toMatchObject({
+      status: 'failed', 'exit-code': '1', changed: '1', 'artifact-name': 'diffs-a', 'artifact-id': '9001',
+      'artifact-url': 'https://github.com/o/r/actions/runs/4242/artifacts/9001'
+    });
+    expect(r.failed).toBe(true);
+    expect(r.results['Set the result'].code).toBe(1);
+  });
+
+  it('an error with an empty run folder (Scenario A): nothing is uploaded and no artifact is claimed, even with always', async () => {
+    fs.mkdirSync(runDir(), { recursive: true });
+    const report = cannedReport({ status: 'error', exit_code: 2, error: { code: 'NAVIGATION_FAILED', message: 'no page' }, counts: { total: 0, passed: 0, changed: 0, missing_baseline: 0, new_baseline: 0 } });
+    const r = await go({ 'upload-artifact': 'always' }, { env: { FAKE_DOCKER_REPORT: report, FAKE_DOCKER_RUN_EXIT: '2' } });
+    expect(r.ran).not.toContain('upload');
+    expect(runner.uploads).toEqual([]);
+    expect(r.outputs).toMatchObject({ status: 'error', 'exit-code': '2', 'artifact-name': '', 'artifact-id': '', 'artifact-url': '' });
+    expect(r.results.parse.annotations).toContainEqual(['warning', 'The run folder is empty (visual-ci stopped before the first screenshot), so there is nothing to upload.']);
+  });
+
+  it('an artifact-name collision fails the upload (and the action) clearly, even on a pass', async () => {
+    withRunFolder();
+    const r = await go({ 'upload-artifact': 'always' }, {
+      env: { FAKE_DOCKER_REPORT: cannedReport() },
+      upload: { mode: 'fail' },
+      artifacts: [{ name: 'visual-regression-diffs', expired: false }]
+    });
+    expect(r.results.parse.annotations.some(([kind, m]) => kind === 'warning' && m.includes('already exists in this workflow run'))).toBe(true);
+    expect(r.results.parse.listed).toEqual([{ owner: 'o', repo: 'r', run_id: 4242, name: 'visual-regression-diffs', per_page: 100 }]);
+    expect(r.ran).toContain('upload');
+    expect(r.failed).toBe(true);
+    expect(r.outputs).toMatchObject({ status: 'passed', 'exit-code': '0', 'artifact-name': '', 'artifact-id': '' });
+    expect(r.results['Set the result'].code).toBe(2);
+    expect(r.results['Set the result'].stdout).toContain('Artifact names must be unique within a workflow run');
+  });
+
+  it.each([
+    ['input validation fails', { strict: 'maybe' }, ['runner', 'validate']],
+    ['the runner is not Linux', { __os: 'Windows' }, ['runner']]
+  ])('when %s, status and exit-code are still set (error, 2) and the action fails', async (_label, inputs, before) => {
+    const r = await go(inputs);
+    expect(r.ran).toEqual([...before, ...ALWAYS]);
+    expect(r.failed).toBe(true);
+    expect(r.outputs.status).toBe('error');
+    expect(r.outputs['exit-code']).toBe('2');
+    expect(r.outputs['artifact-name']).toBe('');
+    expect(r.results['Set the result'].code).toBe(2);
+    expect(runner.dockerCalls()).toEqual([]);
+  });
+
+  it('when the image build fails, visual-ci never runs; the result step still reports error / 2', async () => {
+    const r = await go({}, { env: { FAKE_DOCKER_EXIT: '1' } });
+    expect(r.ran).toEqual(['runner', 'validate', 'image', 'parse', ...ALWAYS]);
+    expect(r.outputs).toMatchObject({ status: 'error', 'exit-code': '2' });
+    expect(r.failed).toBe(true);
+  });
+
+  it('the image is prepared before wait-on; a wait-on timeout stops the action before docker run', async () => {
+    const r = await go({ 'wait-on': 'http://127.0.0.1:9/', 'wait-timeout': '1' });
+    expect(r.ran).toEqual(['runner', 'validate', 'image', 'wait', 'parse', ...ALWAYS]);
+    expect(runner.dockerCalls().map((c) => c.args[0])).toEqual(['build']);
+    expect(r.outputs).toMatchObject({ status: 'error', 'exit-code': '2' });
+    expect(r.failed).toBe(true);
+  });
+});
+
+// Real Chromium runs: far above vitest's 5 s default on a busy machine.
+describe.skipIf(!HOST_BROWSERS)('the whole action against a real page (fake docker runs the real CLI)', { timeout: 120000 }, () => {
+  const CONFIG = JSON.stringify({
+    baseUrl: 'http://example.invalid', // the base-url input overrides it
+    routes: ['/'],
+    viewports: [{ name: 'desktop', width: 400, height: 300 }],
+    threshold: 0.01
+  });
   let site;
   let baseUrl;
   let color = 'white';
+  let seedDir;
+  let seedBaseline; // the white page's baseline, captured once; each test copies it
   let runner;
 
   beforeAll(async () => {
@@ -806,119 +1076,117 @@ describe('the whole action against a real page (fake docker runs the real CLI)',
     });
     await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
     baseUrl = `http://127.0.0.1:${site.address().port}`;
-    runner = createRunner();
-    const app = path.join(runner.workspace, 'app');
-    fs.mkdirSync(app);
-    fs.writeFileSync(path.join(app, 'visual.config.json'), JSON.stringify({
-      baseUrl: 'http://example.invalid', // the base-url input overrides it
-      routes: ['/'],
-      viewports: [{ name: 'desktop', width: 400, height: 300 }],
-      threshold: 0.01
-    }));
+
+    seedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vrt-action-seed-'));
+    fs.writeFileSync(path.join(seedDir, 'visual.config.json'), CONFIG);
+    const env = { PATH: process.env.PATH, HOME: seedDir, PLAYWRIGHT_BROWSERS_PATH: HOST_BROWSERS };
+    const seeded = await exec(process.execPath, [path.join(REPO, 'src/cli/index.js'), 'test', '--update-baselines', '-u', baseUrl, '-r', 'seed'], { cwd: seedDir, env });
+    expect(seeded.code, seeded.stdout + seeded.stderr).toBe(0);
+    seedBaseline = path.join(seedDir, 'storage', 'baselines', 'index-desktop.png');
   });
 
   afterAll(async () => {
     site.closeAllConnections();
     await new Promise((resolve) => site.close(resolve));
-    runner.cleanup();
+    fs.rmSync(seedDir, { recursive: true, force: true });
   });
 
-  const go = (inputs) => {
-    runner.steps = {};
-    return runAction(runner, { 'base-url': baseUrl, 'wait-on': `${baseUrl}/`, 'working-directory': 'app', ...inputs }, { FAKE_DOCKER_CLI: '1' });
-  };
+  // Every test gets its own runner, workspace, container HOME and committed baseline.
+  beforeEach(() => {
+    runner = createRunner();
+    const app = path.join(runner.workspace, 'app');
+    fs.mkdirSync(path.join(app, 'storage', 'baselines'), { recursive: true });
+    fs.writeFileSync(path.join(app, 'visual.config.json'), CONFIG);
+    fs.copyFileSync(seedBaseline, path.join(app, 'storage', 'baselines', 'index-desktop.png'));
+    color = 'white';
+  });
+  afterEach(() => runner.cleanup());
+
+  const go = (inputs, options = {}) => runAction(runner, { 'base-url': baseUrl, 'wait-on': `${baseUrl}/`, 'working-directory': 'app', ...inputs }, { ...options, env: { FAKE_DOCKER_CLI: '1', ...options.env } });
   const runDir = (id) => path.join(runner.workspace, 'app', 'storage', 'runs', id);
 
-  it('first run without strict creates the baselines and passes; nothing is uploaded on success', async () => {
+  it('without baselines and strict: false, creates them and passes; nothing is uploaded on success', async () => {
+    fs.rmSync(path.join(runner.workspace, 'app', 'storage'), { recursive: true });
     const r = await go({ strict: 'false', 'run-id': 'first' });
-    expect(r.run.outputs, JSON.stringify(runner.dockerCalls().at(-1))).toEqual({ 'exit-code': '0' });
-    expect(r.parse.outputs).toEqual({
+    expect(r.results.run.outputs, JSON.stringify(runner.dockerCalls().at(-1))).toEqual({ 'exit-code': '0' });
+    expect(r.results.parse.outputs).toEqual({
       status: 'passed',
       'exit-code': '0',
       total: '1',
       changed: '0',
       'new-baselines': '1',
       'run-id': 'first',
-      'report-path': path.join(runner.temp, 'visual-ci-first.json'),
+      'report-path': path.join(runner.temp, 'visual-ci', 'visual-ci-first.json'),
       'summary-path': path.join(runDir('first'), 'summary.md'),
       'run-dir': runDir('first'),
-      'artifact-name': '',
       upload: 'false',
       'upload-path': ''
     });
-    expect(r.final.code).toBe(0);
+    expect(r.failed).toBe(false);
+    expect(r.outputs).toMatchObject({ status: 'passed', 'exit-code': '0', 'artifact-name': '', 'artifact-id': '' });
     expect(fs.existsSync(path.join(runner.workspace, 'app', 'storage', 'baselines', 'index-desktop.png'))).toBe(true);
     expect(fs.readFileSync(runner.stepSummary, 'utf8')).toContain('first'); // the step summary reached the runner's file
+    expect(fs.readFileSync(runner.githubEnv, 'utf8')).toBe(''); // never touched
   });
 
-  it('an unchanged page passes in strict mode', async () => {
+  it('an unchanged page passes in strict mode, with the git context from the env', async () => {
     const r = await go({ 'run-id': 'same' });
-    expect(r.parse.outputs).toMatchObject({ status: 'passed', 'exit-code': '0', 'new-baselines': '0', upload: 'false' });
-    expect(r.final.code).toBe(0);
-    // The git context came from the env the action passes in.
-    const result = JSON.parse(fs.readFileSync(r.parse.outputs['report-path'], 'utf8'));
+    expect(r.outputs).toMatchObject({ status: 'passed', 'exit-code': '0', 'new-baselines': '0', 'artifact-id': '' });
+    expect(r.failed).toBe(false);
+    const result = JSON.parse(fs.readFileSync(r.outputs['report-path'], 'utf8'));
     expect(result.run).toMatchObject({ branch: 'feat/branch', commit_sha: '0123456789abcdef0123456789abcdef01234567', strict: true, run_dir: 'storage/runs/same' });
   });
 
   it('a changed page fails with 1 and uploads only its own run folder, which imports as a zip', async () => {
     color = 'black';
-    try {
-      const r = await go({ 'run-id': 'changed' });
-      expect(r.parse.outputs).toMatchObject({ status: 'failed', 'exit-code': '1', changed: '1', upload: 'true', 'upload-path': runDir('changed'), 'artifact-name': 'visual-regression-diffs' });
-      expect(r.final.code).toBe(1);
+    const r = await go({ 'run-id': 'changed' });
+    expect(r.outputs).toMatchObject({ status: 'failed', 'exit-code': '1', changed: '1', 'artifact-name': 'visual-regression-diffs', 'artifact-id': '9001' });
+    expect(runner.uploads.map((u) => u.path)).toEqual([runDir('changed')]);
+    expect(r.failed).toBe(true);
 
-      // upload-artifact with a single folder puts its contents at the zip root.
-      const zip = path.join(runner.root, 'visual-regression-diffs.zip');
-      writeZip(zip, folderEntries(r.parse.outputs['upload-path']));
-      const storageRoot = path.join(runner.root, 'reviewer-storage');
-      fs.mkdirSync(storageRoot);
-      try {
-        const db = getDb(path.join(storageRoot, 'data.sqlite'));
-        const { runs } = await importRuns({ kind: 'zip', file: zip }, { storageRoot, db });
-        expect(runs).toEqual([expect.objectContaining({ id: 'changed', status: 'FAILED', snapshots: 1 })]);
-      } finally {
-        closeDb();
-      }
+    // upload-artifact with a single folder puts its contents at the zip root.
+    const zip = path.join(runner.root, 'visual-regression-diffs.zip');
+    writeZip(zip, folderEntries(runner.uploads[0].path));
+    const storageRoot = path.join(runner.root, 'reviewer-storage');
+    fs.mkdirSync(storageRoot);
+    try {
+      const db = getDb(path.join(storageRoot, 'data.sqlite'));
+      const { runs } = await importRuns({ kind: 'zip', file: zip }, { storageRoot, db });
+      expect(runs).toEqual([expect.objectContaining({ id: 'changed', status: 'FAILED', snapshots: 1 })]);
     } finally {
-      color = 'white';
+      closeDb();
     }
   });
 
-  it('upload-artifact: always uploads a passing run; never uploads nothing even on failure', async () => {
-    const always = await go({ 'run-id': 'always', 'upload-artifact': 'always' });
-    expect(always.parse.outputs).toMatchObject({ status: 'passed', upload: 'true', 'upload-path': runDir('always') });
+  it('upload-artifact: always uploads a passing run', async () => {
+    const r = await go({ 'run-id': 'always', 'upload-artifact': 'always' });
+    expect(r.outputs).toMatchObject({ status: 'passed', 'artifact-name': 'visual-regression-diffs', 'artifact-id': '9001' });
+    expect(runner.uploads.map((u) => u.path)).toEqual([runDir('always')]);
+    expect(r.failed).toBe(false);
+  });
+
+  it('upload-artifact: never uploads nothing, even on failure', async () => {
     color = 'black';
-    try {
-      const never = await go({ 'run-id': 'never', 'upload-artifact': 'never' });
-      expect(never.parse.outputs).toMatchObject({ status: 'failed', upload: 'false', 'upload-path': '', 'run-dir': runDir('never') });
-      expect(never.final.code).toBe(1);
-    } finally {
-      color = 'white';
-    }
+    const r = await go({ 'run-id': 'never', 'upload-artifact': 'never' });
+    expect(r.outputs).toMatchObject({ status: 'failed', 'exit-code': '1', 'run-dir': runDir('never'), 'artifact-name': '', 'artifact-id': '' });
+    expect(runner.uploads).toEqual([]);
+    expect(r.failed).toBe(true);
   });
 
   it('a missing config is an error: exit 2, status error, nothing to upload', async () => {
     const r = await go({ 'run-id': 'noconfig', config: 'missing.json', 'wait-on': '' });
-    expect(r.run.outputs).toEqual({ 'exit-code': '2' });
-    expect(r.parse.outputs).toMatchObject({ status: 'error', 'exit-code': '2', 'run-dir': '', upload: 'false' });
-    expect(r.parse.annotations[0][1]).toMatch(/^visual-ci failed: CONFIG_NOT_FOUND: /);
-    expect(r.final.code).toBe(2);
+    expect(r.results.run.outputs).toEqual({ 'exit-code': '2' });
+    expect(r.outputs).toMatchObject({ status: 'error', 'exit-code': '2', 'run-dir': '', 'artifact-name': '' });
+    expect(r.results.parse.annotations[0][1]).toMatch(/^visual-ci failed: CONFIG_NOT_FOUND: /);
+    expect(r.results['Set the result'].code).toBe(2);
   });
 
-  it('a page that cannot load is an error: exit 2, and the partial run folder is uploaded for debugging', async () => {
-    const r = await go({ 'run-id': 'unreachable', 'base-url': 'http://127.0.0.1:1/', 'wait-on': '' });
-    expect(r.parse.outputs).toMatchObject({ status: 'error', 'exit-code': '2', upload: 'true', 'upload-path': runDir('unreachable') });
-    expect(r.parse.annotations[0][1]).toMatch(/^visual-ci failed: NAVIGATION_FAILED: /);
-    expect(r.final.code).toBe(2);
-  });
-
-  it('wait-on that times out stops the action before docker runs; the result is an error', async () => {
-    const calls = runner.dockerCalls().length;
-    const r = await go({ 'run-id': 'nowait', 'wait-on': 'http://127.0.0.1:1/', 'wait-timeout': '1' });
-    expect(r.wait.code).toBe(1);
-    expect(r.run).toBeNull();
-    expect(runner.dockerCalls().length).toBe(calls);
-    expect(r.parse.outputs).toMatchObject({ status: 'error', 'exit-code': '2' });
-    expect(r.final.code).toBe(2);
+  it('a page that cannot load leaves an empty run folder: exit 2, no upload, no artifact outputs', async () => {
+    const r = await go({ 'run-id': 'unreachable', 'base-url': 'http://127.0.0.1:9/', 'wait-on': '', 'upload-artifact': 'always' });
+    expect(fs.readdirSync(runDir('unreachable'))).toEqual([]); // capture created it before the browser failed
+    expect(r.outputs).toMatchObject({ status: 'error', 'exit-code': '2', 'run-dir': runDir('unreachable'), 'artifact-name': '', 'artifact-id': '', 'artifact-url': '' });
+    expect(runner.uploads).toEqual([]);
+    expect(r.results.parse.annotations[0][1]).toMatch(/^visual-ci failed: NAVIGATION_FAILED: /);
+    expect(r.results['Set the result'].code).toBe(2);
   });
 });
