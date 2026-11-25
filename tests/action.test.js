@@ -28,6 +28,7 @@ const readYaml = (file) => YAML.parse(fs.readFileSync(file, 'utf8'));
 const action = readYaml('action.yml');
 const workflow = readYaml('.github/workflows/visual-ci.yml');
 const selftest = readYaml('.github/workflows/action-selftest.yml');
+const readme = fs.readFileSync('README.md', 'utf8');
 const steps = action.runs.steps;
 const stepById = (id) => steps.find((s) => s.id === id);
 const stepByName = (name) => steps.find((s) => s.name === name);
@@ -468,6 +469,46 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }
+  });
+});
+
+describe('README documents the action', () => {
+  const section = (() => {
+    const at = readme.search(/^## .*Use it in your repo \(GitHub Action\)/m);
+    if (at === -1) return '';
+    const next = readme.slice(at + 3).search(/^## /m);
+    return next === -1 ? readme.slice(at) : readme.slice(at, at + 3 + next);
+  })();
+
+  it('has a "Use it in your repo (GitHub Action)" section with a usage snippet', () => {
+    expect(section).not.toBe('');
+    expect(section).toContain('uses: abhishek-k-33/Visual_Regression_Testing@v1');
+    expect(section).toMatch(/base-url:/);
+    expect(section).toMatch(/wait-on:/);
+    expect(section).toMatch(/@main/);
+  });
+
+  it('installs and starts the app in separate steps (npm ci must not race wait-on)', () => {
+    expect(section).not.toMatch(/npm ci && npm start &/);
+    expect(section).toMatch(/- run: npm ci\n\s+- run: npm start &/);
+  });
+
+  it.each(Object.keys(EXPECTED_INPUTS))('documents the input %s', (name) => {
+    expect(section).toMatch(new RegExp(`^\\| \`${name}\` \\|`, 'm'));
+  });
+
+  it.each(EXPECTED_OUTPUTS)('documents the output %s', (name) => {
+    expect(section).toMatch(new RegExp(`^\\| \`${name}\` \\|`, 'm'));
+  });
+
+  it('documents baselines, limitations, error-run artifacts, unique names and secrets', () => {
+    expect(section).toMatch(/update-baselines: true/);
+    expect(section).toMatch(/Linux/);
+    expect(section).toMatch(/fork/i);
+    expect(section).toMatch(/not importable/);
+    expect(section).toMatch(/unique/);
+    expect(section).toMatch(/secrets\./);
+    expect(section).toMatch(/action-selftest\.yml/);
   });
 });
 

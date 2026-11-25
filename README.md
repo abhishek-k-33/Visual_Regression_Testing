@@ -69,6 +69,7 @@ Visual Regression Testing Project/
 ├── .github/                       # GitHub automation
 │   └── workflows/
 │       ├── visual-ci.yml          # GitHub Actions visual regression pipeline
+│       ├── action-selftest.yml    # Proves the action's failure paths on a real runner (diff artifact imports; error uploads nothing)
 │       └── pages.yml              # Builds the static demo and deploys it to GitHub Pages
 ├── docs/                          # Detailed engineering milestone records
 │   ├── PHASE_1_EXECUTION.md       # Foundation & Playwright Capture Engine
@@ -123,7 +124,7 @@ Visual Regression Testing Project/
 │               └── shortcuts.js   # Run page keyboard shortcuts (j/k/a/r/1-3/?) and help dialog
 ├── scripts/
 │   ├── demo-app.js                # Static demo site (the visual CI target) with original/regressed/redesign variants
-│   ├── serve-demo.js              # Serves the demo site on :4567 (npm run demo:serve)
+│   ├── serve-demo.js              # Serves the demo site on :4567 (npm run demo:serve; DEMO_VARIANT=regressed|redesign for a changed page)
 │   ├── demo.js                    # Interactive regression demo (npm run demo)
 │   ├── demo.config.json           # Demo-only config (route /__vrt_demo), never touches committed baselines
 │   ├── build-static-demo.js       # Builds the read-only GitHub Pages demo (npm run demo:pages)
@@ -154,7 +155,7 @@ Visual Regression Testing Project/
     ├── upload-import.test.js      # POST /api/imports: CSRF, 413/415/503/507, aborts, sanitised errors, responsiveness
     ├── import-ui.test.js          # Chromium: import by file picker and drag-and-drop, progress, errors, axe, static mode
     ├── docker.test.js             # Docker image tag matches the pinned Playwright version
-    ├── action.test.js             # action.yml + visual-ci.yml: structure, no expressions in scripts, each step's bash run with a fake docker, end to end
+    ├── action.test.js             # action.yml + workflows: structure, no expressions in scripts, steps run by their real if:, fake docker, end to end
     ├── action-report.test.js      # Action outputs from the JSON result: path mapping, upload modes, missing/invalid results
     ├── server.test.js             # Express REST API and dashboard view tests (incl. route history)
     ├── storage-dir.test.js        # Custom storageDir honoured by CLI and dashboard
@@ -168,6 +169,7 @@ Visual Regression Testing Project/
     ├── keyboard-ui.test.js        # Keyboard & screen-reader behaviour: tabs, slider, shortcuts, skip link
     ├── helpers/ui-fixture.js      # Browser-test fixture: app on a free port, temp storage, generated PNGs
     ├── helpers/zip.js             # Tiny zip writer for tests (builds malicious archives on the fly)
+    ├── helpers/gha-expr.js        # Evaluates the GitHub Actions expressions (if:, env:) the action uses, for step-by-step tests
     ├── helpers/fake-run.js        # Writes a valid CI run folder (images + run.json) without a browser
     ├── verify-phase-1.js          # Phase 1 deliverable verification script
     ├── verify-phase-2.js          # Phase 2 deliverable verification script
@@ -538,7 +540,8 @@ The repository is also a GitHub Action (`action.yml`). It runs `visual-ci test` 
 
 ```yaml
       - uses: actions/checkout@v4
-      - run: npm ci && npm start &                 # start your app in the background
+      - run: npm ci
+      - run: npm start &                           # start your app in the background
       - uses: abhishek-k-33/Visual_Regression_Testing@v1
         with:
           base-url: http://127.0.0.1:3000
@@ -559,6 +562,8 @@ jobs:
     runs-on: ubuntu-latest  # Linux only
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false  # the workspace is mounted into the browser container
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -581,57 +586,61 @@ jobs:
 
 | Input | Default | Description |
 | :--- | :--- | :--- |
-| `base-url` | *(required)* | URL of the app to test (`http://` or `https://`). Overrides `baseUrl` in the config. |
-| `config` | `visual.config.json` | Config file, relative to `working-directory`. |
+| `base-url` | *(required)* | URL of the app to test (`http://` or `https://`). Overrides `baseUrl` in the config. If it contains credentials or a token, pass it from a secret (`${{ secrets.PREVIEW_URL }}`): see below. |
+| `config` | `visual.config.json` | Config file, relative to `working-directory` and inside it (no `..`). |
 | `working-directory` | `.` | Folder (relative to the repository root, no `..`) to run in. Holds the config, and `storage/` unless the config sets `storageDir`. |
 | `strict` | `true` | `true`: a route with no baseline fails the check (`MISSING_BASELINE`). `false`: it gets a new baseline from this run. |
 | `update-baselines` | `false` | `true`: replace every baseline with this run's screenshots; the check passes. See [Baselines](#baselines-in-your-repo). |
 | `run-id` | `gh-<run_id>-<run_attempt>` | Run id: letters, digits, `-` and `_`, at most 128. Set a different one for each use when the action runs more than once in a job. |
 | `wait-on` | *(none)* | `http(s)` URL to poll (every second, 5 s per try) until it answers with a 2xx/3xx status, before testing. |
 | `wait-timeout` | `60` | Seconds to wait for `wait-on` before failing (whole number). |
-| `artifact-name` | `visual-regression-diffs` | Artifact name. Must be unique in the workflow run: set it per job in a matrix. |
-| `upload-artifact` | `on-failure` | When to upload the run folder: `on-failure`, `always` or `never` (see below). |
+| `artifact-name` | `visual-regression-diffs` | Artifact name. Must be **unique within the workflow run**, or the upload (and the job) fails, even on a pass: in a matrix, or when the action runs more than once in a job, give each use its own name (e.g. `visual-diffs-${{ matrix.os }}`) and `run-id`. |
+| `upload-artifact` | `on-failure` | When to upload the run folder: `on-failure`, `always` or `never` (see below). An empty folder is never uploaded. |
 | `retention-days` | *(repository default)* | Days to keep the artifact, 1-90. |
 | `image` | *(build)* | A prebuilt image to `docker pull` and use instead of building this action's `Dockerfile` (saves a minute or two per job). It must contain this tool at `/app`, at the same version as the action. |
 
-Inputs are validated before anything runs (booleans must be exactly `true` or `false`, the run id must match the CLI's rule, numbers must be whole numbers); an invalid input fails the job with an error naming the input, never echoing its value. Inputs reach the action's shell scripts only through environment variables, so a value can't inject commands.
+Inputs are validated before anything runs (booleans must be exactly `true` or `false`, the run id must match the CLI's rule, numbers must be whole numbers); an invalid input fails the job with an error naming the input. The action's own messages don't repeat input values, and inputs reach its shell scripts only through environment variables, so a value can't inject commands.
+
+**Secrets in inputs:** the runner itself prints every step's `with:` and `env:` values in the job log (e.g. `INPUT_BASE_URL`). A `base-url` with a password or token in it is shown there in clear unless it comes from `secrets.` (GitHub masks secret values in logs), so put such a URL in a repository secret. The JSON result and the CLI output remove credentials themselves.
 
 ### Outputs
 
 | Output | Description |
 | :--- | :--- |
-| `status` | `passed`, `failed` (visual differences, or a missing baseline in strict mode) or `error`. |
-| `exit-code` | `0` passed, `1` visual differences, `2` error. The action (and so the job) fails unless it is `0`. |
+| `status` | `passed`, `failed` (visual differences, or a missing baseline in strict mode) or `error`. Always set, also when the runner check or the input validation failed (then `error`). |
+| `exit-code` | `0` passed, `1` visual differences, `2` error. The action (and so the job) fails unless it is `0`. Always set, like `status`. |
 | `total` | Snapshots (routes x viewports) checked. |
 | `changed` | Snapshots with differences above the threshold. |
 | `new-baselines` | Baselines created or replaced by this run. |
 | `run-id` | The run id used. |
-| `report-path` | The JSON result ([schema `visual-ci-result` v1](#json-result---json)) on the runner, in `$RUNNER_TEMP`. Empty if none was written. |
+| `report-path` | The JSON result ([schema `visual-ci-result` v1](#json-result---json)) on the runner, in `$RUNNER_TEMP/visual-ci/`. Empty if none was written. |
 | `summary-path` | The run's Markdown summary on the runner. Empty if none was written. |
 | `run-dir` | The run folder (screenshots, diffs, `run.json`) on the runner. Empty if it does not exist. |
-| `artifact-name` | Name of the uploaded artifact; empty when nothing was uploaded. |
-| `artifact-id` | ID of the uploaded artifact; empty when nothing was uploaded. |
-| `artifact-url` | Download URL of the uploaded artifact; empty when nothing was uploaded. |
+| `artifact-name` | Name of the uploaded artifact; empty unless the upload succeeded. |
+| `artifact-id` | ID of the uploaded artifact; empty unless the upload succeeded. |
+| `artifact-url` | Download URL of the uploaded artifact; empty unless the upload succeeded. |
 
-All paths are absolute paths on the runner. The outputs are set even when the job fails, so later steps with `if: always()` can use them. A missing or unreadable JSON result is reported as `status: error` with an error annotation, never as a pass.
+All paths are absolute paths on the runner. The outputs are set even when the job fails, so later steps with `if: always()` can use them: `status` and `exit-code` always; the others once the inputs were valid (they are empty when visual-ci never produced a result). A missing or unreadable JSON result is reported as `status: error` with an error annotation, never as a pass. The three `artifact-*` outputs come from the upload's own result, so they are empty whenever no artifact exists.
 
 ### What it does
 
 1. Fails unless the runner is Linux, then validates the inputs.
-2. If `wait-on` is set, polls it with `curl` until it answers or `wait-timeout` passes.
-3. Builds the image from the action's own `Dockerfile` (`docker build -t visual-ci-action:local "$GITHUB_ACTION_PATH"`), or pulls `image`.
-4. Runs `node /app/src/cli/index.js test --json ... --strict|--no-strict` in it with `docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -e CI=true`, the workspace mounted at `/github/workspace` (working directory `/github/workspace/<working-directory>`), `$RUNNER_TEMP` at `/runner-temp` and the step summary file. `--network host` lets the container reach your app on `localhost`; `--user` keeps every file it writes owned by the runner user (no root-owned `storage/`). The branch and commit come from `GITHUB_HEAD_REF`/`GITHUB_REF_NAME` and `GITHUB_SHA`.
-5. Reads the JSON result (`actions/github-script`, `src/ci/actionReport.js`) and sets the outputs. The CLI records paths relative to its working directory, so `storage/runs/<id>` becomes `$GITHUB_WORKSPACE/<working-directory>/storage/runs/<id>`; a container path under `/github/workspace` or `/runner-temp` is mapped to `$GITHUB_WORKSPACE` or `$RUNNER_TEMP`, and anything else has no runner path (empty output).
+2. Builds the image from the action's own `Dockerfile` (`docker build -t visual-ci-action:local "$GITHUB_ACTION_PATH"`), or pulls `image`. This comes first, so your app has the build time to start.
+3. If `wait-on` is set, polls it with `curl` until it answers or `wait-timeout` passes.
+4. Runs `node /app/src/cli/index.js test --json ... --strict|--no-strict` in it with `docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -e CI=true`, the workspace mounted at `/github/workspace` (working directory `/github/workspace/<working-directory>`), the action's own folder `$RUNNER_TEMP/visual-ci` at `/visual-ci-temp` (for the JSON result) and the step summary file. Nothing else of `$RUNNER_TEMP` is mounted: it holds the runner's command files (`GITHUB_ENV`, `GITHUB_PATH`, ...) and the event payload, which a page compromising the browser could otherwise rewrite. `--network host` lets the container reach your app on `localhost`; `--user` keeps every file it writes owned by the runner user (no root-owned `storage/`). The branch and commit come from `GITHUB_HEAD_REF`/`GITHUB_REF_NAME` and `GITHUB_SHA`.
+5. Reads the JSON result (`actions/github-script`, `src/ci/actionReport.js`) and sets the outputs. The CLI records paths relative to its working directory, so `storage/runs/<id>` becomes `$GITHUB_WORKSPACE/<working-directory>/storage/runs/<id>`; a container path under `/github/workspace` or `/visual-ci-temp` is mapped to `$GITHUB_WORKSPACE` or `$RUNNER_TEMP/visual-ci`, and anything else has no runner path (empty output). If the token can list the run's artifacts (`actions: read`), it also warns when `artifact-name` is already taken in this run.
 6. Uploads the run folder with `actions/upload-artifact`.
-7. Ends with the CLI's exit code: the job passes on `0` and fails on `1` or `2` (or when no result was recorded).
+7. Sets `status`, `exit-code` and `artifact-name` (also when an earlier step failed), then ends with the CLI's exit code: the job passes on `0` and fails on `1` or `2` (or when no result was recorded, or the upload failed).
 
 **Artifact upload (`upload-artifact`):**
 
-- `on-failure` (default): uploaded when the exit code is `1` or `2`, i.e. visual differences, a missing baseline in strict mode, or an error after the run folder was created (e.g. a page that could not load: you get the screenshots taken so far). Nothing is uploaded on a pass.
+- `on-failure` (default): uploaded when the exit code is `1` or `2`, i.e. visual differences, a missing baseline in strict mode, or an error after at least one screenshot was taken. Nothing is uploaded on a pass.
 - `always`: uploaded whatever the result, including a pass.
 - `never`: never uploaded.
 
-In every mode only the folder of **this** run is uploaded (`<storage>/runs/<run-id>`, and only if the result names it and it is a real folder inside the workspace), not the whole `storage/`. When the run never got that far (invalid config, image build failed) there is nothing to upload. `run.json` sits at the root of the zip, so the downloaded artifact imports as is: `npx visual-ci import visual-regression-diffs.zip` or **Import CI run** in the dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import)).
+In every mode only the folder of **this** run is uploaded (`<storage>/runs/<run-id>`), and only if the result names it, it really lies inside the workspace (also once symlinks are resolved), it contains no symlinks, and it holds at least one file. Never the whole `storage/`. When the run stopped before its first screenshot (invalid config, image build failed, the first page could not load) there is nothing to upload, and the `artifact-*` outputs stay empty.
+
+**Which artifacts can be imported:** a run that finished comparing (exit `0` or `1`) has `run.json` at the root of the zip, so the downloaded artifact imports as is: `npx visual-ci import visual-regression-diffs.zip` or **Import CI run** in the dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import)). An artifact from an **error run (exit `2`)** holds only the raw screenshots taken before the error, for debugging: it has no `run.json` and is **not importable** (the import refuses partial runs on purpose).
 
 ### Baselines in your repo
 
@@ -657,6 +666,9 @@ With the default `strict: true`, a route without a baseline fails the check inst
 - **Pull request comments are not part of the action yet**, and pull requests from forks are not yet supported for them; both come next (A3). The action itself only needs `contents: read`.
 - The image is built in every job (a minute or two) unless you pass `image`.
 - `VISUAL_STORAGE_DIR` from the job's environment is not passed into the container: set `storageDir` in the config instead.
+- The container can read and write the whole workspace (it needs the config and `storage/`). Check out with `persist-credentials: false`, so no git token is left in `.git/config`.
+
+The failure paths are proven on a real runner by `.github/workflows/action-selftest.yml` (on demand, and on pull requests that touch the action): a run against a changed page must fail with exit code `1`, upload an artifact that `visual-ci import` accepts, and a run against an unreachable app must fail with `2` and upload nothing.
 
 ---
 
@@ -669,6 +681,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 - **Committed baselines**: Baselines come from the git checkout, so every commit is compared against the baselines approved for it.
 - **Dogfoods the action**: the `visual-tests` job starts the demo site and runs this repository's own action (`uses: ./`, see [Use it in your repo](#-use-it-in-your-repo-github-action)), which builds the project's Docker image and runs the tests inside it, so the rendering matches the baselines.
 - **Strict mode**: A missing baseline fails the job instead of silently passing.
+- **Action self-test** (`.github/workflows/action-selftest.yml`, on demand and on pull requests that touch the action, the CLI or the image): serves the demo site's `regressed` variant and requires the action to fail with exit code `1`, upload an artifact and have that artifact import with `visual-ci import`; then points the action at an unreachable port and requires exit code `2` and no artifact. Neither job can change the committed baselines.
 - **Rich Markdown Step Summaries**: Generates a formatted table of every tested route, viewport, mismatch percentage, and pass/fail badge directly in the GitHub Actions run summary (`GITHUB_STEP_SUMMARY`).
 - **Diff Artifact Downloads**: On any visual regression failure (or error), the run's folder (`storage/runs/<run-id>/`) is uploaded as a workflow artifact (`visual-regression-diffs`, kept 7 days) for quick inspection. The run folder includes `run.json`, a machine-readable record of the run (status, git info, and per snapshot: route, viewport, status, mismatch, file names and the compared baseline's hash), so a CI run can be re-created without its database: `visual-ci import visual-regression-diffs.zip` loads it into your local dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import)).
 
@@ -685,7 +698,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 677 Vitest unit, integration & browser tests
+# Run all 746 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -711,17 +724,17 @@ node tests/verify-phase-5.js
  ✓ tests/compare.test.js (11 tests)
  ✓ tests/capture-integration.test.js (6 tests)
  ✓ tests/cli-strict.test.js (5 tests)
- ✓ tests/cli-json.test.js (25 tests)
+ ✓ tests/cli-json.test.js (26 tests)
  ✓ tests/result.test.js (25 tests)
  ✓ tests/display.test.js (8 tests)
  ✓ tests/json-target.test.js (7 tests)
  ✓ tests/capture-errors.test.js (8 tests)
- ✓ tests/demo-app.test.js (5 tests)
+ ✓ tests/demo-app.test.js (8 tests)
  ✓ tests/build-static-demo.test.js (14 tests)
  ✓ tests/db.test.js (19 tests)
  ✓ tests/docker.test.js (3 tests)
- ✓ tests/action.test.js (111 tests)
- ✓ tests/action-report.test.js (47 tests)
+ ✓ tests/action.test.js (158 tests)
+ ✓ tests/action-report.test.js (65 tests)
  ✓ tests/manifest.test.js (19 tests)
  ✓ tests/import.test.js (103 tests)
  ✓ tests/upload-import.test.js (24 tests)
@@ -740,7 +753,7 @@ node tests/verify-phase-5.js
  ✓ tests/keyboard-ui.test.js (20 tests)
 
  Test Files  32 passed (32)
-      Tests  677 passed (677)
+      Tests  746 passed (746)
 ```
 
 ---
