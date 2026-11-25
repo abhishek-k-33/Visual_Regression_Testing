@@ -326,6 +326,19 @@ describe('visual-ci test --json and exit codes', () => {
       expect(result.run.created_at).toBe(readJson(path.join(workDir, result.run.manifest)).run.created_at);
     }, 60000);
 
+    it('a JSON target outside the working directory is shown by its absolute path, not as ../../..', async () => {
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'vrt-cli-json-outside-'));
+      try {
+        const target = path.join(outside, 'result.json');
+        const { code, stdout } = await runCli(workDir, ['test', '--no-strict', '-r', 'run_outside', '--json', target]);
+        expect(code, stdout).toBe(0);
+        expect(stdout).toContain(`JSON Result      : ${target}`);
+        expect(stdout).not.toMatch(/JSON Result {6}: \.\./);
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    }, 60000);
+
     it('visual diff: exit 1, status failed, counts.changed >= 1', async () => {
       color = 'red';
       const { code } = await runCli(workDir, ['test', '-r', 'run_diff', '--json', 'diff.json']);
