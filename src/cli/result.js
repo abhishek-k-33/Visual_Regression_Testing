@@ -76,8 +76,8 @@ export function sanitizeMessage(text) {
 export function classifyError(err) {
   if (err && typeof err.code === 'string' && ERROR_CODES.includes(err.code)) return err.code;
   const message = String(err?.message ?? err ?? '');
-  if (message.includes("Executable doesn't exist")) return 'BROWSER_MISSING'; // Playwright: browser not installed
-  if (/^page\.goto:/.test(message)) return 'NAVIGATION_FAILED';
+  // Playwright launch failures that reach here without going through capture's toLaunchError
+  if (message.includes("Executable doesn't exist") || message.includes('Host system is missing dependencies')) return 'BROWSER_MISSING';
   return 'INTERNAL';
 }
 

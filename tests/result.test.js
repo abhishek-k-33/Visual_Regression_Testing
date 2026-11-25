@@ -28,8 +28,12 @@ describe('classifyError', () => {
     expect(classifyError(err)).toBe('BROWSER_MISSING');
   });
 
-  it('recognises a raw page.goto failure', () => {
-    expect(classifyError(new Error('page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:9/'))).toBe('NAVIGATION_FAILED');
+  it('recognises Playwright missing system libraries', () => {
+    expect(classifyError(new Error('browserType.launch: \n╔═╗\n║ Host system is missing dependencies to run browsers. ║'))).toBe('BROWSER_MISSING');
+  });
+
+  it('does not guess NAVIGATION_FAILED from a raw page.goto message (capture tags real ones)', () => {
+    expect(classifyError(new Error('page.goto: Target page, context or browser has been closed'))).toBe('INTERNAL');
   });
 
   it('falls back to INTERNAL, also for Node error codes and non-errors', () => {
