@@ -179,6 +179,111 @@ describe('visual-ci test --json and exit codes', () => {
       expect(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8')).toBe('{"keep":true}');
     }, 30000);
 
+    it('refuses run.json through a symlinked folder, also when the link only resolves once the run started', async () => {
+      // store -> realstore, which does not exist yet: only the check right before
+      // writing can see through the link. The run must stay importable.
+      const base = fs.mkdtempSync(path.join(workDir, 'link-'));
+      fs.symlinkSync(path.join(base, 'realstore'), path.join(base, 'store'));
+      const config = path.join(workDir, 'visual.config.json');
+      const env = { VISUAL_STORAGE_DIR: path.join(base, 'realstore') };
+      const { code, stderr } = await runCli(base, ['test', '-c', config, '--no-strict', '-r', 'r1', '--json', 'store/runs/r1/run.json'], { env });
+      expect(code, stderr).toBe(2);
+      expect(stderr).toContain("--json cannot be \"store/runs/r1/run.json\": that is the run's run.json");
+      expect(readJson(path.join(base, 'realstore', 'runs', 'r1', 'run.json')).schema).toBe('visual-ci-run');
+      const imported = await runCli(base, ['import', 'realstore/runs/r1'], { env: { VISUAL_STORAGE_DIR: path.join(base, 'review') } });
+      expect(imported.code, imported.out).toBe(0);
+
+      // Same through the summary, and with an existing link up front
+      const summary = await runCli(base, ['test', '-c', config, '--no-strict', '-r', 'r2', '--json', 'store/runs/r2/summary.md'], { env });
+      expect(summary.code).toBe(2);
+      expect(summary.stderr).toContain('markdown summary');
+    }, 60000);
+
+    it('refuses run.json when VISUAL_STORAGE_DIR itself is a symlink, and leaves an existing one alone', async () => {
+      const base = fs.mkdtempSync(path.join(workDir, 'envlink-'));
+      const runDir = path.join(base, 'realstore', 'runs', 'r3');
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, 'run.json'), '{"keep":true}');
+      fs.symlinkSync(path.join(base, 'realstore'), path.join(base, 'store'));
+      const { code, stderr } = await runCli(base, ['test', '-c', path.join(workDir, 'visual.config.json'), '-r', 'r3', '--json', 'realstore/runs/r3/run.json'], {
+        env: { VISUAL_STORAGE_DIR: path.join(base, 'store') }
+      });
+      expect(code).toBe(2);
+      expect(stderr).toContain("that is the run's run.json");
+      expect(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8')).toBe('{"keep":true}');
+    }, 30000);
+
+    it('refuses a directory as the target, and creates nothing', async () => {
+      fs.mkdirSync(path.join(workDir, 'outdir'), { recursive: true });
+      fs.writeFileSync(path.join(workDir, 'outdir', 'keep.txt'), 'keep');
+      for (const target of ['.', 'outdir', 'newdir/']) {
+        const { code, stderr } = await runCli(workDir, ['test', '-r', 'run_dir_target', '--json', target]);
+        expect(code, target).toBe(2);
+        expect(stderr).toContain('that is a directory');
+      }
+      expect(fs.readdirSync(path.join(workDir, 'outdir'))).toEqual(['keep.txt']);
+      expect(fs.existsSync(path.join(workDir, 'newdir'))).toBe(false);
+      expect(fs.existsSync(path.join(workDir, 'storage', 'runs', 'run_dir_target'))).toBe(false);
+    }, 30000);
+
+    it('a stale result at an accepted target never survives; a refused or unparsed one is untouched', async () => {
+      const stale = path.join(workDir, 'stale.json');
+      const old = '{"status":"passed","exit_code":0}';
+      fs.writeFileSync(stale, old);
+      // An argument error found after the target was accepted: replaced by this run's error
+      const late = await runCli(workDir, ['test', '-r', 'run_stale', '-s', '/run.json', '--json', 'stale.json']);
+      expect(late.code).toBe(2);
+      expect(readJson(stale)).toMatchObject({ status: 'error', exit_code: 2, error: { code: 'INVALID_ARGUMENT' } });
+
+      // This run cannot write its JSON at all (simulated I/O error): the old result must
+      // be gone rather than left to be mistaken for this run's
+      fs.writeFileSync(stale, old);
+      const preload = path.join(workDir, 'fail-json-write.mjs');
+      fs.writeFileSync(preload, `
+        import fs from 'node:fs';
+        const real = fs.writeFileSync;
+        fs.writeFileSync = function (file, ...rest) {
+          if (typeof file === 'string' && file.includes('stale.json.tmp-')) throw new Error('EIO: simulated write failure');
+          return real.call(this, file, ...rest);
+        };
+      `);
+      const failed = await runCli(workDir, ['test', '--no-strict', '-r', 'run_stale_eio', '--json', 'stale.json'], {
+        env: { VISUAL_STORAGE_DIR: path.join(workDir, 'eio-storage') },
+        nodeArgs: ['--import', pathToFileURL(preload).href]
+      });
+      expect(failed.code, failed.stderr).toBe(2);
+      expect(failed.stderr).toContain('Could not write the JSON result to stale.json: EIO: simulated write failure');
+      expect(fs.existsSync(stale)).toBe(false);
+
+      // A usage error is rejected before the command runs: nothing is touched
+      fs.writeFileSync(stale, old);
+      expect((await runCli(workDir, ['test', '--bogus', '--json', 'stale.json'])).code).toBe(2);
+      expect(fs.readFileSync(stale, 'utf8')).toBe(old);
+
+      // A refused target (the run's run.json) is never deleted
+      const runDir = path.join(workDir, 'storage', 'runs', 'run_stale_kept');
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, 'run.json'), old);
+      expect((await runCli(workDir, ['test', '-r', 'run_stale_kept', '--json', 'storage/runs/run_stale_kept/run.json'])).code).toBe(2);
+      expect(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8')).toBe(old);
+    }, 30000);
+
+    it.skipIf(process.getuid?.() === 0)('a JSON write failure after a good run is an error (INTERNAL, exit 2)', async () => {
+      const ro = path.join(workDir, 'readonly');
+      fs.mkdirSync(ro);
+      fs.chmodSync(ro, 0o555);
+      try {
+        const { code, stderr } = await runCli(workDir, ['test', '--no-strict', '-r', 'run_ro', '--json', 'readonly/result.json'], {
+          env: { VISUAL_STORAGE_DIR: path.join(workDir, 'ro-storage') }
+        });
+        expect(code, stderr).toBe(2);
+        expect(stderr).toContain('Could not write the JSON result to readonly/result.json');
+        expect(fs.readdirSync(ro)).toEqual([]);
+      } finally {
+        fs.chmodSync(ro, 0o755);
+      }
+    }, 30000);
+
     it('refuses an absolute --summary-file "/run.json" (it is written inside the run folder)', async () => {
       const { code, stderr } = await runCli(workDir, ['test', '-r', 'run_abs', '-s', '/run.json']);
       expect(code).toBe(2);
@@ -311,14 +416,34 @@ describe('visual-ci test --json and exit codes', () => {
     };
 
     for (const kind of ['rejection', 'exception']) {
-      it(`an unhandled ${kind} exits 2`, async () => {
-        const { code, stderr } = await runCli(workDir, ['test', '-u', `${baseUrl}/hang`, '-r', `run_crash_${kind}`], {
+      it(`an unhandled ${kind} exits 2 and still writes the JSON (INTERNAL)`, async () => {
+        const target = `crash-${kind}.json`;
+        const { code, stderr } = await runCli(workDir, ['test', '-u', `${baseUrl}/hang`, '-r', `run_crash_${kind}`, '--json', target], {
           env: { VRT_CRASH: kind },
           nodeArgs: crashPreload()
         });
         expect(code, stderr).toBe(2);
         expect(stderr).toContain('boom from preload');
+        const result = readJson(path.join(workDir, target));
+        expect(result).toMatchObject({ status: 'error', exit_code: 2, error: { code: 'INTERNAL', message: 'boom from preload' } });
+        expect(result.run).toMatchObject({ id: `run_crash_${kind}` });
       }, 30000);
     }
+
+    it('a crash with --json - writes the JSON to stdout', async () => {
+      const { code, stdout, stderr } = await runCli(workDir, ['test', '-u', `${baseUrl}/hang`, '-r', 'run_crash_stdout', '--json', '-'], {
+        env: { VRT_CRASH: 'rejection' },
+        nodeArgs: crashPreload()
+      });
+      expect(code, stderr).toBe(2);
+      expect(JSON.parse(stdout)).toMatchObject({ status: 'error', exit_code: 2, error: { code: 'INTERNAL' } });
+      expect(stderr).toContain('boom from preload');
+    }, 30000);
+
+    it('capture exits 2 on a config error', async () => {
+      const { code, stderr } = await runCli(workDir, ['capture', '-c', 'nowhere.json']);
+      expect(code).toBe(2);
+      expect(stderr).toContain('[ERROR] Capture failed: Configuration file not found at: nowhere.json');
+    }, 30000);
   });
 });

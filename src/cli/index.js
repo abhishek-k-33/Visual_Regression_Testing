@@ -12,15 +12,44 @@ import { createTestRun, createSnapshot, getDb, closeDb } from '../server/db.js';
 import { importRuns, sanitizeForDisplay } from '../server/importRuns.js';
 import { resolveStorageRoot } from '../server/paths.js';
 import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
-import { EXIT, STDOUT_TARGET, CliError, buildResult, writeResult, sanitizeMessage, redactUrl } from './result.js';
+import { EXIT, STDOUT_TARGET, CliError, buildResult, writeResult, sanitizeMessage, redactUrl, toError } from './result.js';
+import { jsonTargetConflict, jsonTargetShapeProblem } from './jsonTarget.js';
 import { createLogger } from './logger.js';
 
+/**
+ * The --json result still owed if the command ends in an error or a crash: set once
+ * the target is accepted, cleared once a result was written. state() returns what is
+ * known so far ({ run, results }); conflict() re-checks the target right before writing.
+ */
+let pendingJson = null;
+
+/** Writes the pending --json result for an error (synchronously: safe right before process.exit). */
+function writePendingJson(error) {
+  const pending = pendingJson;
+  pendingJson = null; // at most once
+  if (!pending) return;
+  try {
+    const conflict = pending.conflict();
+    if (conflict) {
+      console.error(`[ERROR] Not writing the JSON result: ${sanitizeMessage(conflict)}\n`);
+      return;
+    }
+    writeResult(buildResult({ command: pending.command, error: toError(error), ...pending.state() }), pending.target);
+  } catch (writeErr) {
+    console.error(`[ERROR] Could not write the JSON result to ${sanitizeMessage(pending.target)}: ${sanitizeMessage(String(writeErr?.message ?? writeErr))}\n`);
+  }
+}
+
 // Anything that escapes the command handlers is a crash: exit 2, never 1 (which means
-// "visual differences").
+// "visual differences"), and the --json result (if one is owed) says so too.
 function crash(kind) {
   return (reason) => {
-    console.error(`\n[ERROR] ${kind}: ${sanitizeMessage(reason?.stack ?? reason)}\n`);
-    process.exit(EXIT.ERROR);
+    try {
+      console.error(`\n[ERROR] ${kind}: ${sanitizeMessage(String(reason?.stack ?? reason))}\n`);
+      writePendingJson(reason);
+    } finally {
+      process.exit(EXIT.ERROR);
+    }
   };
 }
 process.on('unhandledRejection', crash('Unhandled promise rejection'));
@@ -95,39 +124,23 @@ program
       console.log(`  Capture Complete: ${results.length} screenshots saved in ${elapsed}s`);
       console.log('──────────────────────────────────────────────────────\n');
     } catch (err) {
-      console.error(`\n[ERROR] Capture failed: ${sanitizeMessage(err.message)}\n`);
+      console.error(`\n[ERROR] Capture failed: ${sanitizeMessage(String(err?.message ?? err))}\n`);
       process.exit(EXIT.ERROR);
     }
   });
 
 /**
- * Why a --json target can't be used, or null. It is resolved against cwd and must not
- * be the run's own run.json or markdown summary (both are written into the run folder).
+ * The run folder as far as it can be known before the config is loaded (for the
+ * --json guard): storageDir is read on its own, falling back to the default.
  */
-function jsonTargetConflict(target, runsDir, summaryFile) {
-  if (!target || target === STDOUT_TARGET || !runsDir) return null;
-  const file = path.resolve(process.cwd(), target);
-  // path.join, not path.resolve: that's how the run.json and summary writers build these paths.
-  if (file === path.join(runsDir, MANIFEST_FILENAME)) return `--json cannot be "${target}": that is the run's ${MANIFEST_FILENAME}`;
-  if (file === path.join(runsDir, summaryFile || 'summary.md')) return `--json cannot be "${target}": that is the run's markdown summary`;
-  return null;
-}
-
-/** Best guess at the run folder when the config could not be loaded (used for the --json guard). */
-function fallbackRunsDir(options) {
-  if (!options.runId) return null; // a generated run id can't clash with an existing run
+function guessRunsDir(options, runId) {
+  let storageDir;
   try {
-    assertValidRunId(options.runId);
-    let storageDir;
-    try {
-      storageDir = readConfiguredStorageDir(options.config) || undefined;
-    } catch {
-      storageDir = undefined;
-    }
-    return path.join(resolveStorageRoot(storageDir), 'runs', options.runId);
+    storageDir = readConfiguredStorageDir(options.config) || undefined;
   } catch {
-    return null;
+    storageDir = undefined; // loadConfig reports the problem
   }
+  return path.join(resolveStorageRoot(storageDir), 'runs', runId);
 }
 
 program
@@ -147,13 +160,29 @@ program
     const startTime = Date.now();
     const results = [];
     let run = null; // what the JSON result reports about the run, once it is known
-    let runsDir = null;
-    let jsonUsable = true; // false once the target was refused or failed to write
+    let runsDir = null; // the run folder: guessed before the config is loaded, then exact
+    const checkJsonTarget = () => jsonTargetConflict(jsonTarget, { runsDir, summaryFile: options.summaryFile });
+    const refuseJsonTarget = (message) => {
+      pendingJson = null; // never write to (or delete) a refused target
+      return new CliError('INVALID_ARGUMENT', message);
+    };
 
     try {
-      if (jsonTarget !== undefined && jsonTarget.trim() === '') {
-        jsonUsable = false;
-        throw new CliError('INVALID_ARGUMENT', '--json needs a file name, or "-" for stdout');
+      const shapeProblem = jsonTargetShapeProblem(jsonTarget);
+      if (shapeProblem) throw refuseJsonTarget(shapeProblem);
+      if (jsonTarget !== undefined) {
+        pendingJson = { command: 'test', target: jsonTarget, conflict: checkJsonTarget, state: () => ({ run, results }) };
+      }
+
+      const runId = options.runId || `run_${startTime}`;
+      assertValidRunId(runId);
+      runsDir = guessRunsDir(options, runId);
+      const earlyConflict = checkJsonTarget();
+      if (earlyConflict) throw refuseJsonTarget(earlyConflict);
+      // The target is accepted: remove a result left by an earlier run, so a reused
+      // path never shows an old outcome (this run writes a new one, error or not).
+      if (jsonTarget !== undefined && jsonTarget !== STDOUT_TARGET) {
+        fs.rmSync(path.resolve(process.cwd(), jsonTarget), { force: true });
       }
 
       const overrides = {};
@@ -162,8 +191,6 @@ program
       }
 
       const config = loadConfig(options.config, overrides);
-      const runId = options.runId || `run_${Date.now()}`;
-      assertValidRunId(runId);
       // Same root the dashboard uses (VISUAL_STORAGE_DIR > storageDir > ./storage),
       // so baselines, screenshots and the database always end up together.
       const storageRoot = resolveStorageRoot(config.storageDir);
@@ -175,11 +202,8 @@ program
       if (options.summaryFile && path.join(runsDir, options.summaryFile) === path.join(runsDir, MANIFEST_FILENAME)) {
         throw new CliError('INVALID_ARGUMENT', `--summary-file cannot be "${options.summaryFile}": that is the run's ${MANIFEST_FILENAME}`);
       }
-      const conflict = jsonTargetConflict(jsonTarget, runsDir, options.summaryFile);
-      if (conflict) {
-        jsonUsable = false;
-        throw new CliError('INVALID_ARGUMENT', conflict);
-      }
+      const conflict = checkJsonTarget();
+      if (conflict) throw refuseJsonTarget(conflict);
 
       const gitInfo = getGitContext();
       run = {
@@ -344,10 +368,14 @@ program
       const result = buildResult({ command: 'test', run, results });
       let jsonFile = null;
       if (jsonTarget !== undefined) {
+        // Again now that the run folder exists, so symlinks and hard links resolve.
+        const lateConflict = checkJsonTarget();
+        if (lateConflict) throw refuseJsonTarget(lateConflict);
         try {
           jsonFile = writeResult(result, jsonTarget);
+          pendingJson = null;
         } catch (writeErr) {
-          jsonUsable = false;
+          pendingJson = null; // it would fail again
           throw new CliError('INTERNAL', `Could not write the JSON result to ${jsonTarget}: ${writeErr.message}`, { cause: writeErr });
         }
       }
@@ -381,15 +409,10 @@ program
       }
       process.exit(result.exit_code);
     } catch (err) {
-      log.error(`\n[ERROR] Test run failed: ${sanitizeMessage(err.message)}\n`);
-      if (jsonTarget !== undefined && jsonUsable && !jsonTargetConflict(jsonTarget, runsDir || fallbackRunsDir(options), options.summaryFile)) {
-        if (run) run.durationMs = Date.now() - startTime;
-        try {
-          writeResult(buildResult({ command: 'test', error: err, run, results }), jsonTarget);
-        } catch (writeErr) {
-          log.error(`[ERROR] Could not write the JSON result to ${sanitizeMessage(jsonTarget)}: ${sanitizeMessage(writeErr.message)}\n`);
-        }
-      }
+      // If anything here throws, the crash handler still writes the pending JSON and exits 2.
+      log.error(`\n[ERROR] Test run failed: ${sanitizeMessage(String(err?.message ?? err))}\n`);
+      if (run) run.durationMs = Date.now() - startTime;
+      writePendingJson(err);
       process.exit(EXIT.ERROR);
     }
   });
@@ -452,7 +475,7 @@ program
       console.log('\n  Open the dashboard with `npm start` to review them.\n');
     } catch (err) {
       // Backstop: messages can quote names from the archive (importRuns already escapes them).
-      console.error(`\n[ERROR] Import failed: ${sanitizeForDisplay(err.message)}\n`);
+      console.error(`\n[ERROR] Import failed: ${sanitizeForDisplay(String(err?.message ?? err))}\n`);
       process.exitCode = EXIT.ERROR;
     } finally {
       if (db) closeDb();

@@ -73,6 +73,18 @@ export function sanitizeMessage(text) {
 }
 
 /**
+ * Something thrown, as an error buildResult can report: Errors (and error-like objects)
+ * as they are, anything else (undefined, null, a string...) wrapped in an Error.
+ *
+ * @param {unknown} err
+ * @returns {Error}
+ */
+export function toError(err) {
+  if (err instanceof Error || (err && typeof err === 'object' && 'message' in err)) return err;
+  return new Error(String(err));
+}
+
+/**
  * Maps an error to one of ERROR_CODES. Errors thrown by this tool carry their code
  * (CliError); a few third-party failures are recognised by their message.
  *
