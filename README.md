@@ -83,6 +83,8 @@ Visual Regression Testing Project/
 │   │   ├── manifest.js            # Writes run.json, the per-run record that travels with CI artifacts
 │   │   ├── result.js              # `test --json` result (schema visual-ci-result), exit codes, error codes
 │   │   ├── errors.js              # CliError: an error carrying a result error code
+│   │   ├── display.js             # redactUrl (credentials/tokens), display paths, host path redaction
+│   │   ├── jsonTarget.js          # --json target checks (never run.json/summary, even via links or case)
 │   │   ├── logger.js              # Human output; moves to stderr with `--json -`
 │   │   ├── naming.js              # Screenshot file names; rejects route/viewport pairs that would collide
 │   │   ├── config.js              # Config loader with comment-stripping parser
@@ -133,6 +135,9 @@ Visual Regression Testing Project/
     ├── cli-strict.test.js         # CLI strict mode: missing baselines fail in CI
     ├── cli-json.test.js           # test --json and exit codes: errors, diffs, stdout mode, target guards, crashes
     ├── result.test.js             # Result builder, error classification, atomic JSON writer
+    ├── display.test.js            # URL redaction, host path redaction, display paths
+    ├── json-target.test.js        # --json target guard: symlinks, hard links, case folding, directories
+    ├── capture-errors.test.js     # Fake Playwright: launch/navigation/mask/close errors are classified right
     ├── demo-app.test.js           # Demo site variants (original page stays byte-identical)
     ├── build-static-demo.test.js  # Static Pages build end to end: statuses, safety checks, links
     ├── per-run-baselines.test.js  # Per-run baseline copies, stale-approval conflicts, DB migration
@@ -547,7 +552,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 481 Vitest unit, integration & browser tests
+# Run all 519 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -573,8 +578,11 @@ node tests/verify-phase-5.js
  ✓ tests/compare.test.js (11 tests)
  ✓ tests/capture-integration.test.js (6 tests)
  ✓ tests/cli-strict.test.js (5 tests)
- ✓ tests/cli-json.test.js (17 tests)
- ✓ tests/result.test.js (19 tests)
+ ✓ tests/cli-json.test.js (25 tests)
+ ✓ tests/result.test.js (25 tests)
+ ✓ tests/display.test.js (8 tests)
+ ✓ tests/json-target.test.js (7 tests)
+ ✓ tests/capture-errors.test.js (8 tests)
  ✓ tests/demo-app.test.js (5 tests)
  ✓ tests/build-static-demo.test.js (14 tests)
  ✓ tests/db.test.js (19 tests)
@@ -592,12 +600,12 @@ node tests/verify-phase-5.js
  ✓ tests/viewModels.test.js (32 tests)
  ✓ tests/theme-contrast.test.js (9 tests)
  ✓ tests/responsive-theme.test.js (9 tests)
- ✓ tests/reporter.test.js (11 tests)
+ ✓ tests/reporter.test.js (12 tests)
  ✓ tests/a11y-axe.test.js (14 tests)
  ✓ tests/keyboard-ui.test.js (20 tests)
 
- Test Files  27 passed (27)
-      Tests  481 passed (481)
+ Test Files  30 passed (30)
+      Tests  519 passed (519)
 ```
 
 ---
