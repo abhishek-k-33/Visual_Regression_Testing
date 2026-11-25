@@ -80,7 +80,9 @@ describe('visual-ci test --json and exit codes', () => {
           error: { code: 'CONFIG_NOT_FOUND' }, run: null,
           counts: { total: 0, passed: 0, changed: 0, missing_baseline: 0, new_baseline: 0 }, snapshots: []
         });
-        expect(result.error.message).toContain('Configuration file not found');
+        expect(result.error.message).toBe('Configuration file not found at: visual.config.json');
+        expect(result.error.message).not.toContain(empty);
+        expect(result.error.message).not.toContain(os.tmpdir());
         expect(fs.readdirSync(path.join(empty, 'out'))).toEqual(['result.json']); // no temp file left
       } finally {
         fs.rmSync(empty, { recursive: true, force: true });

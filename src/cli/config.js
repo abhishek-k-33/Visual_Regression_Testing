@@ -2,6 +2,7 @@ import fs from 'node:fs'; // imports the node js file system
 import path from 'node:path';//helper function that glues folder names together correctly
 import { assertUniqueSnapshotFiles } from './naming.js';
 import { CliError } from './errors.js';
+import { toDisplayPath } from './display.js';
 
 /**
  * Validates and normalizes visual regression test configuration.
@@ -222,17 +223,17 @@ export function stripJsonComments(jsonString) {
 export function readConfiguredStorageDir(customPath) {
   const resolvedPath = path.resolve(process.cwd(), customPath || 'visual.config.json');
   if (!fs.existsSync(resolvedPath)) {
-    if (customPath) throw new CliError('CONFIG_NOT_FOUND', `Configuration file not found at: ${resolvedPath}`);
+    if (customPath) throw new CliError('CONFIG_NOT_FOUND', `Configuration file not found at: ${toDisplayPath(resolvedPath)}`);
     return null;
   }
   let parsed;
   try {
     parsed = JSON.parse(stripJsonComments(fs.readFileSync(resolvedPath, 'utf8')));
   } catch (err) {
-    throw new CliError('CONFIG_INVALID', `Failed to parse configuration file ${resolvedPath} as JSON: ${err.message}`);
+    throw new CliError('CONFIG_INVALID', `Failed to parse configuration file ${toDisplayPath(resolvedPath)} as JSON: ${err.message}`);
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new CliError('CONFIG_INVALID', `Configuration file ${resolvedPath} must contain a JSON object.`);
+    throw new CliError('CONFIG_INVALID', `Configuration file ${toDisplayPath(resolvedPath)} must contain a JSON object.`);
   }
   try {
     return validateStorageDir(parsed.storageDir);
@@ -254,14 +255,14 @@ export function loadConfig(customPath, overrides = {}) {
     : path.resolve(process.cwd(), 'visual.config.json');// glues the process cwd with the visual.config.json 
 
   if (!fs.existsSync(resolvedPath)) {// fs.existsSync check the path specified as an argument exists or not
-    throw new CliError('CONFIG_NOT_FOUND', `Configuration file not found at: ${resolvedPath}`);
+    throw new CliError('CONFIG_NOT_FOUND', `Configuration file not found at: ${toDisplayPath(resolvedPath)}`);
   }
 
   let fileContent;
   try {
     fileContent = fs.readFileSync(resolvedPath, 'utf8');// reads the file at the address
   } catch (err) {
-    throw new CliError('CONFIG_INVALID', `Failed to read configuration file at ${resolvedPath}: ${err.message}`);
+    throw new CliError('CONFIG_INVALID', `Failed to read configuration file at ${toDisplayPath(resolvedPath)}: ${err.message}`);
   }
 
   let parsedConfig;

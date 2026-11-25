@@ -149,6 +149,12 @@ describe('buildResult', () => {
     expect(r.snapshots[0]).toMatchObject({ current: 'storage/runs/r1/index-d.png', baseline: null, diff: null, mismatch_percentage: 0 });
   });
 
+  it('the error message names no host paths: cwd is ".", home is "~"', () => {
+    const err = Object.assign(new Error(`ENOENT: no such file or directory, open '${path.join(cwd, 'a.json')}' (see ${path.join(os.homedir(), '.cache', 'x')})`), {});
+    const r = buildResult({ error: err, cwd });
+    expect(r.error.message).toBe(`ENOENT: no such file or directory, open '.${path.sep}a.json' (see ~${path.sep}.cache${path.sep}x)`);
+  });
+
   it('an error wins: status error, exit 2, a code and a sanitised message', () => {
     const r = buildResult({ error: new CliError('NAVIGATION_FAILED', 'Could not load \u001b]0;x\u0007'), results: [snap('MATCH')], cwd });
     expect(r).toMatchObject({ status: 'error', exit_code: 2, run: null });

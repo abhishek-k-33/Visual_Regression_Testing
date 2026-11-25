@@ -3,7 +3,7 @@ import path from 'node:path';
 import { getToolVersion } from './manifest.js';
 // TODO(A3): import from src/shared/text.js once sanitizeForDisplay moves there.
 import { sanitizeForDisplay } from '../server/importRuns.js';
-import { redactUrl, redactUrlsInText, toDisplayPath } from './display.js';
+import { redactUrl, redactUrlsInText, redactLocalPaths, toDisplayPath } from './display.js';
 
 export { CliError } from './errors.js';
 export { redactUrl } from './display.js';
@@ -139,7 +139,8 @@ export function buildResult({ command = 'test', error = null, run = null, result
     command,
     status,
     exit_code: exitCode,
-    error: error ? { code: classifyError(error), message: sanitizeMessage(error.message ?? error) } : null,
+    // No host paths in the published message: cwd becomes ".", the home directory "~".
+    error: error ? { code: classifyError(error), message: redactLocalPaths(sanitizeMessage(error.message ?? error), { cwd }) } : null,
     run: run ? {
       id: run.id,
       mode: run.mode,
