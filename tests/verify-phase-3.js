@@ -129,8 +129,9 @@ fixtureServer.listen(0, HOST, async () => {
           fixtureBaseUrl
         ], { encoding: 'utf8', env: process.env });
       } catch (cliErr) {
-        // Expected to exit with code 1 due to visual differences
-        console.log('✓ CLI accurately caught visual diff and exited with non-zero code.');
+        // Expected to exit with code 1 due to visual differences (2 would be an error)
+        if (cliErr.code !== 1) throw cliErr;
+        console.log('✓ CLI accurately caught visual diff and exited with code 1.');
       }
 
       // Verify SQLite record for regression run

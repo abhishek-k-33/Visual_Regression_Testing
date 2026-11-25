@@ -81,6 +81,11 @@ Visual Regression Testing Project/
 │   │   ├── capture.js             # Playwright multi-viewport capture engine
 │   │   ├── compare.js             # Pixel comparison and canvas dimension normalizer
 │   │   ├── manifest.js            # Writes run.json, the per-run record that travels with CI artifacts
+│   │   ├── result.js              # `test --json` result (schema visual-ci-result), exit codes, error codes
+│   │   ├── errors.js              # CliError: an error carrying a result error code
+│   │   ├── display.js             # redactUrl (credentials/tokens), display paths, host path redaction
+│   │   ├── jsonTarget.js          # --json target checks (never run.json/summary, even via links or case)
+│   │   ├── logger.js              # Human output; moves to stderr with `--json -`
 │   │   ├── naming.js              # Screenshot file names; rejects route/viewport pairs that would collide
 │   │   ├── config.js              # Config loader with comment-stripping parser
 │   │   └── reporter.js            # Markdown report generator & GITHUB_STEP_SUMMARY
@@ -128,6 +133,11 @@ Visual Regression Testing Project/
     ├── capture.test.js            # Capture engine unit tests
     ├── capture-integration.test.js# Deterministic capture integration tests
     ├── cli-strict.test.js         # CLI strict mode: missing baselines fail in CI
+    ├── cli-json.test.js           # test --json and exit codes: errors, diffs, stdout mode, target guards, crashes
+    ├── result.test.js             # Result builder, error classification, atomic JSON writer
+    ├── display.test.js            # URL redaction, host path redaction, display paths
+    ├── json-target.test.js        # --json target guard: symlinks, hard links, case folding, directories
+    ├── capture-errors.test.js     # Fake Playwright: launch/navigation/mask/close errors are classified right
     ├── demo-app.test.js           # Demo site variants (original page stays byte-identical)
     ├── build-static-demo.test.js  # Static Pages build end to end: statuses, safety checks, links
     ├── per-run-baselines.test.js  # Per-run baseline copies, stale-approval conflicts, DB migration
@@ -249,6 +259,8 @@ The app reads these from the environment (it does not load a `.env` file):
 
 ## 📟 CLI Commands
 
+> **Changed in this version:** errors now exit with code **2** instead of 1. Exit code 1 means only "visual differences found" (or a missing baseline in strict mode), so CI scripts can tell a regression from a broken run. See [Exit codes](#exit-codes).
+
 ### 1. Run Automated Visual Regression Tests
 Captures screenshots across all viewports, compares against golden baselines, records results in SQLite, and reports metrics. The repo is configured against the bundled demo site, so start it first (or point `baseUrl` at your own app):
 
@@ -268,6 +280,76 @@ node src/cli/index.js test
 - `-s, --summary-file <path>`: Custom file name or path for the markdown test report.
 - `--update-baselines`: Automatically promote all current screenshots to golden master baselines.
 - `--strict` / `--no-strict`: In strict mode a route with no baseline **fails** (`MISSING_BASELINE`) instead of adopting the current screenshot as its baseline. Strict is the default when `CI=true`, so CI can never pass by comparing a page to itself.
+- `--json <file>`: Also write a machine-readable result to `<file>` (relative to the working directory; parent folders are created). It is written atomically (temp file + rename), and also when the run fails with an error or crashes. `--json -` writes the JSON to **stdout** and sends all human output, warnings included, to stderr, so `node src/cli/index.js test --json - | jq .status` works. Details:
+  - Through npm, use `npm run -s test:visual -- --json -`: without `-s` npm prints its own banner to stdout, ahead of the JSON.
+  - Through Docker Compose, use `docker compose run -T runner node src/cli/index.js test --json -`: with a TTY (the default) stderr is merged into stdout.
+  - The target must be a file name: a directory (`.`, `out/`) is refused, and so is the run's own `run.json` or markdown summary, however it is reached (a symlinked folder or `VISUAL_STORAGE_DIR`, a link to the file, or a different letter case on macOS/Windows).
+  - Once the target is accepted, any file already at that path is removed before the run starts, so a reused path never shows an older run's result. A refused target is never touched. Usage errors (unknown flag, missing value) are rejected before the command runs and leave the path alone, so always check the exit code before reading the file.
+
+#### Exit codes
+
+| Code | Meaning |
+| :--- | :--- |
+| `0` | Every snapshot matched (or got a new baseline: first run, `--update-baselines`). |
+| `1` | Visual differences: at least one `DIFF`, or a `MISSING_BASELINE` in strict mode. |
+| `2` | Error: config not found or invalid, a page that could not load, Playwright's browser not installed, an invalid argument or usage error (unknown flag, missing value), or a crash. Also used by `capture` and `import` when they fail. |
+
+`--help` and `--version` exit `0`. A usage error is rejected before the command runs, so it writes no JSON file (and leaves an existing one alone): treat "exit 2" with a missing or older-than-the-run JSON as a usage error.
+
+#### JSON result (`--json`)
+
+Schema `visual-ci-result`, version `1`. Future versions only add fields; existing ones keep their name, type and meaning.
+
+```json
+{
+  "schema": "visual-ci-result",
+  "version": 1,
+  "tool": { "name": "visual-ci", "version": "1.0.0" },
+  "command": "test",
+  "status": "failed",
+  "exit_code": 1,
+  "error": null,
+  "run": {
+    "id": "run_1764000000000",
+    "mode": "compare",
+    "strict": true,
+    "base_url": "http://127.0.0.1:4567",
+    "branch": "main",
+    "commit_sha": "3f2c…",
+    "created_at": "2026-11-25T10:00:00.000Z",
+    "duration_ms": 5321,
+    "threshold_percentage": 1,
+    "run_dir": "storage/runs/run_1764000000000",
+    "manifest": "storage/runs/run_1764000000000/run.json",
+    "summary": "storage/runs/run_1764000000000/summary.md"
+  },
+  "counts": { "total": 2, "passed": 1, "changed": 1, "missing_baseline": 0, "new_baseline": 0 },
+  "snapshots": [
+    {
+      "route": "/",
+      "viewport": "desktop",
+      "status": "DIFF",
+      "mismatch_percentage": 3.42,
+      "current": "storage/runs/run_1764000000000/index-desktop.png",
+      "baseline": "storage/baselines/index-desktop.png",
+      "baseline_snapshot": "storage/runs/run_1764000000000/baselines/index-desktop.png",
+      "diff": "storage/runs/run_1764000000000/index-desktop-diff.png"
+    }
+  ]
+}
+```
+
+- `status` is `passed` (exit 0), `failed` (exit 1) or `error` (exit 2); `exit_code` is the process exit code.
+- `error` is `null`, or `{ "code", "message" }` with `code` one of `CONFIG_NOT_FOUND`, `CONFIG_INVALID` (including an invalid `maskSelectors` entry), `NAVIGATION_FAILED` (a page that could not load), `BROWSER_MISSING` (Chromium or its system libraries not installed: run `npx playwright install --with-deps chromium`), `INVALID_ARGUMENT`, `INTERNAL` (anything else, including crashes). Messages are sanitised: control and bidi characters are escaped, the working directory is shown as `.` and the home directory as `~`.
+- **No secrets:** `base_url` and every message (JSON and terminal) have URL credentials (`user:pass@`) removed and the values of token-like query parameters (`token`, `access_token`, `auth`, `key`, `apikey`, `api_key`, `password`, `secret`, `sig`, `signature`, any case) replaced by `***`.
+- `run` is `null` when the run never started (e.g. the config could not be loaded). On a later error it holds what is known; `manifest` and `summary` are `null` when those files were not written.
+- `mode` is `compare` or `update-baselines`. `threshold_percentage` and `mismatch_percentage` are percentages (`1` = 1%), rounded to 6 decimals.
+- Snapshot `status` is `MATCH`, `DIFF`, `NEW_BASELINE` or `MISSING_BASELINE`.
+- `baseline` is the **shared** baseline file in `baselines/` (for `MISSING_BASELINE`, where it is expected; the file does not exist). Approvals change it later, so it can differ from what this run compared against.
+- `baseline_snapshot` is the **run's own copy** of the baseline it was compared against, inside the run folder, so it travels with the CI artifact (`storage/runs/`): use it to show "before" for a run, e.g. in a PR comment. For a new baseline it is the run's screenshot; `null` when there was no baseline.
+- `diff` is `null` when no comparison was made.
+- `counts`: `passed` = `MATCH`, `changed` = `DIFF`, `missing_baseline`, `new_baseline`, and `total`.
+- **Paths** are relative to the working directory and use `/`, so they mean the same inside the Docker runner (workspace `/app`) and on the host checkout that mounts `storage/`. A path outside the working directory (e.g. `VISUAL_STORAGE_DIR=/tmp/vrt`) is given absolute.
 
 ### 2. Capture Screenshots Only
 Capture deterministic full-page screenshots without diffing:
@@ -470,7 +552,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 445 Vitest unit, integration & browser tests
+# Run all 519 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -496,6 +578,11 @@ node tests/verify-phase-5.js
  ✓ tests/compare.test.js (11 tests)
  ✓ tests/capture-integration.test.js (6 tests)
  ✓ tests/cli-strict.test.js (5 tests)
+ ✓ tests/cli-json.test.js (25 tests)
+ ✓ tests/result.test.js (25 tests)
+ ✓ tests/display.test.js (8 tests)
+ ✓ tests/json-target.test.js (7 tests)
+ ✓ tests/capture-errors.test.js (8 tests)
  ✓ tests/demo-app.test.js (5 tests)
  ✓ tests/build-static-demo.test.js (14 tests)
  ✓ tests/db.test.js (19 tests)
@@ -513,12 +600,12 @@ node tests/verify-phase-5.js
  ✓ tests/viewModels.test.js (32 tests)
  ✓ tests/theme-contrast.test.js (9 tests)
  ✓ tests/responsive-theme.test.js (9 tests)
- ✓ tests/reporter.test.js (11 tests)
+ ✓ tests/reporter.test.js (12 tests)
  ✓ tests/a11y-axe.test.js (14 tests)
  ✓ tests/keyboard-ui.test.js (20 tests)
 
- Test Files  25 passed (25)
-      Tests  445 passed (445)
+ Test Files  30 passed (30)
+      Tests  519 passed (519)
 ```
 
 ---

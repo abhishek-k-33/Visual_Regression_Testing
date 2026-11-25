@@ -232,8 +232,8 @@ function prepareOutDir(outDir) {
 function runCli(args, env) {
   return new Promise((resolve) => {
     execFile(process.execPath, [CLI, 'test', ...args], { cwd: REPO_ROOT, env, maxBuffer: 16 * 1024 * 1024, timeout: 5 * 60 * 1000 }, (err, stdout, stderr) => {
-      // A non-zero exit is expected for runs with diffs: outcomes are checked in the DB.
-      resolve({ code: err ? (err.code ?? 1) : 0, output: `${stdout}${stderr}` });
+      // Exit 1 is expected for runs with diffs (outcomes are checked in the DB); 2 is an error.
+      resolve({ code: err ? (err.code ?? 2) : 0, output: `${stdout}${stderr}` });
     });
   });
 }
@@ -295,6 +295,7 @@ async function recordDemoRuns(storageRoot, dbApi) {
         ['-c', CONFIG, '-u', baseUrl, '-r', run.id, '--no-strict', ...(run.args || [])],
         env
       );
+      if (code !== 0 && code !== 1) throw new Error(`visual-ci test failed for ${run.id} (exit ${code}):\n${output}`);
       withDb(dbPath, (db) => assertRunStatus(db, dbApi, run, run.expect, expectedSnapshots, output));
       log(`  ${run.expect.run} (CLI exit ${code}), snapshots ${run.expect.snapshots}`);
 

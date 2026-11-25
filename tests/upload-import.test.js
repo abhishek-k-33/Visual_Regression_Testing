@@ -81,7 +81,10 @@ function artifact(options = {}) {
  * arrives within `timeout`, so a server that never answers fails the test instead of
  * hanging it.
  */
-function post({ body, headers = {}, chunks = null, chunkDelay = 0, onRequest, timeout = 10000 } = {}) {
+// holdAfterBytes: once more than this many bytes are sent, wait for the response (or the
+// timeout) before sending the rest, so "answered before the body was complete" doesn't
+// depend on how fast a loaded machine runs.
+function post({ body, headers = {}, chunks = null, chunkDelay = 0, holdAfterBytes, onRequest, timeout = 10000 } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const req = http.request({
@@ -103,9 +106,14 @@ function post({ body, headers = {}, chunks = null, chunkDelay = 0, onRequest, ti
     onRequest?.(req);
     if (chunks) {
       (async () => {
+        let sent = 0;
         for (const chunk of chunks) {
           if (settled || req.destroyed) return;
           req.write(chunk);
+          sent += chunk.length;
+          if (holdAfterBytes !== undefined && sent > holdAfterBytes) {
+            while (!settled && !req.destroyed) await sleep(10);
+          }
           if (chunkDelay) await sleep(chunkDelay);
         }
         if (!req.destroyed) req.end();
@@ -189,7 +197,12 @@ describe('POST /api/imports', () => {
       process.env.VISUAL_IMPORT_MAX_UPLOAD_BYTES = '20000';
       const chunks = Array.from({ length: 50 }, () => Buffer.alloc(4096, 7)); // 200 KB in total, 5 ms apart
       let finished = false;
-      const res = await post({ chunks, chunkDelay: 5, onRequest: (req) => { req.on('finish', () => { finished = true; }); } });
+      // The client holds the rest of the body once it has sent twice the cap: the server
+      // must answer from the first ~40 KB (a server that waited for the whole body would
+      // never answer, and the request would time out).
+      const res = await post({
+        chunks, chunkDelay: 5, holdAfterBytes: 40000, onRequest: (req) => { req.on('finish', () => { finished = true; }); }
+      });
       const finishedAtResponse = finished;
       expect(res.status).toBe(413);
       expect(res.json.error).toContain('20 KB limit');

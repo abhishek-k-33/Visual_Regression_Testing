@@ -5,6 +5,71 @@ import { chromium, errors as playwrightErrors } from 'playwright';// chromium is
 
 export { getRouteSlug, getSnapshotFilename } from './naming.js';
 import { getSnapshotFilename } from './naming.js';
+import { CliError } from './errors.js';
+import { redactUrl, redactUrlsInText } from './display.js';
+import { sanitizeMessage } from './result.js';
+
+const firstLine = (err) => String(err?.message ?? err).split('\n')[0];
+
+/**
+ * The error to throw when Chromium fails to launch: BROWSER_MISSING (with the command
+ * that fixes it) when the browser or its system libraries are not installed,
+ * otherwise the original error.
+ *
+ * @param {unknown} err
+ * @returns {unknown}
+ */
+export function toLaunchError(err) {
+  const message = String(err?.message ?? err);
+  if (message.includes("Executable doesn't exist")) {
+    return new CliError('BROWSER_MISSING',
+      `Playwright's Chromium is not installed (${firstLine(err)}). Install it with: npx playwright install chromium`, { cause: err });
+  }
+  if (message.includes('Host system is missing dependencies')) {
+    return new CliError('BROWSER_MISSING',
+      'Chromium cannot start: the host system is missing libraries it needs. Install them with: npx playwright install --with-deps chromium', { cause: err });
+  }
+  return err;
+}
+
+/**
+ * The error to throw when page.goto fails: NAVIGATION_FAILED naming the (redacted)
+ * URL, except when the browser itself went away, which is not the site's fault and
+ * stays an internal error.
+ *
+ * @param {unknown} err
+ * @param {string} url
+ * @returns {unknown}
+ */
+export function toNavigationError(err, url) {
+  const message = String(err?.message ?? err);
+  if (/Target page, context or browser has been closed|Target closed|Browser has been closed/i.test(message)) {
+    return new CliError('INTERNAL', `The browser closed while loading ${redactUrl(url)}: ${redactUrlsInText(firstLine(err))}`, { cause: err });
+  }
+  // First line only: the rest is Playwright's call log. Redacted: the URL can carry
+  // credentials, and this message ends up in logs and the JSON result.
+  return new CliError('NAVIGATION_FAILED', `Could not load ${redactUrl(url)}: ${redactUrlsInText(firstLine(err))}`, { cause: err });
+}
+
+/** Closes a page context or the browser; a failure is a warning, never the run's error. */
+async function closeQuietly(target, what) {
+  try {
+    await target.close();
+  } catch (err) {
+    console.warn(`  [WARN] Could not close the ${what}: ${sanitizeMessage(firstLine(err))}`);
+  }
+}
+
+/**
+ * Throws (INVALID_ARGUMENT) unless the run id is safe to use as a folder name.
+ *
+ * @param {string} runId
+ */
+export function assertValidRunId(runId) {
+  if (typeof runId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(runId)) {
+    throw new CliError('INVALID_ARGUMENT', `Invalid runId "${runId}": must contain only alphanumeric characters, dashes, and underscores.`);
+  }
+}
 
 /**
  * CSS injected into every page to ensure deterministic captures:
@@ -51,7 +116,7 @@ async function assertValidMaskSelectors(page, maskSelectors = []) {
     try {
       await page.locator(selector).count();
     } catch (err) {
-      throw new Error(`maskSelectors[${i}] "${selector}" is not a valid selector: ${err.message.split('\n')[0]}`);
+      throw new CliError('CONFIG_INVALID', `maskSelectors[${i}] "${selector}" is not a valid selector: ${firstLine(err)}`, { cause: err });
     }
   }
 }
@@ -69,11 +134,8 @@ async function assertValidMaskSelectors(page, maskSelectors = []) {
  * @returns {Promise<Array<object>>} Array of captured snapshot results
  */
 export async function captureScreenshots(config, options = {}) {
-  const rawRunId = options.runId || `run_${Date.now()}`;
-  if (!/^[a-zA-Z0-9_-]+$/.test(rawRunId)) {
-    throw new Error(`Invalid runId "${rawRunId}": must contain only alphanumeric characters, dashes, and underscores.`);
-  }
-  const runId = rawRunId;
+  const runId = options.runId || `run_${Date.now()}`;
+  assertValidRunId(runId);
   const navigationTimeout = options.navigationTimeout ?? 30000;
   const networkIdleTimeout = options.networkIdleTimeout ?? 10000;
   const baseStorage = options.outputDir || path.resolve(process.cwd(), config.storageDir || 'storage', 'runs');
@@ -82,7 +144,12 @@ export async function captureScreenshots(config, options = {}) {
   fs.mkdirSync(targetDir, { recursive: true });
 
   const deterministicCss = buildDeterministicStyle();
-  const browser = await chromium.launch({ headless: true });
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (err) {
+    throw toLaunchError(err);
+  }
   const results = [];
   let masksChecked = false;
 
@@ -103,7 +170,11 @@ export async function captureScreenshots(config, options = {}) {
 
         try {
           // The load event is required: a page that can't load is a real failure.
-          await page.goto(fullUrl, { waitUntil: 'load', timeout: navigationTimeout });
+          try {
+            await page.goto(fullUrl, { waitUntil: 'load', timeout: navigationTimeout });
+          } catch (navErr) {
+            throw toNavigationError(navErr, fullUrl);
+          }
 
           // Network idle is best effort. Pages with analytics beacons, long-polling or
           // websockets never go idle; for those, capture the already-loaded page.
@@ -157,12 +228,12 @@ export async function captureScreenshots(config, options = {}) {
             options.onProgress(snapshotResult);
           }
         } finally {
-          await context.close();
+          await closeQuietly(context, 'browser context');
         }
       }
     }
   } finally {
-    await browser.close();
+    await closeQuietly(browser, 'browser');
   }
 
   return results;
