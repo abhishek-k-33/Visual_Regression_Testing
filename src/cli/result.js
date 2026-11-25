@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getToolVersion } from './manifest.js';
@@ -26,8 +27,13 @@ export { redactUrl } from './display.js';
  *                 run_dir, manifest, summary },
  *   counts: { total, passed, changed, missing_baseline, new_baseline },
  *   snapshots: [{ route, viewport, status: 'MATCH' | 'DIFF' | 'NEW_BASELINE' |
- *                 'MISSING_BASELINE', mismatch_percentage, current, baseline, diff }]
+ *                 'MISSING_BASELINE', mismatch_percentage, current, baseline,
+ *                 baseline_snapshot, diff }]
  * }
+ *
+ * baseline is the shared baseline file (baselines/<name>.png, which later approvals
+ * change); baseline_snapshot is the run's own copy of the baseline it was compared
+ * against, inside the run folder (so it travels with the CI artifact), or null.
  */
 
 export const RESULT_SCHEMA = 'visual-ci-result';
@@ -84,7 +90,8 @@ export function classifyError(err) {
 /** A path as the result records it (see toDisplayPath in display.js). */
 export const toResultPath = toDisplayPath;
 
-const percentage = (ratio) => Math.round(ratio * 100 * 1e6) / 1e6; // 0.07 * 100 is 7.000000000000001
+const round6 = (value) => Math.round(value * 1e6) / 1e6; // no float noise like 3.4200000000000004
+const percentage = (ratio) => round6(ratio * 100); // 0.07 * 100 is 7.000000000000001
 
 /**
  * Builds the visual-ci-result object.
@@ -104,9 +111,10 @@ export function buildResult({ command = 'test', error = null, run = null, result
     route: r.route,
     viewport: r.viewport,
     status: r.status,
-    mismatch_percentage: r.mismatchPercentage || 0,
+    mismatch_percentage: round6(r.mismatchPercentage || 0),
     current: toResultPath(r.currentPath || r.filepath, cwd),
     baseline: toResultPath(r.baselinePath, cwd),
+    baseline_snapshot: toResultPath(r.baselineSnapshotPath, cwd),
     diff: toResultPath(r.diffPath, cwd)
   }));
 
@@ -160,27 +168,41 @@ export function buildResult({ command = 'test', error = null, run = null, result
   };
 }
 
+/** Writes all of `data` to a file descriptor, waiting out EAGAIN on a non-blocking pipe. */
+function writeAllSync(fd, data) {
+  const buffer = Buffer.from(data, 'utf8');
+  let offset = 0;
+  while (offset < buffer.length) {
+    try {
+      offset += fs.writeSync(fd, buffer, offset, buffer.length - offset);
+    } catch (err) {
+      if (err.code !== 'EAGAIN') throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); // brief pause, then retry
+    }
+  }
+}
+
 /**
- * Writes the result as JSON. A file is written via a temp file + rename (like
+ * Writes the result as JSON, synchronously (so it also works right before
+ * process.exit, e.g. on a crash). A file is written via a temp file + rename (like
  * run.json), so a reader never sees a half-written result; "-" writes to stdout.
  *
  * @param {object} result
  * @param {string} target - File path (relative to cwd) or "-"
- * @param {{ stdout?: NodeJS.WritableStream, cwd?: string }} [options]
- * @returns {Promise<string>} The absolute path written, or "-"
+ * @param {{ fd?: number, cwd?: string }} [options] - fd: where "-" writes (default 1, stdout)
+ * @returns {string} The absolute path written, or "-"
  */
-export async function writeResult(result, target, { stdout = process.stdout, cwd = process.cwd() } = {}) {
+export function writeResult(result, target, { fd = 1, cwd = process.cwd() } = {}) {
   const json = `${JSON.stringify(result, null, 2)}\n`;
   if (target === STDOUT_TARGET) {
-    await new Promise((resolve, reject) => {
-      stdout.write(json, (err) => (err ? reject(err) : resolve()));
-    });
+    writeAllSync(fd, json);
     return STDOUT_TARGET;
   }
 
   const file = path.resolve(cwd, target);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.tmp-${process.pid}`;
+  // Random suffix: in a container the pid is often 1 for every run.
+  const temp = `${file}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
   try {
     fs.writeFileSync(temp, json, 'utf8');
     fs.renameSync(temp, file);

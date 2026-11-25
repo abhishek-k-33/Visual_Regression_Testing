@@ -209,11 +209,12 @@ describe('visual-ci test --json and exit codes', () => {
         snapshots: [{
           route: '/', viewport: 'desktop', status: 'MATCH', mismatch_percentage: 0,
           current: 'storage/runs/run_pass/index-desktop.png', baseline: 'storage/baselines/index-desktop.png',
+          baseline_snapshot: 'storage/runs/run_pass/baselines/index-desktop.png',
           diff: 'storage/runs/run_pass/index-desktop-diff.png' // compare writes a diff image for a MATCH too
         }]
       });
       expect(result.run.duration_ms).toBeGreaterThan(0);
-      for (const rel of [result.run.manifest, result.run.summary, result.snapshots[0].current, result.snapshots[0].baseline]) {
+      for (const rel of [result.run.manifest, result.run.summary, result.snapshots[0].current, result.snapshots[0].baseline, result.snapshots[0].baseline_snapshot]) {
         expect(fs.existsSync(path.join(workDir, rel)), rel).toBe(true);
       }
       // Same created_at as the run.json written next to the screenshots
@@ -228,7 +229,10 @@ describe('visual-ci test --json and exit codes', () => {
       const result = readJson(path.join(workDir, 'diff.json'));
       expect(result).toMatchObject({ status: 'failed', exit_code: 1, error: null });
       expect(result.counts.changed).toBeGreaterThanOrEqual(1);
-      expect(result.snapshots[0]).toMatchObject({ status: 'DIFF', diff: 'storage/runs/run_diff/index-desktop-diff.png' });
+      expect(result.snapshots[0]).toMatchObject({
+        status: 'DIFF', diff: 'storage/runs/run_diff/index-desktop-diff.png',
+        baseline: 'storage/baselines/index-desktop.png', baseline_snapshot: 'storage/runs/run_diff/baselines/index-desktop.png'
+      });
       expect(result.snapshots[0].mismatch_percentage).toBeGreaterThan(1);
       expect(fs.existsSync(path.join(workDir, result.snapshots[0].diff))).toBe(true);
     }, 30000);
@@ -240,7 +244,8 @@ describe('visual-ci test --json and exit codes', () => {
       expect(code).toBe(1);
       expect(readJson(path.join(workDir, 'strict.json'))).toMatchObject({
         status: 'failed', exit_code: 1, run: { strict: true, run_dir: 'empty-storage/runs/run_strict' },
-        counts: { missing_baseline: 1 }, snapshots: [{ status: 'MISSING_BASELINE', baseline: 'empty-storage/baselines/index-desktop.png' }]
+        counts: { missing_baseline: 1 },
+        snapshots: [{ status: 'MISSING_BASELINE', baseline: 'empty-storage/baselines/index-desktop.png', baseline_snapshot: null }]
       });
     }, 30000);
   });

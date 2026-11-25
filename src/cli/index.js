@@ -345,7 +345,7 @@ program
       let jsonFile = null;
       if (jsonTarget !== undefined) {
         try {
-          jsonFile = await writeResult(result, jsonTarget);
+          jsonFile = writeResult(result, jsonTarget);
         } catch (writeErr) {
           jsonUsable = false;
           throw new CliError('INTERNAL', `Could not write the JSON result to ${jsonTarget}: ${writeErr.message}`, { cause: writeErr });
@@ -385,7 +385,7 @@ program
       if (jsonTarget !== undefined && jsonUsable && !jsonTargetConflict(jsonTarget, runsDir || fallbackRunsDir(options), options.summaryFile)) {
         if (run) run.durationMs = Date.now() - startTime;
         try {
-          await writeResult(buildResult({ command: 'test', error: err, run, results }), jsonTarget);
+          writeResult(buildResult({ command: 'test', error: err, run, results }), jsonTarget);
         } catch (writeErr) {
           log.error(`[ERROR] Could not write the JSON result to ${sanitizeMessage(jsonTarget)}: ${sanitizeMessage(writeErr.message)}\n`);
         }

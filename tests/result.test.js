@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Writable } from 'node:stream';
 import {
   EXIT, ERROR_CODES, RESULT_SCHEMA, RESULT_VERSION, CliError,
   buildResult, writeResult, classifyError, sanitizeMessage, toResultPath
@@ -140,8 +139,24 @@ describe('buildResult', () => {
     expect(r.snapshots).toEqual([{
       route: '/', viewport: 'v-DIFF', status: 'DIFF', mismatch_percentage: 3.5,
       current: 'storage/runs/r1/index-v-DIFF.png', baseline: 'storage/baselines/index-v-DIFF.png',
-      diff: 'storage/runs/r1/index-v-DIFF-diff.png'
+      baseline_snapshot: null, diff: 'storage/runs/r1/index-v-DIFF-diff.png'
     }]);
+  });
+
+  it('records the run-scoped baseline copy next to the shared baseline', () => {
+    const r = buildResult({
+      results: [snap('DIFF', { baselineSnapshotPath: path.join(runDir, 'baselines', 'index-v-DIFF.png') })],
+      cwd
+    });
+    expect(r.snapshots[0]).toMatchObject({
+      baseline: 'storage/baselines/index-v-DIFF.png',
+      baseline_snapshot: 'storage/runs/r1/baselines/index-v-DIFF.png'
+    });
+  });
+
+  it('rounds mismatch_percentage like threshold_percentage (no float noise)', () => {
+    const r = buildResult({ results: [snap('DIFF', { mismatchPercentage: 3.4200000000000004 }), snap('MATCH', { mismatchPercentage: 1 / 3 })], cwd });
+    expect(r.snapshots.map((s) => s.mismatch_percentage)).toEqual([3.42, 0.333333]);
   });
 
   it('uses filepath when a result has no currentPath (update-baselines results)', () => {
@@ -183,7 +198,7 @@ describe('writeResult', () => {
       return realRename(from, to);
     });
 
-    expect(await writeResult(result, target)).toBe(target);
+    expect(writeResult(result, target)).toBe(target);
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ to: target, targetBefore: 'old', temp: result });
     expect(path.dirname(seen[0].from)).toBe(path.dirname(target));
@@ -193,7 +208,7 @@ describe('writeResult', () => {
 
     vi.restoreAllMocks();
     const relative = path.relative(process.cwd(), path.join(dir, 'a', 'b', 'r.json'));
-    const fresh = await writeResult(result, relative);
+    const fresh = writeResult(result, relative);
     expect(fresh).toBe(path.join(dir, 'a', 'b', 'r.json'));
     expect(JSON.parse(fs.readFileSync(fresh, 'utf8'))).toEqual(result);
   });
@@ -202,16 +217,31 @@ describe('writeResult', () => {
     const target = path.join(dir, 'result.json');
     fs.writeFileSync(target, 'previous');
     vi.spyOn(fs, 'renameSync').mockImplementation(() => { throw new Error('disk on fire'); });
-    await expect(writeResult(result, target)).rejects.toThrow('disk on fire');
+    expect(() => writeResult(result, target)).toThrow('disk on fire');
     expect(fs.readFileSync(target, 'utf8')).toBe('previous');
     expect(fs.readdirSync(dir)).toEqual(['result.json']);
   });
 
-  it('"-" writes the JSON to stdout (the given stream)', async () => {
-    let out = '';
-    const stream = new Writable({ write(chunk, _enc, cb) { out += chunk; cb(); } });
-    expect(await writeResult(result, '-', { stdout: stream })).toBe('-');
-    expect(JSON.parse(out)).toEqual(result);
-    expect(fs.readdirSync(dir)).toEqual([]);
+  it('"-" writes the JSON synchronously to stdout (the given fd)', () => {
+    const outFile = path.join(dir, 'stdout.txt');
+    const fd = fs.openSync(outFile, 'w');
+    try {
+      expect(writeResult(result, '-', { fd })).toBe('-');
+    } finally {
+      fs.closeSync(fd);
+    }
+    expect(JSON.parse(fs.readFileSync(outFile, 'utf8'))).toEqual(result);
+    expect(fs.readdirSync(dir)).toEqual(['stdout.txt']);
+  });
+
+  it('uses a random temp name (the pid alone repeats: it is often 1 in a container)', () => {
+    const temps = [];
+    const realRename = fs.renameSync;
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => { temps.push(path.basename(from)); return realRename(from, to); });
+    writeResult(result, path.join(dir, 'r.json'));
+    writeResult(result, path.join(dir, 'r.json'));
+    expect(temps).toHaveLength(2);
+    expect(temps[0]).not.toBe(temps[1]);
+    for (const name of temps) expect(name).toMatch(new RegExp(`^r\\.json\\.tmp-${process.pid}-[0-9a-f]{12}$`));
   });
 });
