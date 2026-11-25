@@ -385,9 +385,10 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
     });
   });
 
-  it('the diff job downloads the artifact by id and imports it into a throwaway storage folder', () => {
+  it('the diff job downloads the artifact by its (asserted) name and imports it into a throwaway storage folder', () => {
     const download = diff.steps.find((s) => s.uses?.startsWith('actions/download-artifact@'));
-    expect(download.with).toEqual({ 'artifact-ids': '${{ steps.visual.outputs.artifact-id }}', path: '${{ runner.temp }}/selftest-artifact' });
+    // By name, not by id: download-artifact found no artifact by id within the same run.
+    expect(download.with).toEqual({ name: '${{ steps.visual.outputs.artifact-name }}', path: '${{ runner.temp }}/selftest-artifact' });
     const importStep = named(diff, /^Import the Artifact/);
     expect(importStep.run).toContain('[ ! -f "$ARTIFACT_DIR/run.json" ]');
     expect(importStep.run).toContain('export VISUAL_STORAGE_DIR="$RUNNER_TEMP/selftest-import-storage"');

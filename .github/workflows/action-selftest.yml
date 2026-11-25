@@ -84,11 +84,13 @@ jobs:
           if [[ "$ARTIFACT_URL" == https://* ]]; then echo "ok: artifact-url = $ARTIFACT_URL"; else echo "::error title=self-test::artifact-url: expected an https URL, got '$ARTIFACT_URL'"; fail=1; fi
           exit "$fail"
 
-      # By id: download-artifact v5+ extracts a single artifact straight into path.
+      # By name (checked against the expected name above): a single named artifact is
+      # extracted straight into path. Downloading by id found nothing in the same run
+      # ("None of the provided artifact IDs were found", run 45670878311).
       - name: Download the Artifact
         uses: actions/download-artifact@v7
         with:
-          artifact-ids: ${{ steps.visual.outputs.artifact-id }}
+          name: ${{ steps.visual.outputs.artifact-name }}
           path: ${{ runner.temp }}/selftest-artifact
 
       - name: Install Dependencies for visual-ci import
