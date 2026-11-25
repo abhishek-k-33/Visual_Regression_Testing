@@ -47,6 +47,8 @@ server.listen(PORT, '127.0.0.1', async () => {
       ]);
       console.log('  Test finished without errors.');
     } catch (testErr) {
+      // Exit 1 means visual differences; 2 means the run itself failed.
+      if (testErr.code !== 1) throw testErr;
       console.log('  ✓ Visual CI detected visual regressions and flagged the run as FAILED!');
       if (testErr.stdout) {
         const lines = testErr.stdout.split('\n');

@@ -134,6 +134,8 @@ server.listen(0, HOST, async () => {
         baseUrl
       ], { encoding: 'utf8', env: process.env });
     } catch (err) {
+      // Exit 1 = visual differences; anything else (2 = error) is a real failure.
+      if (err.code !== 1) throw err;
       step3FailedAsExpected = true;
       step3Stdout = err.stdout || '';
     }
