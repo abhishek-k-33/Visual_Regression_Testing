@@ -1,0 +1,180 @@
+# Proves the action's failure paths on a real runner: a run with visual differences
+# uploads an artifact that `visual-ci import` accepts, and a run that cannot reach its
+# app reports an error and uploads nothing. The checks pass only when the action fails
+# the way it should (continue-on-error on the action step, assertions after it).
+#
+# Never writes baselines: strict compare mode (the default), no update-baselines, a
+# read-only token, no persisted git credentials, and a last step that fails if
+# storage/baselines changed.
+name: Action Self-Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - action.yml
+      - 'src/ci/**'
+      - 'src/cli/**'
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/action-selftest.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  diff:
+    name: Diff run uploads an importable artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The regressed page differs from the committed baselines (red heading, moved
+      # button): 1.6% on desktop and 7% on mobile, above the 1% threshold.
+      - name: Start Demo Site (regressed variant)
+        run: DEMO_VARIANT=regressed node scripts/serve-demo.js > demo-site.log 2>&1 &
+
+      - name: Visual Check (expected to find differences)
+        id: visual
+        continue-on-error: true
+        uses: ./
+        with:
+          base-url: http://127.0.0.1:4567
+          wait-on: http://127.0.0.1:4567/
+          wait-timeout: 30
+          upload-artifact: always
+          artifact-name: selftest-diff-${{ github.run_attempt }}
+          retention-days: 1
+
+      - name: Assert the Outputs of a Diff Run
+        env:
+          OUTCOME: ${{ steps.visual.outcome }}
+          STATUS: ${{ steps.visual.outputs.status }}
+          EXIT_CODE: ${{ steps.visual.outputs.exit-code }}
+          CHANGED: ${{ steps.visual.outputs.changed }}
+          ARTIFACT_NAME: ${{ steps.visual.outputs.artifact-name }}
+          ARTIFACT_ID: ${{ steps.visual.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.visual.outputs.artifact-url }}
+          EXPECTED_ARTIFACT_NAME: selftest-diff-${{ github.run_attempt }}
+        run: |
+          fail=0
+          check() {
+            if [ "$2" = "$3" ]; then echo "ok: $1 = $2"; else echo "::error title=self-test::$1: expected '$3', got '$2'"; fail=1; fi
+          }
+          check "action step outcome" "$OUTCOME" failure
+          check status "$STATUS" failed
+          check exit-code "$EXIT_CODE" 1
+          check artifact-name "$ARTIFACT_NAME" "$EXPECTED_ARTIFACT_NAME"
+          if [[ "$CHANGED" =~ ^[0-9]+$ ]] && [ "$CHANGED" -ge 1 ]; then echo "ok: changed = $CHANGED"; else echo "::error title=self-test::changed: expected at least 1, got '$CHANGED'"; fail=1; fi
+          if [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]; then echo "ok: artifact-id = $ARTIFACT_ID"; else echo "::error title=self-test::artifact-id: expected a number, got '$ARTIFACT_ID'"; fail=1; fi
+          if [[ "$ARTIFACT_URL" == https://* ]]; then echo "ok: artifact-url = $ARTIFACT_URL"; else echo "::error title=self-test::artifact-url: expected an https URL, got '$ARTIFACT_URL'"; fail=1; fi
+          exit "$fail"
+
+      # By id: download-artifact v5+ extracts a single artifact straight into path.
+      - name: Download the Artifact
+        uses: actions/download-artifact@v7
+        with:
+          artifact-ids: ${{ steps.visual.outputs.artifact-id }}
+          path: ${{ runner.temp }}/selftest-artifact
+
+      - name: Install Dependencies for visual-ci import
+        run: npm ci --omit=dev
+
+      - name: Import the Artifact
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/selftest-artifact
+        run: |
+          if [ ! -f "$ARTIFACT_DIR/run.json" ]; then
+            echo "::error title=self-test::run.json is not at the root of the artifact"
+            ls -laR "$ARTIFACT_DIR"
+            exit 1
+          fi
+          # A throwaway storage folder: never the checkout's storage/.
+          export VISUAL_STORAGE_DIR="$RUNNER_TEMP/selftest-import-storage"
+          node src/cli/index.js import "$ARTIFACT_DIR" | tee "$RUNNER_TEMP/import.log"
+          if ! grep -q "Imported 1 run" "$RUNNER_TEMP/import.log"; then
+            echo "::error title=self-test::visual-ci import did not import the run"
+            exit 1
+          fi
+
+      - name: Committed Baselines Are Untouched
+        if: always()
+        run: |
+          changes="$(git status --porcelain -- storage/baselines)"
+          if [ -n "$changes" ]; then
+            echo "::error title=self-test::storage/baselines changed:"
+            echo "$changes"
+            exit 1
+          fi
+
+      - name: Show Demo Site Log
+        if: failure()
+        run: cat demo-site.log || true
+
+  error:
+    name: Error run reports exit 2 and uploads nothing
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Nothing listens on port 9 (discard): the first page load fails, before any
+      # screenshot, so the run folder stays empty and is not uploaded, even with always.
+      - name: Visual Check (expected to fail with an error)
+        id: visual
+        continue-on-error: true
+        uses: ./
+        with:
+          base-url: http://127.0.0.1:9/
+          upload-artifact: always
+          artifact-name: selftest-error-${{ github.run_attempt }}
+          retention-days: 1
+
+      - name: Assert the Outputs of an Error Run
+        env:
+          OUTCOME: ${{ steps.visual.outcome }}
+          STATUS: ${{ steps.visual.outputs.status }}
+          EXIT_CODE: ${{ steps.visual.outputs.exit-code }}
+          ARTIFACT_NAME: ${{ steps.visual.outputs.artifact-name }}
+          ARTIFACT_ID: ${{ steps.visual.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.visual.outputs.artifact-url }}
+        run: |
+          fail=0
+          check() {
+            if [ "$2" = "$3" ]; then echo "ok: $1 = '$2'"; else echo "::error title=self-test::$1: expected '$3', got '$2'"; fail=1; fi
+          }
+          check "action step outcome" "$OUTCOME" failure
+          check status "$STATUS" error
+          check exit-code "$EXIT_CODE" 2
+          check artifact-name "$ARTIFACT_NAME" ""
+          check artifact-id "$ARTIFACT_ID" ""
+          check artifact-url "$ARTIFACT_URL" ""
+          exit "$fail"
+
+      - name: Committed Baselines Are Untouched
+        if: always()
+        run: |
+          changes="$(git status --porcelain -- storage/baselines)"
+          if [ -n "$changes" ]; then
+            echo "::error title=self-test::storage/baselines changed:"
+            echo "$changes"
+            exit 1
+          fi

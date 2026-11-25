@@ -27,6 +27,7 @@ const REPO = path.resolve('.');
 const readYaml = (file) => YAML.parse(fs.readFileSync(file, 'utf8'));
 const action = readYaml('action.yml');
 const workflow = readYaml('.github/workflows/visual-ci.yml');
+const selftest = readYaml('.github/workflows/action-selftest.yml');
 const steps = action.runs.steps;
 const stepById = (id) => steps.find((s) => s.id === id);
 const stepByName = (name) => steps.find((s) => s.name === name);
@@ -180,7 +181,7 @@ describe('action.yml: structure', () => {
       expect(script, name).not.toMatch(/\$\{\{/);
     }
     // The workflows that use the action too.
-    for (const wf of [workflow]) {
+    for (const wf of [workflow, selftest]) {
       for (const job of Object.values(wf.jobs)) {
         for (const [name, script] of scriptsOf(job.steps)) expect(script, name).not.toMatch(/\$\{\{/);
       }
@@ -201,6 +202,7 @@ describe('action.yml: structure', () => {
     ];
     expect(uses).toContain('actions/github-script@v8');
     expect(uses).toContain('actions/upload-artifact@v6');
+    expect(uses).toContain('actions/download-artifact@v7');
     for (const ref of uses) expect(ref).toMatch(PINNED);
   });
 
@@ -320,6 +322,152 @@ describe('visual-ci.yml dogfoods the action', () => {
     const text = JSON.stringify(job);
     expect(text).not.toMatch(/docker (build|run)/);
     expect(text).not.toContain('actions/upload-artifact');
+  });
+});
+
+/** Runs a workflow step's bash script with its env: evaluated against `context`. */
+async function runWorkflowScript(step, context, { cwd = os.tmpdir(), env = {} } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vrt-wf-step-'));
+  try {
+    const script = path.join(dir, 'step.sh');
+    fs.writeFileSync(script, step.run);
+    const stepEnv = { PATH: process.env.PATH, HOME: dir, RUNNER_TEMP: dir, ...env };
+    for (const [key, value] of Object.entries(step.env || {})) stepEnv[key] = interpolate(value, context);
+    return await exec('bash', ['--noprofile', '--norc', '-eo', 'pipefail', script], { cwd, env: stepEnv });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe('action-selftest.yml proves the failure paths on a real runner', () => {
+  const { diff, error } = selftest.jobs;
+  const actionStep = (job) => job.steps.find((s) => s.uses === './');
+  const named = (job, re) => job.steps.find((s) => re.test(s.name));
+
+  it('runs on demand and on pull requests that touch the action, with a read-only token', () => {
+    expect(selftest.on).toEqual({
+      workflow_dispatch: null,
+      pull_request: {
+        paths: ['action.yml', 'src/ci/**', 'src/cli/**', 'Dockerfile', '.dockerignore', '.github/workflows/action-selftest.yml']
+      }
+    });
+    expect(selftest.permissions).toEqual({ contents: 'read' });
+    expect(Object.keys(selftest.jobs).sort()).toEqual(['diff', 'error']);
+    for (const job of Object.values(selftest.jobs)) {
+      expect(job.permissions).toBeUndefined();
+      expect(job['runs-on']).toBe('ubuntu-latest');
+    }
+  });
+
+  it('can never change committed baselines: strict compare, no credentials, and a check at the end', () => {
+    for (const [name, job] of Object.entries(selftest.jobs)) {
+      const checkout = job.steps.find((s) => s.uses === 'actions/checkout@v4');
+      expect(checkout.with, name).toEqual({ 'persist-credentials': false });
+      const use = actionStep(job);
+      expect(use.with.strict ?? 'true', name).toBe('true');
+      expect(use.with['update-baselines'] ?? 'false', name).toBe('false');
+      const guard = job.steps.at(name === 'diff' ? -2 : -1);
+      expect(guard.name, name).toBe('Committed Baselines Are Untouched');
+      expect(guard.if, name).toBe('always()');
+    }
+  });
+
+  it('the diff job serves a page that differs from the baselines and uploads always, under its own artifact name', () => {
+    expect(named(diff, /^Start Demo Site/).run.trim()).toMatch(/^DEMO_VARIANT=regressed node scripts\/serve-demo\.js .*&$/);
+    const use = actionStep(diff);
+    expect(use).toMatchObject({ id: 'visual', 'continue-on-error': true });
+    expect(use.with).toMatchObject({
+      'base-url': 'http://127.0.0.1:4567',
+      'wait-on': 'http://127.0.0.1:4567/',
+      'upload-artifact': 'always',
+      'artifact-name': 'selftest-diff-${{ github.run_attempt }}'
+    });
+  });
+
+  it('the diff job downloads the artifact by id and imports it into a throwaway storage folder', () => {
+    const download = diff.steps.find((s) => s.uses?.startsWith('actions/download-artifact@'));
+    expect(download.with).toEqual({ 'artifact-ids': '${{ steps.visual.outputs.artifact-id }}', path: '${{ runner.temp }}/selftest-artifact' });
+    const importStep = named(diff, /^Import the Artifact/);
+    expect(importStep.run).toContain('[ ! -f "$ARTIFACT_DIR/run.json" ]');
+    expect(importStep.run).toContain('export VISUAL_STORAGE_DIR="$RUNNER_TEMP/selftest-import-storage"');
+    expect(importStep.run).toContain('node src/cli/index.js import "$ARTIFACT_DIR"');
+    const order = diff.steps.map((s) => s.name);
+    expect(order.indexOf('Assert the Outputs of a Diff Run')).toBeLessThan(order.indexOf('Download the Artifact'));
+  });
+
+  it('the error job points at a port nothing listens on, uploads always, and has its own artifact name', () => {
+    const use = actionStep(error);
+    expect(use).toMatchObject({ id: 'visual', 'continue-on-error': true });
+    expect(use.with).toMatchObject({ 'base-url': 'http://127.0.0.1:9/', 'upload-artifact': 'always', 'artifact-name': 'selftest-error-${{ github.run_attempt }}' });
+    expect(use.with['wait-on']).toBeUndefined();
+  });
+
+  describe('the assertions fail the job when an output is wrong', () => {
+    const diffOutputs = {
+      status: 'failed', 'exit-code': '1', changed: '2', 'artifact-name': 'selftest-diff-1',
+      'artifact-id': '4711', 'artifact-url': 'https://github.com/o/r/actions/runs/1/artifacts/4711'
+    };
+    const errorOutputs = { status: 'error', 'exit-code': '2', 'artifact-name': '', 'artifact-id': '', 'artifact-url': '' };
+    const ctx = (outputs, outcome = 'failure') => ({ steps: { visual: { outcome, outputs } }, github: { run_attempt: '1' }, runner: { temp: os.tmpdir() } });
+    const assertDiff = named(diff, /^Assert the Outputs/);
+    const assertError = named(error, /^Assert the Outputs/);
+
+    it('pass for the expected outputs', async () => {
+      const d = await runWorkflowScript(assertDiff, ctx(diffOutputs));
+      expect(d.code, d.stdout).toBe(0);
+      const e = await runWorkflowScript(assertError, ctx(errorOutputs));
+      expect(e.code, e.stdout).toBe(0);
+    });
+
+    it.each([
+      ['the action passed', {}, 'success'],
+      ['status passed', { status: 'passed' }],
+      ['exit code 2', { 'exit-code': '2' }],
+      ['nothing changed', { changed: '0' }],
+      ['changed empty', { changed: '' }],
+      ['no artifact id', { 'artifact-id': '' }],
+      ['no artifact url', { 'artifact-url': '' }],
+      ['no artifact name', { 'artifact-name': '' }]
+    ])('diff job: fails when %s', async (_label, change, outcome) => {
+      const r = await runWorkflowScript(assertDiff, ctx({ ...diffOutputs, ...change }, outcome));
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain('::error title=self-test::');
+    });
+
+    it.each([
+      ['the action passed', {}, 'success'],
+      ['status failed', { status: 'failed' }],
+      ['exit code 1', { 'exit-code': '1' }],
+      ['an artifact id', { 'artifact-id': '12' }],
+      ['an artifact url', { 'artifact-url': 'https://x' }],
+      ['an artifact name', { 'artifact-name': 'selftest-error-1' }]
+    ])('error job: fails when %s', async (_label, change, outcome) => {
+      const r = await runWorkflowScript(assertError, ctx({ ...errorOutputs, ...change }, outcome));
+      expect(r.code).toBe(1);
+    });
+  });
+
+  it('the baseline guard fails when storage/baselines changed', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'vrt-guard-'));
+    const git = (...args) => exec('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: repo });
+    try {
+      fs.mkdirSync(path.join(repo, 'storage', 'baselines'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'storage', 'baselines', 'a.png'), 'a');
+      await git('init', '-q');
+      await git('add', '.');
+      await git('commit', '-q', '-m', 'init');
+      const guard = named(error, /^Committed Baselines/);
+      expect((await runWorkflowScript(guard, {}, { cwd: repo })).code).toBe(0);
+      fs.writeFileSync(path.join(repo, 'storage', 'baselines', 'b.png'), 'b');
+      const added = await runWorkflowScript(guard, {}, { cwd: repo });
+      expect(added.code).toBe(1);
+      expect(added.stdout).toContain('storage/baselines changed');
+      fs.rmSync(path.join(repo, 'storage', 'baselines', 'b.png'));
+      fs.writeFileSync(path.join(repo, 'storage', 'baselines', 'a.png'), 'changed');
+      expect((await runWorkflowScript(guard, {}, { cwd: repo })).code).toBe(1);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 
