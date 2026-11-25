@@ -275,7 +275,11 @@ node src/cli/index.js test
 - `-s, --summary-file <path>`: Custom file name or path for the markdown test report.
 - `--update-baselines`: Automatically promote all current screenshots to golden master baselines.
 - `--strict` / `--no-strict`: In strict mode a route with no baseline **fails** (`MISSING_BASELINE`) instead of adopting the current screenshot as its baseline. Strict is the default when `CI=true`, so CI can never pass by comparing a page to itself.
-- `--json <file>`: Also write a machine-readable result to `<file>` (relative to the working directory; parent folders are created). It is written atomically (temp file + rename) and also when the run fails with an error. `--json -` writes the JSON to **stdout** and sends all human output, warnings included, to stderr, so `visual-ci test --json - | jq .status` works. The target may not be the run's own `run.json` or markdown summary.
+- `--json <file>`: Also write a machine-readable result to `<file>` (relative to the working directory; parent folders are created). It is written atomically (temp file + rename), and also when the run fails with an error or crashes. `--json -` writes the JSON to **stdout** and sends all human output, warnings included, to stderr, so `node src/cli/index.js test --json - | jq .status` works. Details:
+  - Through npm, use `npm run -s test:visual -- --json -`: without `-s` npm prints its own banner to stdout, ahead of the JSON.
+  - Through Docker Compose, use `docker compose run -T runner node src/cli/index.js test --json -`: with a TTY (the default) stderr is merged into stdout.
+  - The target must be a file name: a directory (`.`, `out/`) is refused, and so is the run's own `run.json` or markdown summary, however it is reached (a symlinked folder or `VISUAL_STORAGE_DIR`, a link to the file, or a different letter case on macOS/Windows).
+  - Once the target is accepted, any file already at that path is removed before the run starts, so a reused path never shows an older run's result. A refused target is never touched. Usage errors (unknown flag, missing value) are rejected before the command runs and leave the path alone, so always check the exit code before reading the file.
 
 #### Exit codes
 
@@ -285,7 +289,7 @@ node src/cli/index.js test
 | `1` | Visual differences: at least one `DIFF`, or a `MISSING_BASELINE` in strict mode. |
 | `2` | Error: config not found or invalid, a page that could not load, Playwright's browser not installed, an invalid argument or usage error (unknown flag, missing value), or a crash. Also used by `capture` and `import` when they fail. |
 
-`--help` and `--version` exit `0`. A usage error is rejected before the run starts, so it writes no JSON file: treat "exit 2 and no JSON" as a usage error.
+`--help` and `--version` exit `0`. A usage error is rejected before the command runs, so it writes no JSON file (and leaves an existing one alone): treat "exit 2" with a missing or older-than-the-run JSON as a usage error.
 
 #### JSON result (`--json`)
 
@@ -323,6 +327,7 @@ Schema `visual-ci-result`, version `1`. Future versions only add fields; existin
       "mismatch_percentage": 3.42,
       "current": "storage/runs/run_1764000000000/index-desktop.png",
       "baseline": "storage/baselines/index-desktop.png",
+      "baseline_snapshot": "storage/runs/run_1764000000000/baselines/index-desktop.png",
       "diff": "storage/runs/run_1764000000000/index-desktop-diff.png"
     }
   ]
@@ -330,10 +335,14 @@ Schema `visual-ci-result`, version `1`. Future versions only add fields; existin
 ```
 
 - `status` is `passed` (exit 0), `failed` (exit 1) or `error` (exit 2); `exit_code` is the process exit code.
-- `error` is `null`, or `{ "code", "message" }` with `code` one of `CONFIG_NOT_FOUND`, `CONFIG_INVALID`, `NAVIGATION_FAILED`, `BROWSER_MISSING`, `INVALID_ARGUMENT`, `INTERNAL`. Messages are sanitised (control and bidi characters are escaped).
+- `error` is `null`, or `{ "code", "message" }` with `code` one of `CONFIG_NOT_FOUND`, `CONFIG_INVALID` (including an invalid `maskSelectors` entry), `NAVIGATION_FAILED` (a page that could not load), `BROWSER_MISSING` (Chromium or its system libraries not installed: run `npx playwright install --with-deps chromium`), `INVALID_ARGUMENT`, `INTERNAL` (anything else, including crashes). Messages are sanitised: control and bidi characters are escaped, the working directory is shown as `.` and the home directory as `~`.
+- **No secrets:** `base_url` and every message (JSON and terminal) have URL credentials (`user:pass@`) removed and the values of token-like query parameters (`token`, `access_token`, `auth`, `key`, `apikey`, `api_key`, `password`, `secret`, `sig`, `signature`, any case) replaced by `***`.
 - `run` is `null` when the run never started (e.g. the config could not be loaded). On a later error it holds what is known; `manifest` and `summary` are `null` when those files were not written.
-- `mode` is `compare` or `update-baselines`. `threshold_percentage` and `mismatch_percentage` are percentages (`1` = 1%).
-- Snapshot `status` is `MATCH`, `DIFF`, `NEW_BASELINE` or `MISSING_BASELINE`. `baseline` is the shared baseline file (for `MISSING_BASELINE`, where it is expected; the file does not exist). `diff` is `null` when no comparison was made.
+- `mode` is `compare` or `update-baselines`. `threshold_percentage` and `mismatch_percentage` are percentages (`1` = 1%), rounded to 6 decimals.
+- Snapshot `status` is `MATCH`, `DIFF`, `NEW_BASELINE` or `MISSING_BASELINE`.
+- `baseline` is the **shared** baseline file in `baselines/` (for `MISSING_BASELINE`, where it is expected; the file does not exist). Approvals change it later, so it can differ from what this run compared against.
+- `baseline_snapshot` is the **run's own copy** of the baseline it was compared against, inside the run folder, so it travels with the CI artifact (`storage/runs/`): use it to show "before" for a run, e.g. in a PR comment. For a new baseline it is the run's screenshot; `null` when there was no baseline.
+- `diff` is `null` when no comparison was made.
 - `counts`: `passed` = `MATCH`, `changed` = `DIFF`, `missing_baseline`, `new_baseline`, and `total`.
 - **Paths** are relative to the working directory and use `/`, so they mean the same inside the Docker runner (workspace `/app`) and on the host checkout that mounts `storage/`. A path outside the working directory (e.g. `VISUAL_STORAGE_DIR=/tmp/vrt`) is given absolute.
 
