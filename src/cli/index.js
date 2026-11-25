@@ -12,7 +12,7 @@ import { createTestRun, createSnapshot, getDb, closeDb } from '../server/db.js';
 import { importRuns, sanitizeForDisplay } from '../server/importRuns.js';
 import { resolveStorageRoot } from '../server/paths.js';
 import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
-import { EXIT, STDOUT_TARGET, CliError, buildResult, writeResult, sanitizeMessage } from './result.js';
+import { EXIT, STDOUT_TARGET, CliError, buildResult, writeResult, sanitizeMessage, redactUrl } from './result.js';
 import { createLogger } from './logger.js';
 
 // Anything that escapes the command handlers is a crash: exit 2, never 1 (which means
@@ -71,7 +71,7 @@ program
       console.log('──────────────────────────────────────────────────────');
       console.log('  Visual Regression Testing Tool: Headless Capture');
       console.log('──────────────────────────────────────────────────────');
-      console.log(`  Target Base URL : ${config.baseUrl}`);
+      console.log(`  Target Base URL : ${redactUrl(config.baseUrl)}`);
       console.log(`  Routes          : ${config.routes.join(', ')}`);
       console.log(`  Viewports       : ${config.viewports.map((v) => `${v.name} (${v.width}x${v.height})`).join(', ')}`);
       console.log(`  Mask Selectors  : ${config.maskSelectors.length > 0 ? config.maskSelectors.join(', ') : '(none)'}`);
@@ -198,7 +198,7 @@ program
       log.info('──────────────────────────────────────────────────────');
       log.info('  Visual Regression Testing Tool: Compare & Test');
       log.info('──────────────────────────────────────────────────────');
-      log.info(`  Target Base URL : ${config.baseUrl}`);
+      log.info(`  Target Base URL : ${redactUrl(config.baseUrl)}`);
       log.info(`  Routes          : ${config.routes.join(', ')}`);
       log.info(`  Viewports       : ${config.viewports.map((v) => `${v.name} (${v.width}x${v.height})`).join(', ')}`);
       log.info(`  Threshold       : ${config.threshold * 100}%`);

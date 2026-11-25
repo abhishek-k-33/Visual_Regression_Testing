@@ -6,6 +6,7 @@ import { chromium, errors as playwrightErrors } from 'playwright';// chromium is
 export { getRouteSlug, getSnapshotFilename } from './naming.js';
 import { getSnapshotFilename } from './naming.js';
 import { CliError } from './errors.js';
+import { redactUrl, redactUrlsInText } from './display.js';
 
 /**
  * Throws (INVALID_ARGUMENT) unless the run id is safe to use as a folder name.
@@ -117,7 +118,8 @@ export async function captureScreenshots(config, options = {}) {
           } catch (navErr) {
             // First line only: the rest is Playwright's call log.
             const reason = String(navErr?.message ?? navErr).split('\n')[0];
-            throw new CliError('NAVIGATION_FAILED', `Could not load ${fullUrl}: ${reason}`, { cause: navErr });
+            // Redacted: the URL can carry credentials, and this message ends up in logs and the JSON result.
+            throw new CliError('NAVIGATION_FAILED', `Could not load ${redactUrl(fullUrl)}: ${redactUrlsInText(reason)}`, { cause: navErr });
           }
 
           // Network idle is best effort. Pages with analytics beacons, long-polling or

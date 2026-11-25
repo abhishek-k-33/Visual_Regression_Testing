@@ -3,8 +3,10 @@ import path from 'node:path';
 import { getToolVersion } from './manifest.js';
 // TODO(A3): import from src/shared/text.js once sanitizeForDisplay moves there.
 import { sanitizeForDisplay } from '../server/importRuns.js';
+import { redactUrl, redactUrlsInText, toDisplayPath } from './display.js';
 
 export { CliError } from './errors.js';
+export { redactUrl } from './display.js';
 
 /**
  * The machine-readable result of a CLI command (`visual-ci test --json <file>`).
@@ -49,15 +51,16 @@ export const STDOUT_TARGET = '-';
 const MAX_MESSAGE_LENGTH = 2000;
 
 /**
- * Makes an error message safe for a terminal or the JSON: each line goes through
- * sanitizeForDisplay (control, bidi and other invisible characters become visible
- * escapes), line breaks are kept, and very long messages are shortened.
+ * Makes an error message safe for a terminal or the JSON: URLs lose credentials and
+ * token-like query values (redactUrl), each line goes through sanitizeForDisplay
+ * (control, bidi and other invisible characters become visible escapes), line breaks
+ * are kept, and very long messages are shortened.
  *
  * @param {unknown} text
  * @returns {string}
  */
 export function sanitizeMessage(text) {
-  const lines = String(text ?? '').split(/\r?\n/).map((line) => sanitizeForDisplay(line).trimEnd());
+  const lines = redactUrlsInText(text).split(/\r?\n/).map((line) => sanitizeForDisplay(line).trimEnd());
   while (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
   const joined = lines.join('\n');
   return joined.length > MAX_MESSAGE_LENGTH ? `${joined.slice(0, MAX_MESSAGE_LENGTH - 3)}...` : joined;
@@ -78,22 +81,8 @@ export function classifyError(err) {
   return 'INTERNAL';
 }
 
-/**
- * A path as the result records it: relative to cwd with "/" separators, or absolute
- * (still with "/") when it lies outside cwd. null stays null.
- *
- * @param {string|null|undefined} file
- * @param {string} cwd
- * @returns {string|null}
- */
-export function toResultPath(file, cwd = process.cwd()) {
-  if (!file) return null;
-  const abs = path.resolve(cwd, file);
-  const rel = path.relative(cwd, abs);
-  if (rel === '') return '.';
-  const outside = rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
-  return (outside ? abs : rel).split(path.sep).join('/');
-}
+/** A path as the result records it (see toDisplayPath in display.js). */
+export const toResultPath = toDisplayPath;
 
 const percentage = (ratio) => Math.round(ratio * 100 * 1e6) / 1e6; // 0.07 * 100 is 7.000000000000001
 
@@ -155,7 +144,7 @@ export function buildResult({ command = 'test', error = null, run = null, result
       id: run.id,
       mode: run.mode,
       strict: run.strict,
-      base_url: run.baseUrl ?? null,
+      base_url: run.baseUrl ? redactUrl(run.baseUrl) : null, // credentials and tokens never go in the JSON
       branch: run.gitInfo?.branch || null,
       commit_sha: run.gitInfo?.commit_sha || null,
       created_at: run.createdAt ? run.createdAt.toISOString() : null,

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import net from 'node:net';
 import { execFile } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
@@ -29,6 +30,7 @@ const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 
 describe('visual-ci test --json and exit codes', () => {
   let site;
+  let dead;
   let baseUrl;
   let deadUrl;
   let workDir;
@@ -43,10 +45,11 @@ describe('visual-ci test --json and exit codes', () => {
     await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
     baseUrl = `http://127.0.0.1:${site.address().port}`;
 
-    const closed = http.createServer();
-    await new Promise((resolve) => closed.listen(0, '127.0.0.1', resolve));
-    deadUrl = `http://127.0.0.1:${closed.address().port}`;
-    await new Promise((resolve) => closed.close(resolve));
+    // Accepts and immediately drops every connection: a page that can never load. (A
+    // closed ephemeral port could be taken by another test worker in the meantime.)
+    dead = net.createServer((socket) => socket.destroy());
+    await new Promise((resolve) => dead.listen(0, '127.0.0.1', resolve));
+    deadUrl = `http://127.0.0.1:${dead.address().port}`;
 
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vrt-cli-json-'));
     fs.writeFileSync(path.join(workDir, 'visual.config.json'), JSON.stringify({
@@ -60,6 +63,7 @@ describe('visual-ci test --json and exit codes', () => {
   afterAll(async () => {
     site.closeAllConnections();
     await new Promise((resolve) => site.close(resolve));
+    await new Promise((resolve) => dead.close(resolve));
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 
@@ -102,8 +106,30 @@ describe('visual-ci test --json and exit codes', () => {
       expect(stderr).toContain(`Could not load ${deadUrl}/`);
       const result = readJson(path.join(workDir, 'dead.json'));
       expect(result).toMatchObject({ status: 'error', exit_code: 2, error: { code: 'NAVIGATION_FAILED' } });
-      expect(result.error.message).toMatch(/ERR_CONNECTION_REFUSED/);
+      expect(result.error.message).toMatch(/net::ERR_/);
       expect(result.run).toMatchObject({ id: 'run_dead', mode: 'compare', base_url: deadUrl, run_dir: 'storage/runs/run_dead', manifest: null, summary: null });
+    }, 30000);
+
+    it('credentials and tokens in the base URL never reach the JSON or the terminal', async () => {
+      const secretDead = deadUrl.replace('http://', 'http://user:s3cret@') + '/?token=abc&page=2';
+      const failed = await runCli(workDir, ['test', '-u', secretDead, '-r', 'run_secret_dead', '--json', 'secret-dead.json']);
+      expect(failed.code).toBe(2);
+      const failedJson = fs.readFileSync(path.join(workDir, 'secret-dead.json'), 'utf8');
+      expect(JSON.parse(failedJson).error.code).toBe('NAVIGATION_FAILED');
+      expect(JSON.parse(failedJson).run.base_url).toBe(`${deadUrl}/?token=***&page=2`);
+
+      const secretSite = baseUrl.replace('http://', 'http://user:s3cret@');
+      const passed = await runCli(workDir, ['test', '--no-strict', '-u', secretSite, '-r', 'run_secret_ok', '--json', '-'], {
+        env: { VISUAL_STORAGE_DIR: path.join(workDir, 'secret-storage') }
+      });
+      expect(passed.code, passed.stderr).toBe(0);
+      expect(JSON.parse(passed.stdout).run.base_url).toBe(baseUrl);
+
+      for (const text of [failedJson, failed.out, passed.out]) {
+        expect(text).not.toContain('s3cret');
+        expect(text).not.toContain('user:');
+        expect(text).not.toContain('token=abc');
+      }
     }, 30000);
 
     it('a missing browser: BROWSER_MISSING', async () => {
