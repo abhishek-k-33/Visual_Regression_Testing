@@ -499,7 +499,7 @@ async function runAction(runner, inputs, extra = {}) {
   return { validate, wait, image, run, parse, final };
 }
 
-describe('action steps (bash, with a fake docker)', () => {
+describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
   let runner;
   beforeEach(() => { runner = createRunner(); });
   afterEach(() => runner.cleanup());
@@ -792,7 +792,8 @@ describe('action steps (bash, with a fake docker)', () => {
   });
 });
 
-describe('the whole action against a real page (fake docker runs the real CLI)', () => {
+// Real Chromium runs (one or two per test): far above vitest's 5 s default on a busy machine.
+describe('the whole action against a real page (fake docker runs the real CLI)', { timeout: 120000 }, () => {
   let site;
   let baseUrl;
   let color = 'white';
