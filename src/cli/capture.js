@@ -5,6 +5,18 @@ import { chromium, errors as playwrightErrors } from 'playwright';// chromium is
 
 export { getRouteSlug, getSnapshotFilename } from './naming.js';
 import { getSnapshotFilename } from './naming.js';
+import { CliError } from './errors.js';
+
+/**
+ * Throws (INVALID_ARGUMENT) unless the run id is safe to use as a folder name.
+ *
+ * @param {string} runId
+ */
+export function assertValidRunId(runId) {
+  if (typeof runId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(runId)) {
+    throw new CliError('INVALID_ARGUMENT', `Invalid runId "${runId}": must contain only alphanumeric characters, dashes, and underscores.`);
+  }
+}
 
 /**
  * CSS injected into every page to ensure deterministic captures:
@@ -69,11 +81,8 @@ async function assertValidMaskSelectors(page, maskSelectors = []) {
  * @returns {Promise<Array<object>>} Array of captured snapshot results
  */
 export async function captureScreenshots(config, options = {}) {
-  const rawRunId = options.runId || `run_${Date.now()}`;
-  if (!/^[a-zA-Z0-9_-]+$/.test(rawRunId)) {
-    throw new Error(`Invalid runId "${rawRunId}": must contain only alphanumeric characters, dashes, and underscores.`);
-  }
-  const runId = rawRunId;
+  const runId = options.runId || `run_${Date.now()}`;
+  assertValidRunId(runId);
   const navigationTimeout = options.navigationTimeout ?? 30000;
   const networkIdleTimeout = options.networkIdleTimeout ?? 10000;
   const baseStorage = options.outputDir || path.resolve(process.cwd(), config.storageDir || 'storage', 'runs');
@@ -103,7 +112,13 @@ export async function captureScreenshots(config, options = {}) {
 
         try {
           // The load event is required: a page that can't load is a real failure.
-          await page.goto(fullUrl, { waitUntil: 'load', timeout: navigationTimeout });
+          try {
+            await page.goto(fullUrl, { waitUntil: 'load', timeout: navigationTimeout });
+          } catch (navErr) {
+            // First line only: the rest is Playwright's call log.
+            const reason = String(navErr?.message ?? navErr).split('\n')[0];
+            throw new CliError('NAVIGATION_FAILED', `Could not load ${fullUrl}: ${reason}`, { cause: navErr });
+          }
 
           // Network idle is best effort. Pages with analytics beacons, long-polling or
           // websockets never go idle; for those, capture the already-loaded page.
