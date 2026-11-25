@@ -15,6 +15,7 @@ import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
 import { EXIT, STDOUT_TARGET, CliError, buildResult, writeResult, sanitizeMessage, redactUrl, toError } from './result.js';
 import { jsonTargetConflict, jsonTargetShapeProblem } from './jsonTarget.js';
 import { createLogger } from './logger.js';
+import { toDisplayPath } from './display.js';
 
 /**
  * The --json result still owed if the command ends in an error or a crash: set once
@@ -395,7 +396,7 @@ program
         log.info(`  Summary Report   : ${relSummary}`);
       }
       if (jsonFile && jsonFile !== STDOUT_TARGET) {
-        log.info(`  JSON Result      : ${path.relative(process.cwd(), jsonFile)}`);
+        log.info(`  JSON Result      : ${toDisplayPath(jsonFile)}`); // absolute when outside the working directory
       }
       if (stepSummaryWritten) {
         log.info('  CI Step Summary  : Appended to GITHUB_STEP_SUMMARY');
