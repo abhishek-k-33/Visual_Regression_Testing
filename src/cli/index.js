@@ -5,13 +5,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadConfig, readConfiguredStorageDir } from './config.js';
-import { captureScreenshots, getSnapshotFilename } from './capture.js';
+import { captureScreenshots, getSnapshotFilename, assertValidRunId } from './capture.js';
 import { compareSnapshot, sha256, DEFAULT_PIXELMATCH_THRESHOLD } from './compare.js';
 import { buildRunManifest, writeRunManifest, toSqliteTimestamp, getToolVersion, MANIFEST_FILENAME } from './manifest.js';
 import { createTestRun, createSnapshot, getDb, closeDb } from '../server/db.js';
 import { importRuns, sanitizeForDisplay } from '../server/importRuns.js';
 import { resolveStorageRoot } from '../server/paths.js';
 import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
+import { EXIT, STDOUT_TARGET, CliError, buildResult, writeResult, sanitizeMessage } from './result.js';
+import { createLogger } from './logger.js';
+
+// Anything that escapes the command handlers is a crash: exit 2, never 1 (which means
+// "visual differences").
+function crash(kind) {
+  return (reason) => {
+    console.error(`\n[ERROR] ${kind}: ${sanitizeMessage(reason?.stack ?? reason)}\n`);
+    process.exit(EXIT.ERROR);
+  };
+}
+process.on('unhandledRejection', crash('Unhandled promise rejection'));
+process.on('uncaughtException', crash('Uncaught exception'));
 
 function getGitContext() {
   const envBranch = process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME;
@@ -28,6 +41,10 @@ function getGitContext() {
 const NOT_IDLE_NOTE = '      (page never went network-idle, e.g. analytics or long-polling; captured after the load event)';
 
 const program = new Command();
+
+// Usage errors (unknown option, missing argument...) exit 2; --help and --version exit 0.
+// Set before the subcommands are added so they inherit it.
+program.exitOverride((err) => process.exit(err.exitCode === 0 ? EXIT.PASS : EXIT.ERROR));
 
 program
   .name('visual-ci')
@@ -78,10 +95,40 @@ program
       console.log(`  Capture Complete: ${results.length} screenshots saved in ${elapsed}s`);
       console.log('──────────────────────────────────────────────────────\n');
     } catch (err) {
-      console.error(`\n[ERROR] Capture failed: ${err.message}\n`);
-      process.exit(1);
+      console.error(`\n[ERROR] Capture failed: ${sanitizeMessage(err.message)}\n`);
+      process.exit(EXIT.ERROR);
     }
   });
+
+/**
+ * Why a --json target can't be used, or null. It is resolved against cwd and must not
+ * be the run's own run.json or markdown summary (both are written into the run folder).
+ */
+function jsonTargetConflict(target, runsDir, summaryFile) {
+  if (!target || target === STDOUT_TARGET || !runsDir) return null;
+  const file = path.resolve(process.cwd(), target);
+  // path.join, not path.resolve: that's how the run.json and summary writers build these paths.
+  if (file === path.join(runsDir, MANIFEST_FILENAME)) return `--json cannot be "${target}": that is the run's ${MANIFEST_FILENAME}`;
+  if (file === path.join(runsDir, summaryFile || 'summary.md')) return `--json cannot be "${target}": that is the run's markdown summary`;
+  return null;
+}
+
+/** Best guess at the run folder when the config could not be loaded (used for the --json guard). */
+function fallbackRunsDir(options) {
+  if (!options.runId) return null; // a generated run id can't clash with an existing run
+  try {
+    assertValidRunId(options.runId);
+    let storageDir;
+    try {
+      storageDir = readConfiguredStorageDir(options.config) || undefined;
+    } catch {
+      storageDir = undefined;
+    }
+    return path.join(resolveStorageRoot(storageDir), 'runs', options.runId);
+  } catch {
+    return null;
+  }
+}
 
 program
   .command('test')
@@ -93,8 +140,22 @@ program
   .option('-s, --summary-file <path>', 'Custom file name or relative path for markdown summary')
   .option('--strict', 'Fail on missing baselines instead of creating them (default when CI=true)')
   .option('--no-strict', 'Create missing baselines from the current screenshots, even in CI')
+  .option('--json <file>', 'Also write a machine-readable result (schema visual-ci-result v1) to <file> (relative to the working directory); "-" writes it to stdout and moves all other output to stderr')
   .action(async (options) => {
+    const jsonTarget = options.json;
+    const log = createLogger({ stdoutReserved: jsonTarget === STDOUT_TARGET });
+    const startTime = Date.now();
+    const results = [];
+    let run = null; // what the JSON result reports about the run, once it is known
+    let runsDir = null;
+    let jsonUsable = true; // false once the target was refused or failed to write
+
     try {
+      if (jsonTarget !== undefined && jsonTarget.trim() === '') {
+        jsonUsable = false;
+        throw new CliError('INVALID_ARGUMENT', '--json needs a file name, or "-" for stdout');
+      }
+
       const overrides = {};
       if (options.baseUrl) {
         overrides.baseUrl = options.baseUrl;
@@ -102,42 +163,61 @@ program
 
       const config = loadConfig(options.config, overrides);
       const runId = options.runId || `run_${Date.now()}`;
+      assertValidRunId(runId);
       // Same root the dashboard uses (VISUAL_STORAGE_DIR > storageDir > ./storage),
       // so baselines, screenshots and the database always end up together.
       const storageRoot = resolveStorageRoot(config.storageDir);
       const baselinesDir = path.join(storageRoot, 'baselines');
-      const runsDir = path.join(storageRoot, 'runs', runId);
+      runsDir = path.join(storageRoot, 'runs', runId);
       const strict = options.strict ?? process.env.CI === 'true';
-      if (options.summaryFile && path.resolve(runsDir, options.summaryFile) === path.join(runsDir, MANIFEST_FILENAME)) {
-        throw new Error(`--summary-file cannot be "${options.summaryFile}": that is the run's ${MANIFEST_FILENAME}`);
+      const mode = options.updateBaselines ? 'update-baselines' : 'compare';
+      // path.join like writeSummaryReport (path.resolve would let "/run.json" through).
+      if (options.summaryFile && path.join(runsDir, options.summaryFile) === path.join(runsDir, MANIFEST_FILENAME)) {
+        throw new CliError('INVALID_ARGUMENT', `--summary-file cannot be "${options.summaryFile}": that is the run's ${MANIFEST_FILENAME}`);
+      }
+      const conflict = jsonTargetConflict(jsonTarget, runsDir, options.summaryFile);
+      if (conflict) {
+        jsonUsable = false;
+        throw new CliError('INVALID_ARGUMENT', conflict);
       }
 
-      console.log('──────────────────────────────────────────────────────');
-      console.log('  Visual Regression Testing Tool: Compare & Test');
-      console.log('──────────────────────────────────────────────────────');
-      console.log(`  Target Base URL : ${config.baseUrl}`);
-      console.log(`  Routes          : ${config.routes.join(', ')}`);
-      console.log(`  Viewports       : ${config.viewports.map((v) => `${v.name} (${v.width}x${v.height})`).join(', ')}`);
-      console.log(`  Threshold       : ${config.threshold * 100}%`);
-      console.log(`  Run ID          : ${runId}`);
-      console.log(`  Storage         : ${path.relative(process.cwd(), storageRoot) || '.'}`);
-      console.log(`  Missing baseline: ${strict ? 'fail (strict)' : 'create from current screenshot'}`);
-      console.log('──────────────────────────────────────────────────────\n');
+      const gitInfo = getGitContext();
+      run = {
+        id: runId,
+        mode,
+        strict,
+        baseUrl: config.baseUrl,
+        gitInfo,
+        createdAt: new Date(startTime),
+        threshold: config.threshold,
+        runDir: runsDir,
+        manifestPath: null,
+        summaryPath: null
+      };
 
-      const startTime = Date.now();
+      log.info('──────────────────────────────────────────────────────');
+      log.info('  Visual Regression Testing Tool: Compare & Test');
+      log.info('──────────────────────────────────────────────────────');
+      log.info(`  Target Base URL : ${config.baseUrl}`);
+      log.info(`  Routes          : ${config.routes.join(', ')}`);
+      log.info(`  Viewports       : ${config.viewports.map((v) => `${v.name} (${v.width}x${v.height})`).join(', ')}`);
+      log.info(`  Threshold       : ${config.threshold * 100}%`);
+      log.info(`  Run ID          : ${runId}`);
+      log.info(`  Storage         : ${path.relative(process.cwd(), storageRoot) || '.'}`);
+      log.info(`  Missing baseline: ${strict ? 'fail (strict)' : 'create from current screenshot'}`);
+      log.info('──────────────────────────────────────────────────────\n');
 
-      console.log('  Step 1: Capturing screenshots...');
+      log.info('  Step 1: Capturing screenshots...');
       const snapshots = await captureScreenshots(config, {
         runId,
         outputDir: path.join(storageRoot, 'runs'),
         onProgress: (snap) => {
-          console.log(`    📸 Captured ${snap.route} @ ${snap.viewport}`);
-          if (!snap.networkIdle) console.log(NOT_IDLE_NOTE);
+          log.info(`    📸 Captured ${snap.route} @ ${snap.viewport}`);
+          if (!snap.networkIdle) log.info(NOT_IDLE_NOTE);
         }
       });
 
-      console.log('\n  Step 2: Comparing against baselines...');
-      const results = [];
+      log.info('\n  Step 2: Comparing against baselines...');
       let passedCount = 0;
       let failedCount = 0;
       let newBaselineCount = 0;
@@ -148,7 +228,7 @@ program
           const baselineFilename = getSnapshotFilename(snap.route, snap.viewport);
           const baselinePath = path.join(baselinesDir, baselineFilename);
           fs.copyFileSync(snap.filepath, baselinePath);
-          console.log(`    [UPDATED BASELINE] ${snap.route} @ ${snap.viewport}`);
+          log.info(`    [UPDATED BASELINE] ${snap.route} @ ${snap.viewport}`);
           newBaselineCount++;
           results.push({
             ...snap,
@@ -172,28 +252,28 @@ program
 
         if (comp.status === 'NEW_BASELINE') {
           newBaselineCount++;
-          console.log(`    [NEW BASELINE] ${comp.route} @ ${comp.viewport} -> Baseline created`);
+          log.info(`    [NEW BASELINE] ${comp.route} @ ${comp.viewport} -> Baseline created`);
         } else if (comp.status === 'MISSING_BASELINE') {
           failedCount++;
           const rel = path.relative(process.cwd(), comp.baselinePath);
-          console.log(`    [FAIL] ${comp.route} @ ${comp.viewport} -> no baseline at ${rel} (create it with --update-baselines and commit it)`);
+          log.info(`    [FAIL] ${comp.route} @ ${comp.viewport} -> no baseline at ${rel} (create it with --update-baselines and commit it)`);
         } else if (comp.status === 'MATCH') {
           passedCount++;
-          console.log(`    [PASS] ${comp.route} @ ${comp.viewport} (${comp.mismatchPercentage.toFixed(2)}% mismatch)`);
+          log.info(`    [PASS] ${comp.route} @ ${comp.viewport} (${comp.mismatchPercentage.toFixed(2)}% mismatch)`);
         } else {
           failedCount++;
-          console.log(`    [FAIL] ${comp.route} @ ${comp.viewport} (${comp.mismatchPercentage.toFixed(2)}% mismatch > ${config.threshold * 100}% threshold)`);
+          log.info(`    [FAIL] ${comp.route} @ ${comp.viewport} (${comp.mismatchPercentage.toFixed(2)}% mismatch > ${config.threshold * 100}% threshold)`);
         }
       }
 
-      const gitInfo = getGitContext();
       const overallStatus = failedCount > 0 ? 'FAILED' : 'PASSED';
       const createdAt = new Date();
+      run.createdAt = createdAt; // same timestamp as run.json and the database row
 
       // Machine-readable run record next to the screenshots (travels with CI artifacts).
       // Written before the database so a DB failure can't lose it.
       try {
-        writeRunManifest(buildRunManifest({
+        run.manifestPath = writeRunManifest(buildRunManifest({
           runId,
           createdAt,
           gitInfo,
@@ -201,13 +281,13 @@ program
           threshold: config.threshold,
           pixelmatchThreshold: DEFAULT_PIXELMATCH_THRESHOLD,
           strict,
-          mode: options.updateBaselines ? 'update-baselines' : 'compare',
+          mode,
           runDir: runsDir,
           baselinesDir,
           results
         }), runsDir);
       } catch (manifestErr) {
-        console.warn(`  [WARN] Failed to write run.json: ${manifestErr.message}`);
+        log.warn(`  [WARN] Failed to write run.json: ${manifestErr.message}`);
       }
 
       // Record test run & snapshots in SQLite database for web review dashboard
@@ -236,7 +316,7 @@ program
           }, db);
         }
       } catch (dbErr) {
-        console.warn(`  [WARN] Failed to record run in database: ${dbErr.message}`);
+        log.warn(`  [WARN] Failed to record run in database: ${dbErr.message}`);
       }
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -258,36 +338,59 @@ program
         summaryOptions.summaryFileName = options.summaryFile;
       }
       const { runSummaryPath, stepSummaryWritten } = writeSummaryReport(summaryMarkdown, summaryOptions);
+      run.summaryPath = runSummaryPath;
+      run.durationMs = Date.now() - startTime;
 
-      console.log('\n──────────────────────────────────────────────────────');
-      console.log('  Visual Regression Test Summary');
-      console.log('──────────────────────────────────────────────────────');
-      console.log(`  Total Snapshots  : ${results.length}`);
-      console.log(`  Passed (Match)   : ${passedCount}`);
-      console.log(`  Failed (Diff)    : ${failedCount}`);
-      console.log(`  New Baselines    : ${newBaselineCount}`);
-      console.log(`  Execution Time   : ${elapsed}s`);
-      console.log('──────────────────────────────────────────────────────');
-      console.log(`  Review Dashboard : http://localhost:4000/runs/${runId}`);
+      const result = buildResult({ command: 'test', run, results });
+      let jsonFile = null;
+      if (jsonTarget !== undefined) {
+        try {
+          jsonFile = await writeResult(result, jsonTarget);
+        } catch (writeErr) {
+          jsonUsable = false;
+          throw new CliError('INTERNAL', `Could not write the JSON result to ${jsonTarget}: ${writeErr.message}`, { cause: writeErr });
+        }
+      }
+
+      log.info('\n──────────────────────────────────────────────────────');
+      log.info('  Visual Regression Test Summary');
+      log.info('──────────────────────────────────────────────────────');
+      log.info(`  Total Snapshots  : ${results.length}`);
+      log.info(`  Passed (Match)   : ${passedCount}`);
+      log.info(`  Failed (Diff)    : ${failedCount}`);
+      log.info(`  New Baselines    : ${newBaselineCount}`);
+      log.info(`  Execution Time   : ${elapsed}s`);
+      log.info('──────────────────────────────────────────────────────');
+      log.info(`  Review Dashboard : http://localhost:4000/runs/${runId}`);
       if (runSummaryPath) {
         const relSummary = path.relative(process.cwd(), runSummaryPath);
-        console.log(`  Summary Report   : ${relSummary}`);
+        log.info(`  Summary Report   : ${relSummary}`);
+      }
+      if (jsonFile && jsonFile !== STDOUT_TARGET) {
+        log.info(`  JSON Result      : ${path.relative(process.cwd(), jsonFile)}`);
       }
       if (stepSummaryWritten) {
-        console.log('  CI Step Summary  : Appended to GITHUB_STEP_SUMMARY');
+        log.info('  CI Step Summary  : Appended to GITHUB_STEP_SUMMARY');
       }
-      console.log('──────────────────────────────────────────────────────\n');
+      log.info('──────────────────────────────────────────────────────\n');
 
-      if (failedCount > 0) {
-        console.error(`[FAILURE] Visual regressions detected in ${failedCount} snapshot(s).\n`);
-        process.exit(1);
+      if (result.exit_code === EXIT.DIFF) {
+        log.error(`[FAILURE] Visual regressions detected in ${failedCount} snapshot(s).\n`);
       } else {
-        console.log('[SUCCESS] All snapshots passed without visual regressions!\n');
-        process.exit(0);
+        log.info('[SUCCESS] All snapshots passed without visual regressions!\n');
       }
+      process.exit(result.exit_code);
     } catch (err) {
-      console.error(`\n[ERROR] Test run failed: ${err.message}\n`);
-      process.exit(1);
+      log.error(`\n[ERROR] Test run failed: ${sanitizeMessage(err.message)}\n`);
+      if (jsonTarget !== undefined && jsonUsable && !jsonTargetConflict(jsonTarget, runsDir || fallbackRunsDir(options), options.summaryFile)) {
+        if (run) run.durationMs = Date.now() - startTime;
+        try {
+          await writeResult(buildResult({ command: 'test', error: err, run, results }), jsonTarget);
+        } catch (writeErr) {
+          log.error(`[ERROR] Could not write the JSON result to ${sanitizeMessage(jsonTarget)}: ${sanitizeMessage(writeErr.message)}\n`);
+        }
+      }
+      process.exit(EXIT.ERROR);
     }
   });
 
@@ -350,7 +453,7 @@ program
     } catch (err) {
       // Backstop: messages can quote names from the archive (importRuns already escapes them).
       console.error(`\n[ERROR] Import failed: ${sanitizeForDisplay(err.message)}\n`);
-      process.exitCode = 1;
+      process.exitCode = EXIT.ERROR;
     } finally {
       if (db) closeDb();
     }
@@ -360,5 +463,5 @@ program
 if (process.argv.length <= 2) {
   program.help();
 } else {
-  program.parse(process.argv);
+  program.parseAsync(process.argv).catch(crash('Command failed'));
 }

@@ -265,7 +265,7 @@ describe('CLI writes run.json for every test run', () => {
 
   it('refuses a --summary-file that would overwrite run.json', async () => {
     const { code, out } = await runCli(['-r', 'run_clash', '-s', 'run.json']);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(out).toContain('--summary-file cannot be "run.json"');
   }, 30000);
 

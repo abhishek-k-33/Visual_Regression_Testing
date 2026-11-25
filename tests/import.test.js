@@ -938,7 +938,7 @@ describe('visual-ci import (CLI)', () => {
       { name: 'x\\\u001b]0;PWNED\u0007\u001b[2J\u009b2J\u202e', data: 'x' }
     ]);
     const { code, out } = await runCli(['import', 'evil.zip'], { cwd, env: { VISUAL_STORAGE_DIR: path.join(cwd, 's') } });
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(out).toContain('Unsafe file name in the archive');
     expect(out.replace(/[\n\t]/g, '')).not.toMatch(RAW_CONTROL);
   }, 30000);
@@ -949,23 +949,23 @@ describe('visual-ci import (CLI)', () => {
     expect(out).toContain('http://localhost:4670/runs/ci_diff');
   }, 30000);
 
-  it('exits 1 with a clear message on failure', async () => {
+  it('exits 2 (error) with a clear message on failure', async () => {
     fs.writeFileSync(path.join(cwd, 'bad.zip'), 'nope');
     const notZip = await runCli(['import', 'bad.zip'], { cwd, env: { VISUAL_STORAGE_DIR: path.join(cwd, 's') } });
-    expect(notZip.code).toBe(1);
+    expect(notZip.code).toBe(2);
     expect(notZip.out).toContain('[ERROR] Import failed: Not a valid zip archive');
 
     const missing = await runCli(['import', 'nowhere.zip'], { cwd, env: { VISUAL_STORAGE_DIR: path.join(cwd, 's') } });
-    expect(missing.code).toBe(1);
+    expect(missing.code).toBe(2);
     expect(missing.out).toContain('Not found: nowhere.zip');
 
     const noManifest = writeZip(path.join(cwd, 'old.zip'), folderEntries(ciRunDir, 'ci_diff').filter((e) => !e.name.endsWith('run.json')));
     const old = await runCli(['import', noManifest], { cwd, env: { VISUAL_STORAGE_DIR: path.join(cwd, 's') } });
-    expect(old.code).toBe(1);
+    expect(old.code).toBe(2);
     expect(old.out).toContain('No run.json found');
 
     const badConfig = await runCli(['import', ciRunDir, '-c', 'missing.json'], { cwd });
-    expect(badConfig.code).toBe(1);
+    expect(badConfig.code).toBe(2);
     expect(badConfig.out).toContain('Configuration file not found');
   }, 30000);
 });
