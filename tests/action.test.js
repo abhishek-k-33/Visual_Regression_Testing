@@ -203,6 +203,58 @@ describe('the Docker build context is the action folder', () => {
   });
 });
 
+describe('visual-ci.yml dogfoods the action', () => {
+  const job = workflow.jobs['visual-tests'];
+
+  it('keeps the triggers, concurrency and minimal permissions', () => {
+    expect(workflow.on).toEqual({
+      push: { branches: ['main'] },
+      pull_request: { branches: ['main'] },
+      workflow_dispatch: null
+    });
+    expect(workflow.concurrency).toEqual({ group: '${{ github.workflow }}-${{ github.ref }}', 'cancel-in-progress': true });
+    expect(workflow.permissions).toEqual({ contents: 'read' });
+    for (const j of Object.values(workflow.jobs)) expect(j.permissions).toBeUndefined();
+  });
+
+  it('keeps the unit test job unchanged', () => {
+    expect(workflow.jobs['unit-tests']).toEqual({
+      name: 'Unit & Integration Tests',
+      'runs-on': 'ubuntu-latest',
+      steps: [
+        { name: 'Checkout Repository', uses: 'actions/checkout@v4' },
+        { name: 'Setup Node.js 22', uses: 'actions/setup-node@v4', with: { 'node-version': 22, cache: 'npm' } },
+        { name: 'Install Node Dependencies', run: 'npm ci' },
+        { name: 'Install Playwright Chromium', run: 'npx playwright install --with-deps chromium' },
+        { name: 'Run Test Suite', run: 'npm test' }
+      ]
+    });
+  });
+
+  it('checks out, starts the demo site, then uses ./ with base-url and wait-on', () => {
+    const names = job.steps.map((s) => s.uses || s.name);
+    expect(names.indexOf('actions/checkout@v4')).toBeLessThan(names.indexOf('Start Demo Site'));
+    expect(names.indexOf('Start Demo Site')).toBeLessThan(names.indexOf('./'));
+    const start = job.steps.find((s) => s.name === 'Start Demo Site');
+    expect(start.run.trim()).toMatch(/^node scripts\/serve-demo\.js .*&$/); // in the background
+    const check = job.steps.find((s) => s.uses === './');
+    expect(check.with).toMatchObject({
+      'base-url': 'http://127.0.0.1:4567',
+      'wait-on': 'http://127.0.0.1:4567/',
+      'artifact-name': 'visual-regression-diffs',
+      'upload-artifact': 'on-failure',
+      'retention-days': 7
+    });
+    expect(check.with.strict ?? action.inputs.strict.default).toBe('true');
+  });
+
+  it('no longer builds, runs or uploads by hand', () => {
+    const text = JSON.stringify(job);
+    expect(text).not.toMatch(/docker (build|run)/);
+    expect(text).not.toContain('actions/upload-artifact');
+  });
+});
+
 // ─── Running the steps ───────────────────────────────────────────────────────
 
 const FAKE_DOCKER = String.raw`#!/usr/bin/env node

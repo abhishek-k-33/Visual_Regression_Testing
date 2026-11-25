@@ -53,37 +53,25 @@ jobs:
         with:
           node-version: 22
 
-      # Same image used to create the baselines (npm run docker:update-baselines),
-      # so fonts and rendering match pixel for pixel.
-      - name: Build Visual Test Image
-        run: docker build -t visual-ci .
-
       - name: Start Demo Site
-        run: |
-          node scripts/serve-demo.js > demo-site.log 2>&1 &
-          for _ in $(seq 1 30); do
-            curl -sf http://127.0.0.1:4567/ > /dev/null && exit 0
-            sleep 1
-          done
-          cat demo-site.log
-          exit 1
+        run: node scripts/serve-demo.js > demo-site.log 2>&1 &
 
-      # --strict: a missing baseline fails the job instead of being created.
-      - name: Run Visual Regression Tests
-        run: |
-          docker run --rm --network host \
-            -e CI=true -e GITHUB_SHA -e GITHUB_REF_NAME -e GITHUB_HEAD_REF \
-            -e GITHUB_STEP_SUMMARY=/tmp/step-summary.md \
-            -v "$GITHUB_STEP_SUMMARY:/tmp/step-summary.md" \
-            -v "$PWD/storage:/app/storage" \
-            -v "$PWD/visual.config.json:/app/visual.config.json:ro" \
-            visual-ci node src/cli/index.js test --strict
-
-      - name: Upload Diff Artifacts on Failure
-        if: failure()
-        uses: actions/upload-artifact@v4
+      # This repository's own action (action.yml): builds the Docker image that also
+      # creates the baselines (npm run docker:update-baselines), so fonts and rendering
+      # match pixel for pixel, runs `visual-ci test --strict` in it (a missing baseline
+      # fails the job), writes the step summary and uploads this run's folder as the
+      # visual-regression-diffs artifact when the check fails.
+      - name: Visual Regression Check
+        id: visual
+        uses: ./
         with:
-          name: visual-regression-diffs
-          path: storage/runs/
+          base-url: http://127.0.0.1:4567
+          wait-on: http://127.0.0.1:4567/
+          wait-timeout: 30
+          artifact-name: visual-regression-diffs
+          upload-artifact: on-failure
           retention-days: 7
-          if-no-files-found: ignore
+
+      - name: Show Demo Site Log
+        if: failure()
+        run: cat demo-site.log || true
