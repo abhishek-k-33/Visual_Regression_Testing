@@ -33,6 +33,11 @@ jobs:
     name: Diff run uploads an importable artifact
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # actions: read lets gh list and download this run's artifacts. Job permissions
+    # replace the workflow's, so contents: read is repeated.
+    permissions:
+      contents: read
+      actions: read
 
     steps:
       - name: Checkout Repository
@@ -89,14 +94,32 @@ jobs:
           if [[ "$ARTIFACT_URL" == https://* ]]; then echo "ok: artifact-url = $ARTIFACT_URL"; else echo "::error title=self-test::artifact-url: expected an https URL, got '$ARTIFACT_URL'"; fail=1; fi
           exit "$fail"
 
-      # By name (checked against the expected name above): a single named artifact is
-      # extracted straight into path. Downloading by id found nothing in the same run
-      # ("None of the provided artifact IDs were found", run 45670878311).
+      # By name (checked against the expected name above, and again here: an empty name
+      # would download every artifact of the run). A just-uploaded artifact is not always
+      # found yet within the same run: download-artifact failed 140 ms after the upload
+      # finished (run 45761556091, by name; run 45670878311, by id), so retry with backoff.
       - name: Download the Artifact
-        uses: actions/download-artifact@v7
-        with:
-          name: ${{ steps.visual.outputs.artifact-name }}
-          path: ${{ runner.temp }}/selftest-artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ steps.visual.outputs.artifact-name }}
+          ARTIFACT_DIR: ${{ runner.temp }}/selftest-artifact
+        run: |
+          if ! [[ "$ARTIFACT_NAME" =~ ^[A-Za-z0-9._-][A-Za-z0-9._\ -]{0,99}$ ]]; then
+            echo "::error title=self-test::no valid artifact name to download"
+            exit 1
+          fi
+          for delay in 2 4 8 16 32 0; do
+            rm -rf -- "$ARTIFACT_DIR"
+            if gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n "$ARTIFACT_NAME" -D "$ARTIFACT_DIR"; then
+              echo "Downloaded the artifact."
+              exit 0
+            fi
+            [ "$delay" -eq 0 ] && break
+            echo "The artifact is not available yet; retrying in ${delay}s."
+            sleep "$delay"
+          done
+          echo "::error title=self-test::the artifact could not be downloaded after 6 attempts"
+          exit 1
 
       - name: Install Dependencies for visual-ci import
         run: npm ci --omit=dev

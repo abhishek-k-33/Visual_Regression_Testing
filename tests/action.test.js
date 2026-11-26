@@ -234,7 +234,6 @@ describe('action.yml: structure', () => {
     ];
     expect(uses).toContain('actions/github-script@v8');
     expect(uses).toContain('actions/upload-artifact@v6');
-    expect(uses).toContain('actions/download-artifact@v7');
     for (const ref of uses) expect(ref).toMatch(PINNED);
   });
 
@@ -392,10 +391,10 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
     });
     expect(selftest.permissions).toEqual({ contents: 'read' });
     expect(Object.keys(selftest.jobs).sort()).toEqual(['diff', 'error']);
-    for (const job of Object.values(selftest.jobs)) {
-      expect(job.permissions).toBeUndefined();
-      expect(job['runs-on']).toBe('ubuntu-latest');
-    }
+    for (const job of Object.values(selftest.jobs)) expect(job['runs-on']).toBe('ubuntu-latest');
+    expect(error.permissions).toBeUndefined();
+    // Job permissions replace the workflow's: contents: read stays, actions: read lists the run's artifacts.
+    expect(diff.permissions).toEqual({ contents: 'read', actions: 'read' });
   });
 
   it('never comments on the pull request: comment is false, and the token is read-only anyway', () => {
@@ -431,10 +430,15 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
     });
   });
 
-  it('the diff job downloads the artifact by its (asserted) name and imports it into a throwaway storage folder', () => {
-    const download = diff.steps.find((s) => s.uses?.startsWith('actions/download-artifact@'));
-    // By name, not by id: download-artifact found no artifact by id within the same run.
-    expect(download.with).toEqual({ name: '${{ steps.visual.outputs.artifact-name }}', path: '${{ runner.temp }}/selftest-artifact' });
+  it('the diff job downloads the artifact by its (asserted) name, with retries, and imports it into a throwaway storage folder', () => {
+    expect(diff.steps.some((s) => s.uses?.startsWith('actions/download-artifact@'))).toBe(false);
+    const download = named(diff, /^Download the Artifact/);
+    expect(download.env).toEqual({
+      GH_TOKEN: '${{ github.token }}',
+      ARTIFACT_NAME: '${{ steps.visual.outputs.artifact-name }}',
+      ARTIFACT_DIR: '${{ runner.temp }}/selftest-artifact'
+    });
+    expect(download.run).toContain('gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n "$ARTIFACT_NAME" -D "$ARTIFACT_DIR"');
     const importStep = named(diff, /^Import the Artifact/);
     expect(importStep.run).toContain('[ ! -f "$ARTIFACT_DIR/run.json" ]');
     expect(importStep.run).toContain('export VISUAL_STORAGE_DIR="$RUNNER_TEMP/selftest-import-storage"');
@@ -448,6 +452,64 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
     expect(use).toMatchObject({ id: 'visual', 'continue-on-error': true });
     expect(use.with).toMatchObject({ 'base-url': 'http://127.0.0.1:9/', 'upload-artifact': 'always', 'artifact-name': 'selftest-error-${{ github.run_attempt }}' });
     expect(use.with['wait-on']).toBeUndefined();
+  });
+
+  describe('the download step retries until the artifact is available', () => {
+    const download = named(diff, /^Download the Artifact/);
+    let dir;
+    beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vrt-dl-')); });
+    afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    // Fake gh (fails the first FAIL_TIMES calls, then extracts run.json into -D) and a
+    // fake sleep that only records its argument.
+    const run = async (name, failTimes) => {
+      const bin = path.join(dir, 'bin');
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env bash
+echo "$*" >> "${dir}/gh.log"
+n=$(wc -l < "${dir}/gh.log")
+if [ "$n" -le "$FAIL_TIMES" ]; then echo "no valid artifacts found to download" >&2; exit 1; fi
+while [ $# -gt 0 ]; do [ "$1" = -D ] && out="$2"; shift; done
+mkdir -p "$out" && echo '{}' > "$out/run.json"
+`, { mode: 0o755 });
+      fs.writeFileSync(path.join(bin, 'sleep'), `#!/usr/bin/env bash\necho "$1" >> "${dir}/sleep.log"\n`, { mode: 0o755 });
+      const ctx = { steps: { visual: { outputs: { 'artifact-name': name } } }, github: { token: 'ghs_x' }, runner: { temp: dir } };
+      const r = await runWorkflowScript(download, ctx, {
+        env: { PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAIL_TIMES: String(failTimes), GITHUB_RUN_ID: '99', GITHUB_REPOSITORY: 'o/r' }
+      });
+      const lines = (f) => (fs.existsSync(path.join(dir, f)) ? fs.readFileSync(path.join(dir, f), 'utf8').trim().split('\n').filter(Boolean) : []);
+      return { ...r, gh: lines('gh.log'), sleeps: lines('sleep.log') };
+    };
+
+    it('succeeds at once when the artifact is there', async () => {
+      const r = await run('selftest-diff-1', 0);
+      expect(r.code, r.stdout + r.stderr).toBe(0);
+      expect(r.gh).toEqual([`run download 99 -R o/r -n selftest-diff-1 -D ${path.join(dir, 'selftest-artifact')}`]);
+      expect(r.sleeps).toEqual([]);
+      expect(fs.existsSync(path.join(dir, 'selftest-artifact', 'run.json'))).toBe(true);
+    });
+
+    it('retries with growing waits while it is not found yet (the same-run lag)', async () => {
+      const r = await run('selftest-diff-1', 3);
+      expect(r.code, r.stdout + r.stderr).toBe(0);
+      expect(r.gh).toHaveLength(4);
+      expect(r.sleeps).toEqual(['2', '4', '8']);
+    });
+
+    it('gives up after 6 attempts with an error', async () => {
+      const r = await run('selftest-diff-1', 100);
+      expect(r.code).toBe(1);
+      expect(r.gh).toHaveLength(6);
+      expect(r.sleeps).toEqual(['2', '4', '8', '16', '32']);
+      expect(r.stdout).toContain('::error title=self-test::the artifact could not be downloaded after 6 attempts');
+    });
+
+    it.each(['', '../x', 'a/b'])('never downloads with the artifact name %j (an empty one would download everything)', async (name) => {
+      const r = await run(name, 0);
+      expect(r.code).toBe(1);
+      expect(r.gh).toEqual([]);
+      expect(r.stdout).toContain('no valid artifact name');
+    });
   });
 
   describe('the assertions fail the job when an output is wrong', () => {
