@@ -315,7 +315,14 @@ describe('visual-ci.yml dogfoods the action', () => {
     });
     expect(workflow.concurrency).toEqual({ group: '${{ github.workflow }}-${{ github.ref }}', 'cancel-in-progress': true });
     expect(workflow.permissions).toEqual({ contents: 'read' });
-    for (const j of Object.values(workflow.jobs)) expect(j.permissions).toBeUndefined();
+    expect(workflow.jobs['unit-tests'].permissions).toBeUndefined();
+  });
+
+  it('grants pull-requests: write to the visual job only (job permissions replace the workflow ones, so contents: read stays)', () => {
+    expect(job.permissions).toEqual({ contents: 'read', 'pull-requests': 'write' });
+    const check = job.steps.find((s) => s.uses === './');
+    expect(String(check.with.comment ?? action.inputs.comment.default)).toBe('true');
+    expect(check.with['github-token']).toBeUndefined(); // the job token, as github-actions[bot]
   });
 
   it('keeps the unit test job unchanged', () => {

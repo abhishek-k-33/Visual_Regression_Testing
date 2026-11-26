@@ -41,6 +41,11 @@ jobs:
   visual-tests:
     name: Visual Regression Tests
     runs-on: ubuntu-latest
+    # The action keeps a comment with the result on this repository's own pull requests.
+    # Job permissions replace the workflow's, so contents: read is repeated here.
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       # Baselines are committed in storage/baselines/, so the checkout brings in
@@ -64,7 +69,8 @@ jobs:
       # creates the baselines (npm run docker:update-baselines), so fonts and rendering
       # match pixel for pixel, runs `visual-ci test --strict` in it (a missing baseline
       # fails the job), writes the step summary and uploads this run's folder as the
-      # visual-regression-diffs artifact when the check fails.
+      # visual-regression-diffs artifact when the check fails. On pull requests it
+      # also comments the result (comment defaults to true).
       - name: Visual Regression Check
         id: visual
         uses: ./
