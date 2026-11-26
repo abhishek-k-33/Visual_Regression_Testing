@@ -93,6 +93,8 @@ Visual Regression Testing Project/
 │   │   └── reporter.js            # Markdown report generator & GITHUB_STEP_SUMMARY
 │   ├── ci/
 │   │   └── actionReport.js        # The action's result step: JSON result -> outputs, container -> runner paths, upload decision
+│   ├── shared/
+│   │   └── text.js                # No-dependency text helpers (sanitizeForDisplay) for the CLI, the server and the action
 │   └── server/                    # Web review dashboard & REST API
 │       ├── app.js                 # Express server configuration
 │       ├── db.js                  # SQLite schema and queries
@@ -139,6 +141,7 @@ Visual Regression Testing Project/
     ├── cli-strict.test.js         # CLI strict mode: missing baselines fail in CI
     ├── cli-json.test.js           # test --json and exit codes: errors, diffs, stdout mode, target guards, crashes
     ├── result.test.js             # Result builder, error classification, atomic JSON writer
+    ├── shared-text.test.js        # src/shared/text.js: sanitiser, no imports, who imports it from where
     ├── display.test.js            # URL redaction, host path redaction, display paths
     ├── json-target.test.js        # --json target guard: symlinks, hard links, case folding, directories
     ├── capture-errors.test.js     # Fake Playwright: launch/navigation/mask/close errors are classified right

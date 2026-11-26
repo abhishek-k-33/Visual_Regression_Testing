@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { importRuns, ImportError, sanitizeForDisplay } from './importRuns.js';
+import { importRuns, ImportError } from './importRuns.js';
+import { sanitizeForDisplay } from '../shared/text.js';
 
 /**
  * POST /api/imports: a CI artifact zip uploaded from the dashboard, imported with the

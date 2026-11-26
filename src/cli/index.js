@@ -9,7 +9,8 @@ import { captureScreenshots, getSnapshotFilename, assertValidRunId } from './cap
 import { compareSnapshot, sha256, DEFAULT_PIXELMATCH_THRESHOLD } from './compare.js';
 import { buildRunManifest, writeRunManifest, toSqliteTimestamp, getToolVersion, MANIFEST_FILENAME } from './manifest.js';
 import { createTestRun, createSnapshot, getDb, closeDb } from '../server/db.js';
-import { importRuns, sanitizeForDisplay } from '../server/importRuns.js';
+import { importRuns } from '../server/importRuns.js';
+import { sanitizeForDisplay } from '../shared/text.js';
 import { resolveStorageRoot } from '../server/paths.js';
 import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
 import { EXIT, STDOUT_TARGET, CliError, buildResult, writeResult, sanitizeMessage, redactUrl, toError } from './result.js';
