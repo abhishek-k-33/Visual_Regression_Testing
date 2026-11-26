@@ -2,6 +2,8 @@
 # already started, inside the project's Docker image (the same rendering as the
 # committed baselines), and uploads this run's folder as an artifact.
 #
+# On pull requests it also keeps one comment with the result up to date (comment input).
+#
 # Composite on purpose: a Docker action's container sits on a job network and can't
 # reach an app listening on the runner's localhost; `docker run --network host` can.
 #
@@ -66,7 +68,18 @@ inputs:
     description: Optional prebuilt image to pull and run instead of building this action's Dockerfile. It must contain this tool at /app.
     required: false
     default: ''
-  # Reserved for A3 (pull request comment): comment, comment-id, github-token.
+  comment:
+    description: 'true: on pull_request and pull_request_target events, keep one comment on the pull request with the result (needs permissions pull-requests: write). It is created when a run does not pass and updated by every later run. (true or false)'
+    required: false
+    default: 'true'
+  comment-id:
+    description: Identifies the comment (letters, digits, . _ and -, at most 64). Give each use its own (e.g. the matrix value) to keep a separate comment per use; uses with the same id overwrite each other's comment.
+    required: false
+    default: default
+  github-token:
+    description: Token for the pull request comment. The default job token comments as github-actions[bot]; the action only ever updates comments written by github-actions[bot].
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   status:
@@ -105,6 +118,12 @@ outputs:
   artifact-url:
     description: Download URL of the uploaded artifact. Empty unless the upload succeeded.
     value: ${{ steps.upload.outputs.artifact-url }}
+  comment-url:
+    description: URL of the pull request comment created or updated by this run. Empty otherwise.
+    value: ${{ steps.comment.outputs.comment-url }}
+  comment-action:
+    description: 'What happened to the pull request comment: created, updated, skipped (a passing run with no earlier comment, a fork, an invalid comment-id) or failed (a warning says why). Empty when the comment step did not run (comment: false, or not a pull request event).'
+    value: ${{ steps.comment.outputs.comment-action }}
 
 runs:
   using: composite
@@ -136,6 +155,8 @@ runs:
         INPUT_UPLOAD_ARTIFACT: ${{ inputs.upload-artifact }}
         INPUT_RETENTION_DAYS: ${{ inputs.retention-days }}
         INPUT_IMAGE: ${{ inputs.image }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_COMMENT_ID: ${{ inputs.comment-id }}
       run: |
         # Error messages never repeat an input value (the runner already shows inputs in
         # the log; a credentialed URL should come from a secret so it is masked there).
@@ -160,7 +181,7 @@ runs:
           fail "working-directory does not exist in the workspace (check out the repository first)."
         fi
 
-        for name in strict update-baselines; do
+        for name in strict update-baselines comment; do
           var="INPUT_$(echo "$name" | tr 'a-z-' 'A-Z_')"
           case "${!var}" in
             true|false) ;;
@@ -197,6 +218,11 @@ runs:
         fi
         if [ -n "$INPUT_IMAGE" ] && ! [[ "$INPUT_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$ ]]; then
           fail "image must be an image reference such as ghcr.io/owner/visual-ci:1.0.0."
+        fi
+
+        # src/ci/prComment.js checks it again (COMMENT_ID_PATTERN): it becomes the comment's marker.
+        if ! [[ "$INPUT_COMMENT_ID" =~ ^[A-Za-z0-9_.-]{1,64}$ ]]; then
+          fail "comment-id may only contain letters, digits, '.', '_' and '-' (at most 64)."
         fi
 
         if [ "$failed" -ne 0 ]; then
@@ -351,6 +377,37 @@ runs:
           echo "exit-code=$code"
           echo "artifact-name=$artifact_name"
         } >> "$GITHUB_OUTPUT"
+
+    # The pull request comment: after the upload (it links the artifact) and the outcome
+    # (its status), also after an earlier failure (then it reports the error). Same-repo
+    # pull requests only: a fork's token can't write (src/ci/prComment.js says so in a
+    # notice). A comment problem never changes the result: run() turns every error into
+    # a warning, the script catches the rest, and continue-on-error covers github-script.
+    # The head SHA comes from the event payload (GITHUB_SHA is the merge commit).
+    - name: Comment on the pull request
+      id: comment
+      if: ${{ !cancelled() && inputs.comment == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') }}
+      continue-on-error: true
+      uses: actions/github-script@v8
+      env:
+        VISUAL_CI_ACTION_PATH: ${{ github.action_path }}
+        VISUAL_CI_COMMENT_ID: ${{ inputs.comment-id }}
+        VISUAL_CI_STATUS: ${{ steps.outcome.outputs.status }}
+        VISUAL_CI_REPORT_PATH: ${{ steps.parse.outputs.report-path }}
+        VISUAL_CI_ARTIFACT_NAME: ${{ steps.outcome.outputs.artifact-name }}
+        VISUAL_CI_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          try {
+            const path = require('path');
+            const { pathToFileURL } = require('url');
+            const file = path.join(process.env.VISUAL_CI_ACTION_PATH, 'src', 'ci', 'prComment.js');
+            const { run } = await import(pathToFileURL(file).href);
+            await run({ core, github, context });
+          } catch (err) {
+            core.warning('visual-ci: the pull request comment step failed: ' + String(err && err.message) + '. The visual result is not affected.');
+          }
 
     - name: Set the result
       if: ${{ !cancelled() }}

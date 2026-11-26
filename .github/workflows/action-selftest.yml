@@ -5,7 +5,8 @@
 #
 # Never writes baselines: strict compare mode (the default), no update-baselines, a
 # read-only token, no persisted git credentials, and a last step that fails if
-# storage/baselines changed.
+# storage/baselines changed. Never comments on the pull request (comment: false; the
+# token couldn't anyway), and asserts that the comment step did not run.
 name: Action Self-Test
 
 on:
@@ -15,6 +16,7 @@ on:
       - action.yml
       - 'src/ci/**'
       - 'src/cli/**'
+      - 'src/shared/**'
       - Dockerfile
       - .dockerignore
       - .github/workflows/action-selftest.yml
@@ -59,6 +61,7 @@ jobs:
           upload-artifact: always
           artifact-name: selftest-diff-${{ github.run_attempt }}
           retention-days: 1
+          comment: false
 
       - name: Assert the Outputs of a Diff Run
         env:
@@ -69,6 +72,7 @@ jobs:
           ARTIFACT_NAME: ${{ steps.visual.outputs.artifact-name }}
           ARTIFACT_ID: ${{ steps.visual.outputs.artifact-id }}
           ARTIFACT_URL: ${{ steps.visual.outputs.artifact-url }}
+          COMMENT_ACTION: ${{ steps.visual.outputs.comment-action }}
           EXPECTED_ARTIFACT_NAME: selftest-diff-${{ github.run_attempt }}
         run: |
           fail=0
@@ -79,6 +83,7 @@ jobs:
           check status "$STATUS" failed
           check exit-code "$EXIT_CODE" 1
           check artifact-name "$ARTIFACT_NAME" "$EXPECTED_ARTIFACT_NAME"
+          check comment-action "$COMMENT_ACTION" ""
           if [[ "$CHANGED" =~ ^[0-9]+$ ]] && [ "$CHANGED" -ge 1 ]; then echo "ok: changed = $CHANGED"; else echo "::error title=self-test::changed: expected at least 1, got '$CHANGED'"; fail=1; fi
           if [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]; then echo "ok: artifact-id = $ARTIFACT_ID"; else echo "::error title=self-test::artifact-id: expected a number, got '$ARTIFACT_ID'"; fail=1; fi
           if [[ "$ARTIFACT_URL" == https://* ]]; then echo "ok: artifact-url = $ARTIFACT_URL"; else echo "::error title=self-test::artifact-url: expected an https URL, got '$ARTIFACT_URL'"; fail=1; fi
@@ -149,6 +154,7 @@ jobs:
           upload-artifact: always
           artifact-name: selftest-error-${{ github.run_attempt }}
           retention-days: 1
+          comment: false
 
       - name: Assert the Outputs of an Error Run
         env:
@@ -158,6 +164,7 @@ jobs:
           ARTIFACT_NAME: ${{ steps.visual.outputs.artifact-name }}
           ARTIFACT_ID: ${{ steps.visual.outputs.artifact-id }}
           ARTIFACT_URL: ${{ steps.visual.outputs.artifact-url }}
+          COMMENT_ACTION: ${{ steps.visual.outputs.comment-action }}
         run: |
           fail=0
           check() {
@@ -169,6 +176,7 @@ jobs:
           check artifact-name "$ARTIFACT_NAME" ""
           check artifact-id "$ARTIFACT_ID" ""
           check artifact-url "$ARTIFACT_URL" ""
+          check comment-action "$COMMENT_ACTION" ""
           exit "$fail"
 
       - name: Committed Baselines Are Untouched

@@ -92,9 +92,10 @@ Visual Regression Testing Project/
 │   │   ├── config.js              # Config loader with comment-stripping parser
 │   │   └── reporter.js            # Markdown report generator & GITHUB_STEP_SUMMARY
 │   ├── ci/
-│   │   └── actionReport.js        # The action's result step: JSON result -> outputs, container -> runner paths, upload decision
+│   │   ├── actionReport.js        # The action's result step: JSON result -> outputs, container -> runner paths, upload decision
+│   │   └── prComment.js           # The action's pull request comment: render the result, update the bot's sticky comment
 │   ├── shared/
-│   │   └── text.js                # No-dependency text helpers (sanitizeForDisplay) for the CLI, the server and the action
+│   │   └── text.js                # No-dependency text helpers (sanitizeForDisplay, mdCode) for the CLI, the server and the action
 │   └── server/                    # Web review dashboard & REST API
 │       ├── app.js                 # Express server configuration
 │       ├── db.js                  # SQLite schema and queries
@@ -160,6 +161,7 @@ Visual Regression Testing Project/
     ├── docker.test.js             # Docker image tag matches the pinned Playwright version
     ├── action.test.js             # action.yml + workflows: structure, no expressions in scripts, steps run by their real if:, fake docker, end to end
     ├── action-report.test.js      # Action outputs from the JSON result: path mapping, upload modes, missing/invalid results
+    ├── pr-comment.test.js         # PR comment: mdCode escaping, rendering and caps, sticky upsert (bot only), the step's run()
     ├── server.test.js             # Express REST API and dashboard view tests (incl. route history)
     ├── storage-dir.test.js        # Custom storageDir honoured by CLI and dashboard
     ├── urls.test.js               # Base-path URL helpers
@@ -539,7 +541,7 @@ Clicking or tabbing into a card also makes it the current one. Shortcuts are ign
 
 ## 🧩 Use it in your repo (GitHub Action)
 
-The repository is also a GitHub Action (`action.yml`). It runs `visual-ci test` against an app your job has already started, inside this project's Docker image (the same fonts and rendering as your committed baselines), writes the step summary, and uploads the run's screenshots and diffs as an artifact you can import into the dashboard.
+The repository is also a GitHub Action (`action.yml`). It runs `visual-ci test` against an app your job has already started, inside this project's Docker image (the same fonts and rendering as your committed baselines), writes the step summary, and uploads the run's screenshots and diffs as an artifact you can import into the dashboard. On pull requests it keeps one comment with the result up to date (see [Pull request comment](#pull-request-comment)).
 
 ```yaml
       - uses: actions/checkout@v4
@@ -560,6 +562,7 @@ name: Visual regression
 on: [pull_request]
 permissions:
   contents: read            # the artifact upload needs no token permission
+  pull-requests: write      # the pull request comment (with comment: false, contents: read is enough)
 jobs:
   visual:
     runs-on: ubuntu-latest  # Linux only
@@ -601,8 +604,11 @@ jobs:
 | `upload-artifact` | `on-failure` | When to upload the run folder: `on-failure`, `always` or `never` (see below). An empty folder is never uploaded. |
 | `retention-days` | *(repository default)* | Days to keep the artifact, 1-90. |
 | `image` | *(build)* | A prebuilt image to `docker pull` and use instead of building this action's `Dockerfile` (saves a minute or two per job). It must contain this tool at `/app`, at the same version as the action. |
+| `comment` | `true` | `true`: on `pull_request` and `pull_request_target` events, keep one comment with the result on the pull request (needs `pull-requests: write`, see [Pull request comment](#pull-request-comment)). `false`: never comment. |
+| `comment-id` | `default` | Which comment this use of the action owns: letters, digits, `.`, `_` and `-`, at most 64. Give each use its own (e.g. `${{ matrix.browser }}`) for one comment per use; uses with the same id overwrite each other's comment. |
+| `github-token` | `${{ github.token }}` | Token for the comment. With the default job token the comment is written by `github-actions[bot]`, and only comments by `github-actions[bot]` are ever updated (see below). |
 
-Inputs are validated before anything runs (booleans must be exactly `true` or `false`, the run id must match the CLI's rule, numbers must be whole numbers); an invalid input fails the job with an error naming the input. The action's own messages don't repeat input values, and inputs reach its shell scripts only through environment variables, so a value can't inject commands.
+Inputs are validated before anything runs (booleans must be exactly `true` or `false`, the run id and `comment-id` must match their rules, numbers must be whole numbers); an invalid input fails the job with an error naming the input. The action's own messages don't repeat input values, and inputs reach its shell scripts only through environment variables, so a value can't inject commands. `github-token` only goes to the comment step (`actions/github-script`): never to a shell step or the browser container.
 
 **Secrets in inputs:** the runner itself prints every step's `with:` and `env:` values in the job log (e.g. `INPUT_BASE_URL`). A `base-url` with a password or token in it is shown there in clear unless it comes from `secrets.` (GitHub masks secret values in logs), so put such a URL in a repository secret. The JSON result and the CLI output remove credentials themselves.
 
@@ -622,6 +628,8 @@ Inputs are validated before anything runs (booleans must be exactly `true` or `f
 | `artifact-name` | Name of the uploaded artifact; empty unless the upload succeeded. |
 | `artifact-id` | ID of the uploaded artifact; empty unless the upload succeeded. |
 | `artifact-url` | Download URL of the uploaded artifact; empty unless the upload succeeded. |
+| `comment-url` | URL of the pull request comment this run created or updated; empty otherwise. |
+| `comment-action` | `created`, `updated`, `skipped` (a passing run with no earlier comment, a pull request from a fork, an invalid `comment-id`) or `failed` (a warning says why, e.g. a missing permission). Empty when the comment step did not run (`comment: false`, or not a pull request event). |
 
 All paths are absolute paths on the runner. The outputs are set even when the job fails, so later steps with `if: always()` can use them: `status` and `exit-code` always; the others once the inputs were valid (they are empty when visual-ci never produced a result). A missing or unreadable JSON result is reported as `status: error` with an error annotation, never as a pass. The three `artifact-*` outputs come from the upload's own result, so they are empty whenever no artifact exists.
 
@@ -633,7 +641,9 @@ All paths are absolute paths on the runner. The outputs are set even when the jo
 4. Runs `node /app/src/cli/index.js test --json ... --strict|--no-strict` in it with `docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -e CI=true`, the workspace mounted at `/github/workspace` (working directory `/github/workspace/<working-directory>`), the action's own folder `$RUNNER_TEMP/visual-ci` at `/visual-ci-temp` (for the JSON result) and the step summary file. Nothing else of `$RUNNER_TEMP` is mounted: it holds the runner's command files (`GITHUB_ENV`, `GITHUB_PATH`, ...) and the event payload, which a page compromising the browser could otherwise rewrite. `--network host` lets the container reach your app on `localhost`; `--user` keeps every file it writes owned by the runner user (no root-owned `storage/`). The branch and commit come from `GITHUB_HEAD_REF`/`GITHUB_REF_NAME` and `GITHUB_SHA`.
 5. Reads the JSON result (`actions/github-script`, `src/ci/actionReport.js`) and sets the outputs. The CLI records paths relative to its working directory, so `storage/runs/<id>` becomes `$GITHUB_WORKSPACE/<working-directory>/storage/runs/<id>`; a container path under `/github/workspace` or `/visual-ci-temp` is mapped to `$GITHUB_WORKSPACE` or `$RUNNER_TEMP/visual-ci`, and anything else has no runner path (empty output). If the token can list the run's artifacts (`actions: read`), it also warns when `artifact-name` is already taken in this run.
 6. Uploads the run folder with `actions/upload-artifact`.
-7. Sets `status`, `exit-code` and `artifact-name` (also when an earlier step failed), then ends with the CLI's exit code: the job passes on `0` and fails on `1` or `2` (or when no result was recorded, or the upload failed).
+7. Sets `status`, `exit-code` and `artifact-name` (also when an earlier step failed).
+8. On a pull request, creates or updates the [pull request comment](#pull-request-comment) (`actions/github-script`, `src/ci/prComment.js`).
+9. Ends with the CLI's exit code: the job passes on `0` and fails on `1` or `2` (or when no result was recorded, or the upload failed). The comment never changes this.
 
 **Artifact upload (`upload-artifact`):**
 
@@ -644,6 +654,59 @@ All paths are absolute paths on the runner. The outputs are set even when the jo
 In every mode only the folder of **this** run is uploaded (`<storage>/runs/<run-id>`), and only if the result names it, it really lies inside the workspace (also once symlinks are resolved), it contains no symlinks, and it holds at least one file. Never the whole `storage/`. When the run stopped before its first screenshot (invalid config, image build failed, the first page could not load) there is nothing to upload, and the `artifact-*` outputs stay empty.
 
 **Which artifacts can be imported:** a run that finished comparing (exit `0` or `1`) has `run.json` at the root of the zip, so the downloaded artifact imports as is: `npx visual-ci import visual-regression-diffs.zip` or **Import CI run** in the dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import)). An artifact from an **error run (exit `2`)** holds only the raw screenshots taken before the error, for debugging: it has no `run.json` and is **not importable** (the import refuses partial runs on purpose).
+
+### Pull request comment
+
+On `pull_request` (and `pull_request_target`) events the action keeps **one comment** on the pull request with the latest result. It is created the first time a run does not pass, and every later run updates the same comment, also once everything passes again ("All N snapshots match the baselines"). A pull request that passes from the start gets no comment. For example:
+
+> ### ❌ Visual CI found visual changes
+>
+> 4 snapshots: 1 changed, 1 missing baseline, 2 passed.
+>
+> | Status | Route | Viewport | Mismatch |
+> | :--- | :--- | :--- | ---: |
+> | 🔴 Changed | `/` | `mobile` | 7.04% |
+> | 🟠 Missing baseline | `/docs` | `desktop` | — |
+>
+> **Details:** [Workflow run and step summary](#pull-request-comment) · [Artifact `visual-regression-diffs`](#pull-request-comment)
+>
+> Review it in your local dashboard:
+>
+> ```sh
+> gh run download 4242 -R owner/repo -n 'visual-regression-diffs' -D vrt-4242 && npx visual-ci import vrt-4242
+> ```
+>
+> <sub>visual-ci · commit `0637412` · updated 2026-11-26 10:41 UTC</sub>
+
+- **What it shows:** the status with its counts (passed, changed, missing baseline, new baselines), or the error's code and message; a table of the changed snapshots only (`DIFF` and `MISSING_BASELINE`: route, viewport, mismatch rounded to 0.01%), at most 50 rows, then "…and N more"; links to the workflow run and the artifact; the pull request's head commit (not the merge commit `GITHUB_SHA`) and the time (UTC). The comment stays under 60,000 characters (GitHub's limit is 65,536): table rows are dropped first, the headline always stays.
+- **Import snippet:** shown only when the artifact can be imported (exit `0` or `1`, and an artifact was uploaded). For an error run it says the artifact holds debugging screenshots only.
+- **Permissions:** the job needs `pull-requests: write` (and `contents: read` for the checkout):
+  ```yaml
+  jobs:
+    visual:
+      permissions:
+        contents: read
+        pull-requests: write
+  ```
+  Without it (or on Dependabot pull requests, whose token is read-only) the comment step warns how to fix it (*"give the job permissions: pull-requests: write"*) and the job's result is unchanged. A comment problem of any kind is only ever a warning: it never changes `status`, `exit-code` or whether the job passes.
+- **Pull requests from forks:** no comment. The token of a `pull_request` run from a fork is read-only, so the action skips the comment with a notice; the results are in the step summary and the artifact. Commenting on fork pull requests from a separate `workflow_run` workflow is a planned follow-up.
+- **Safe with untrusted text:** routes, viewports and error messages are shown as code spans (`mdCode` in `src/shared/text.js`): control and bidi characters are escaped, the backtick fence is longer than any backtick run, and `|` is escaped in tables. So a route can't mention people, add links, images or HTML, or break the table. The step summary uses the same escaping.
+- **Which comment is updated:** the oldest one whose first line is the hidden marker `<!-- visual-ci:sticky id=<comment-id> -->` **and** that was written by `github-actions[bot]` (a `Bot` account). A person who pastes the marker into their own comment never gets it overwritten. With a personal access token in `github-token` the comment is written by that user, so it is never recognised again and each run adds a new comment: keep the default token.
+- **Matrix builds:** give each leg its own `comment-id` (and its own `artifact-name` and `run-id`), so each keeps a separate comment instead of overwriting the others:
+  ```yaml
+  strategy:
+    matrix:
+      app: [web, admin]
+  steps:
+    - uses: abhishek-k-33/Visual_Regression_Testing@main
+      with:
+        base-url: http://127.0.0.1:3000
+        working-directory: apps/${{ matrix.app }}
+        comment-id: ${{ matrix.app }}
+        artifact-name: visual-diffs-${{ matrix.app }}
+        run-id: ${{ matrix.app }}-${{ github.run_id }}
+  ```
+- **Turn it off** with `comment: false` (then `contents: read` is all the job needs).
 
 ### Baselines in your repo
 
@@ -666,7 +729,7 @@ With the default `strict: true`, a route without a baseline fails the check inst
 
 - **Linux runners only** (`ubuntu-*` or a self-hosted Linux runner with Docker): it needs `docker run --network host`, which macOS and Windows runners don't have. The Docker daemon must run containers as the `--user` it is given (rootful Docker, as on GitHub's runners).
 - **Your app must already be running**, started in an earlier step and reachable from the runner (e.g. `http://127.0.0.1:<port>`; a `services:` container with a published port works too). Use `wait-on` so the check doesn't start before it is up.
-- **Pull request comments are not part of the action yet**, and pull requests from forks are not yet supported for them; both come next (A3). The action itself only needs `contents: read`.
+- **No pull request comment for pull requests from forks** (their token is read-only); the step summary and the artifact still have the results. The action needs `contents: read`, plus `pull-requests: write` for the comment.
 - The image is built in every job (a minute or two) unless you pass `image`.
 - `VISUAL_STORAGE_DIR` from the job's environment is not passed into the container: set `storageDir` in the config instead.
 - The container can read and write the whole workspace (it needs the config and `storage/`). Check out with `persist-credentials: false`, so no git token is left in `.git/config`.
@@ -684,7 +747,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 - **Committed baselines**: Baselines come from the git checkout, so every commit is compared against the baselines approved for it.
 - **Dogfoods the action**: the `visual-tests` job starts the demo site and runs this repository's own action (`uses: ./`, see [Use it in your repo](#-use-it-in-your-repo-github-action)), which builds the project's Docker image and runs the tests inside it, so the rendering matches the baselines.
 - **Strict mode**: A missing baseline fails the job instead of silently passing.
-- **Action self-test** (`.github/workflows/action-selftest.yml`, on demand and on pull requests that touch the action, the CLI or the image): serves the demo site's `regressed` variant and requires the action to fail with exit code `1`, upload an artifact and have that artifact import with `visual-ci import`; then points the action at an unreachable port and requires exit code `2` and no artifact. Neither job can change the committed baselines.
+- **Action self-test** (`.github/workflows/action-selftest.yml`, on demand and on pull requests that touch the action, the CLI or the image): serves the demo site's `regressed` variant and requires the action to fail with exit code `1`, upload an artifact and have that artifact import with `visual-ci import`; then points the action at an unreachable port and requires exit code `2` and no artifact. Neither job can change the committed baselines or comment on the pull request (`comment: false`, and a read-only token).
 - **Rich Markdown Step Summaries**: Generates a formatted table of every tested route, viewport, mismatch percentage, and pass/fail badge directly in the GitHub Actions run summary (`GITHUB_STEP_SUMMARY`).
 - **Diff Artifact Downloads**: On any visual regression failure (or error), the run's folder (`storage/runs/<run-id>/`) is uploaded as a workflow artifact (`visual-regression-diffs`, kept 7 days) for quick inspection. The run folder includes `run.json`, a machine-readable record of the run (status, git info, and per snapshot: route, viewport, status, mismatch, file names and the compared baseline's hash), so a CI run can be re-created without its database: `visual-ci import visual-regression-diffs.zip` loads it into your local dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import)).
 
