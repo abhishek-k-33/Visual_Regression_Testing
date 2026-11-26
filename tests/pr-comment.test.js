@@ -13,6 +13,9 @@ import {
   run,
   COMMENT_ID_PATTERN,
   COMMENT_OUTPUT_NAMES,
+  IMPORT_PACKAGE_SPEC,
+  importCommand,
+  supersededMarker,
   MAX_COMMENT_LENGTH,
   MAX_TABLE_ROWS
 } from '../src/ci/prComment.js';
@@ -202,8 +205,18 @@ describe('renderComment', () => {
   it('a diff with an artifact: links it and shows the import snippet', () => {
     const md = renderComment(failedReport([snapshot({ status: 'DIFF', mismatch_percentage: 2 })]), OPTIONS);
     expect(md).toContain('[Artifact `visual-regression-diffs`](https://github.com/o/r/actions/runs/4242/artifacts/9001)');
-    expect(md).toContain("gh run download 4242 -R o/r -n 'visual-regression-diffs' -D vrt-4242 && npx visual-ci import vrt-4242");
+    expect(md).toContain("gh run download 4242 -R o/r -n 'visual-regression-diffs' -D vrt-4242 && " +
+      'npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import vrt-4242');
     expect(md).toContain('```sh\n');
+  });
+
+  it('the import command fetches visual-ci from this repository, never the unclaimed npm name "visual-ci"', () => {
+    expect(IMPORT_PACKAGE_SPEC).toBe('github:abhishek-k-33/Visual_Regression_Testing');
+    const cmd = importCommand({ runId: 1, repo: 'o/r', artifactName: 'a' });
+    expect(cmd).toContain(`npx -y -p ${IMPORT_PACKAGE_SPEC} visual-ci import vrt-1`);
+    for (const md of [cmd, renderComment(failedReport([snapshot({ status: 'DIFF' })]), OPTIONS)]) {
+      expect(md).not.toMatch(/npx (-y )?visual-ci/);
+    }
   });
 
   it('quotes an artifact name with spaces in the snippet, and leaves it out for an invalid repo or run id', () => {
@@ -212,6 +225,28 @@ describe('renderComment', () => {
     expect(renderComment(r, { ...OPTIONS, repo: 'o/r;rm -rf ~' })).not.toContain('gh run download');
     expect(renderComment(r, { ...OPTIONS, runId: '1 && x' })).not.toContain('gh run download');
     expect(renderComment(r, { ...OPTIONS, artifactName: "x'$(id)" })).not.toContain('gh run download');
+  });
+
+  it('says "missing baselines" for more than one', () => {
+    const md = renderComment(failedReport([snapshot({ status: 'MISSING_BASELINE' }), snapshot({ route: '/b', status: 'MISSING_BASELINE' })]), OPTIONS);
+    expect(md).toContain('2 snapshots: 0 changed, 2 missing baselines, 0 passed.');
+  });
+
+  it('shows — for an empty route or viewport instead of a blank code span', () => {
+    const md = renderComment(failedReport([snapshot({ route: '', viewport: null, status: 'DIFF', mismatch_percentage: 1 })]), OPTIONS);
+    expect(tableRows(md)).toEqual(['| 🔴 Changed | — | — | 1.00% |']);
+  });
+
+  it('a pass whose artifact upload failed says the job failed (it exits 2)', () => {
+    const md = renderComment(report(), { ...OPTIONS, artifactUrl: '', uploadFailed: true });
+    expect(md).toContain('### ⚠️ Visual CI: the snapshots match, but the job failed');
+    expect(md).toContain('All 4 snapshots match the baselines.');
+    expect(md).toContain('⚠️ **Uploading the artifact failed**, so the job fails.');
+    expect(md).not.toContain('Visual CI passed');
+    const diff = renderComment(failedReport([snapshot({ status: 'DIFF' })]), { ...OPTIONS, artifactUrl: '', uploadFailed: true });
+    expect(diff).toContain('### ❌ Visual CI found visual changes');
+    expect(diff).toContain('**Uploading the artifact failed**');
+    expect(renderComment(report(), OPTIONS)).not.toContain('Uploading the artifact failed');
   });
 
   it('a missing baseline only (strict mode) is a failure with its row', () => {
@@ -280,11 +315,20 @@ describe('renderComment', () => {
     expect(md).not.toContain('`/page-50`');
   });
 
-  it('caps the comment at 60,000 characters with huge route names: rows go first, marker and headline stay', () => {
+  it('renders only the rows it can show: thousands of changes stay fast and are counted in "…and N more"', () => {
+    const snaps = Array.from({ length: 20000 }, (_, i) => snapshot({ route: `/p${i}-${'y'.repeat(3000)}`, status: 'DIFF', mismatch_percentage: 1 }));
+    const started = Date.now();
+    const md = renderComment(failedReport(snaps), OPTIONS);
+    expect(Date.now() - started).toBeLessThan(2000);
+    const shown = tableRows(md).length;
+    expect(md).toContain(`…and ${20000 - shown} more (the comment size limit)`);
+  });
+
+  it('caps the comment at 60,000 UTF-8 bytes with huge route names: rows go first, marker and headline stay', () => {
     const snaps = Array.from({ length: 60 }, (_, i) => snapshot({ route: `/${i}-${'x'.repeat(100000)}`, status: 'DIFF', mismatch_percentage: 5 }));
     const md = renderComment(failedReport(snaps), OPTIONS);
     expect(MAX_COMMENT_LENGTH).toBe(60000);
-    expect(md.length).toBeLessThanOrEqual(MAX_COMMENT_LENGTH);
+    expect(Buffer.byteLength(md, 'utf8')).toBeLessThanOrEqual(MAX_COMMENT_LENGTH);
     expect(md.split('\n')[0]).toBe('<!-- visual-ci:sticky id=default -->');
     expect(md).toContain('### ❌ Visual CI found visual changes');
     expect(md).toContain('60 snapshots: 60 changed, 0 passed.');
@@ -298,7 +342,15 @@ describe('renderComment', () => {
 
   it('control characters in routes expand when escaped; the cap still holds', () => {
     const snaps = Array.from({ length: 50 }, () => snapshot({ route: '\u202e'.repeat(5000), status: 'DIFF' }));
-    expect(renderComment(failedReport(snaps), OPTIONS).length).toBeLessThanOrEqual(MAX_COMMENT_LENGTH);
+    expect(Buffer.byteLength(renderComment(failedReport(snaps), OPTIONS), 'utf8')).toBeLessThanOrEqual(MAX_COMMENT_LENGTH);
+  });
+
+  it('multi-byte routes: the cap is in bytes, so it holds even if GitHub counts bytes', () => {
+    // 2,000 emoji per route are 8 kB of UTF-8 per row: 50 rows would be about 400 kB.
+    const snaps = Array.from({ length: 50 }, (_, i) => snapshot({ route: `/${i}${'📸'.repeat(2000)}`, status: 'DIFF' }));
+    const md = renderComment(failedReport(snaps), OPTIONS);
+    expect(Buffer.byteLength(md, 'utf8')).toBeLessThanOrEqual(MAX_COMMENT_LENGTH);
+    expect(md).toContain('(the comment size limit)');
   });
 
   it('a route with backticks, pipes and markup stays inside its cell', () => {
@@ -358,7 +410,7 @@ describe('upsertStickyComment', () => {
   it('creates a comment when there is none', async () => {
     const { github, calls } = fakeGithub([comment(1, { login: 'alice', type: 'User' }, 'LGTM')]);
     const r = await upsert(github);
-    expect(r).toEqual({ action: 'created', id: 5000, url: 'https://github.com/o/r/pull/7#issuecomment-5000' });
+    expect(r).toEqual({ action: 'created', id: 5000, url: 'https://github.com/o/r/pull/7#issuecomment-5000', superseded: [], supersedeErrors: [] });
     expect(calls.create).toEqual([{ owner: 'o', repo: 'r', issue_number: 7, body: `${MARKER}\nnew` }]);
     expect(calls.list[0]).toMatchObject({ owner: 'o', repo: 'r', issue_number: 7, per_page: 100 });
   });
@@ -366,18 +418,43 @@ describe('upsertStickyComment', () => {
   it("updates the bot's comment with the marker", async () => {
     const { github, calls } = fakeGithub([comment(1, { login: 'alice', type: 'User' }, 'hi'), comment(2, BOT, `${MARKER}\nold`)]);
     const r = await upsert(github);
-    expect(r).toEqual({ action: 'updated', id: 2, url: 'https://github.com/o/r/pull/7#issuecomment-2' });
+    expect(r).toEqual({ action: 'updated', id: 2, url: 'https://github.com/o/r/pull/7#issuecomment-2', superseded: [], supersedeErrors: [] });
     expect(calls.update).toEqual([{ owner: 'o', repo: 'r', comment_id: 2, body: `${MARKER}\nnew` }]);
     expect(calls.create).toEqual([]);
   });
 
-  it('updates the oldest of several bot comments with the marker', async () => {
+  it('updates the oldest of several bot comments and marks the others as superseded, pointing at it', async () => {
     const { github, calls } = fakeGithub([
       comment(9, BOT, `${MARKER}\nb`, '2026-11-03T00:00:00Z'),
-      comment(4, BOT, `${MARKER}\na`, '2026-11-02T00:00:00Z')
+      comment(4, BOT, `${MARKER}\na`, '2026-11-02T00:00:00Z'),
+      comment(6, { login: 'alice', type: 'User' }, `${MARKER}\nhuman`, '2026-11-02T12:00:00Z')
     ]);
-    expect((await upsert(github)).id).toBe(4);
-    expect(calls.update.map((c) => c.comment_id)).toEqual([4]);
+    const r = await upsert(github);
+    expect(r).toMatchObject({ action: 'updated', id: 4, superseded: [9], supersedeErrors: [] });
+    expect(calls.update.map((c) => c.comment_id)).toEqual([4, 9]);
+    expect(calls.update[0].body).toBe(`${MARKER}\nnew`);
+    expect(calls.update[1].body).toBe(`${supersededMarker('default')}\n\nSuperseded by [the current visual-ci comment](https://github.com/o/r/pull/7#issuecomment-4).`);
+    expect(hasMarker(calls.update[1].body, MARKER)).toBe(false); // never matched again
+  });
+
+  it('a duplicate that cannot be marked superseded is reported, not thrown', async () => {
+    const { github } = fakeGithub([comment(1, BOT, `${MARKER}\na`, '2026-11-01T00:00:00Z'), comment(2, BOT, `${MARKER}\nb`, '2026-11-02T00:00:00Z')]);
+    const update = github.rest.issues.updateComment;
+    github.rest.issues.updateComment = async (p) => {
+      if (p.comment_id === 2) throw new Error('gone\u0007');
+      return update(p);
+    };
+    const r = await upsert(github);
+    expect(r).toMatchObject({ action: 'updated', id: 1, superseded: [], supersedeErrors: ['2: gone\\u{7}'] });
+  });
+
+  it('only duplicates of the same comment id are superseded', async () => {
+    const { github, calls } = fakeGithub([
+      comment(1, BOT, `${MARKER}\na`, '2026-11-01T00:00:00Z'),
+      comment(2, BOT, `${stickyMarker('other')}\nb`, '2026-11-02T00:00:00Z')
+    ]);
+    expect((await upsert(github)).superseded).toEqual([]);
+    expect(calls.update.map((c) => c.comment_id)).toEqual([1]);
   });
 
   it("never edits a human's comment that contains the marker (it creates its own)", async () => {
@@ -424,7 +501,7 @@ describe('upsertStickyComment', () => {
 
   it('a pass with no earlier comment is skipped: nothing is created', async () => {
     const { github, calls } = fakeGithub([]);
-    expect(await upsert(github, { createIfMissing: shouldCreateComment('passed') })).toEqual({ action: 'skipped', id: null, url: '' });
+    expect(await upsert(github, { createIfMissing: shouldCreateComment('passed') })).toEqual({ action: 'skipped', id: null, url: '', superseded: [], supersedeErrors: [] });
     expect(calls.create).toEqual([]);
     expect(calls.update).toEqual([]);
   });
@@ -435,10 +512,14 @@ describe('upsertStickyComment', () => {
     expect(calls.update).toHaveLength(1);
   });
 
-  it('failed and error runs create a comment', () => {
+  it('anything but a clean pass creates a comment (also an unknown status, and a pass whose upload failed)', () => {
     expect(shouldCreateComment('failed')).toBe(true);
     expect(shouldCreateComment('error')).toBe(true);
+    expect(shouldCreateComment('')).toBe(true);
+    expect(shouldCreateComment(undefined)).toBe(true);
+    expect(shouldCreateComment('PASSED')).toBe(true);
     expect(shouldCreateComment('passed')).toBe(false);
+    expect(shouldCreateComment('passed', { uploadFailed: true })).toBe(true);
   });
 
   it('passes API errors on to the caller', async () => {
@@ -544,7 +625,48 @@ describe('run(): the comment step', () => {
     await expect(run({ core, github: fakeGithub([], { failWith: err }).github, context: context() }, env)).resolves.toEqual({ action: 'failed', url: '' });
     expect(core.outputs).toEqual({ 'comment-action': 'failed', 'comment-url': '' });
     expect(core.annotations).toEqual([['warning', expect.stringContaining('pull-requests: write')]]);
-    expect(core.annotations[0][1]).toContain('HTTP 403');
+    // The API's own message first, then the likely fix (a locked conversation also answers 403).
+    const msg = core.annotations[0][1];
+    expect(msg).toMatch(/^visual-ci: could not write the pull request comment: HTTP 403: Resource not accessible by integration\. Probably /);
+    expect(msg).toContain('locked conversation');
+  });
+
+  it('createIfMissing follows the action status, not the report: a pass with an unreadable report creates nothing', async () => {
+    const core = fakeCore();
+    const { github, calls } = fakeGithub([]);
+    await run({ core, github, context: context() }, { ...env, VISUAL_CI_STATUS: 'passed', VISUAL_CI_REPORT_PATH: '/nonexistent/r.json' });
+    expect(core.outputs['comment-action']).toBe('skipped');
+    expect(calls.create).toEqual([]);
+    const other = fakeGithub([]);
+    await run({ core: fakeCore(), github: other.github, context: context() }, { ...env, VISUAL_CI_STATUS: 'weird' });
+    expect(other.calls.create).toHaveLength(1);
+  });
+
+  it('a pass whose upload failed creates a comment that says the job failed', async () => {
+    const core = fakeCore();
+    const { github, calls } = fakeGithub([]);
+    await run({ core, github, context: context() }, { ...env, VISUAL_CI_STATUS: 'passed', VISUAL_CI_UPLOAD_OUTCOME: 'failure' });
+    expect(core.outputs['comment-action']).toBe('created');
+    expect(calls.create[0].body).toContain('Uploading the artifact failed');
+  });
+
+  it('skips pull_request_target (only pull_request is supported)', async () => {
+    const core = fakeCore();
+    const { github, calls } = fakeGithub([]);
+    await run({ core, github, context: { ...context(), eventName: 'pull_request_target' } }, env);
+    expect(core.outputs['comment-action']).toBe('skipped');
+    expect(core.annotations).toEqual([['notice', expect.stringContaining('only written for pull_request events')]]);
+    expect(calls.list).toEqual([]);
+  });
+
+  it('warns when duplicates could not be marked superseded, but reports the update', async () => {
+    const core = fakeCore();
+    const { github } = fakeGithub([comment(1, BOT, `${MARKER}\na`, '2026-11-01T00:00:00Z'), comment(2, BOT, `${MARKER}\nb`, '2026-11-02T00:00:00Z')]);
+    const update = github.rest.issues.updateComment;
+    github.rest.issues.updateComment = async (p) => { if (p.comment_id === 2) throw new Error('nope'); return update(p); };
+    await run({ core, github, context: context() }, env);
+    expect(core.outputs['comment-action']).toBe('updated');
+    expect(core.annotations).toEqual([['warning', expect.stringContaining('could not mark a duplicate comment as superseded (2: nope)')]]);
   });
 
   it('any other error is a warning too, with a sanitised message', async () => {

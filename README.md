@@ -424,9 +424,11 @@ When the visual check fails in GitHub Actions, review it in your own dashboard i
    - **In the dashboard** (`npm start`, then [http://localhost:4000](http://localhost:4000)): click **Import CI run** and pick the zip, or drop the zip anywhere on the dashboard page. When it is done the dashboard opens the imported run (or lists them, if the artifact held several); errors are shown under the page heading.
    - **On the command line:**
      ```bash
-     npx visual-ci import ~/Downloads/visual-regression-diffs.zip
-     # or: node src/cli/index.js import ~/Downloads/visual-regression-diffs.zip
+     node src/cli/index.js import ~/Downloads/visual-regression-diffs.zip
+     # or, without a checkout (fetches visual-ci from this GitHub repository):
+     npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import ~/Downloads/visual-regression-diffs.zip
      ```
+     The npm package is **not published yet**, so never give `npx` the bare name `visual-ci`: that name on npm is not ours, and npx would download and run whatever is published under it. `-p github:abhishek-k-33/Visual_Regression_Testing` makes npx fetch this repository instead (the first run installs its dependencies, about half a minute).
      It prints each imported run with its dashboard link, e.g. `http://localhost:4000/runs/run_1732440000000` (using `PORT` if you set it).
 3. Imported runs carry an **Imported** badge on the dashboard and in the run header.
 
@@ -604,9 +606,9 @@ jobs:
 | `upload-artifact` | `on-failure` | When to upload the run folder: `on-failure`, `always` or `never` (see below). An empty folder is never uploaded. |
 | `retention-days` | *(repository default)* | Days to keep the artifact, 1-90. |
 | `image` | *(build)* | A prebuilt image to `docker pull` and use instead of building this action's `Dockerfile` (saves a minute or two per job). It must contain this tool at `/app`, at the same version as the action. |
-| `comment` | `true` | `true`: on `pull_request` and `pull_request_target` events, keep one comment with the result on the pull request (needs `pull-requests: write`, see [Pull request comment](#pull-request-comment)). `false`: never comment. |
+| `comment` | `true` | `true`: on `pull_request` events (only those), keep one comment with the result on the pull request (needs `pull-requests: write`, see [Pull request comment](#pull-request-comment)). `false`: never comment. |
 | `comment-id` | `default` | Which comment this use of the action owns: letters, digits, `.`, `_` and `-`, at most 64. Give each use its own (e.g. `${{ matrix.browser }}`) for one comment per use; uses with the same id overwrite each other's comment. |
-| `github-token` | `${{ github.token }}` | Token for the comment. With the default job token the comment is written by `github-actions[bot]`, and only comments by `github-actions[bot]` are ever updated (see below). |
+| `github-token` | `${{ github.token }}` | Token for the comment. Keep the default: the comment is then written by `github-actions[bot]`, and only comments by `github-actions[bot]` are ever updated. With a personal access token or a GitHub App token (another author) every run adds a new comment (see below). An empty or unavailable token makes the comment step fail before it starts: a warning, the result is unchanged. |
 
 Inputs are validated before anything runs (booleans must be exactly `true` or `false`, the run id and `comment-id` must match their rules, numbers must be whole numbers); an invalid input fails the job with an error naming the input. The action's own messages don't repeat input values, and inputs reach its shell scripts only through environment variables, so a value can't inject commands. `github-token` only goes to the comment step (`actions/github-script`): never to a shell step or the browser container.
 
@@ -629,7 +631,7 @@ Inputs are validated before anything runs (booleans must be exactly `true` or `f
 | `artifact-id` | ID of the uploaded artifact; empty unless the upload succeeded. |
 | `artifact-url` | Download URL of the uploaded artifact; empty unless the upload succeeded. |
 | `comment-url` | URL of the pull request comment this run created or updated; empty otherwise. |
-| `comment-action` | `created`, `updated`, `skipped` (a passing run with no earlier comment, a pull request from a fork, an invalid `comment-id`) or `failed` (a warning says why, e.g. a missing permission). Empty when the comment step did not run (`comment: false`, or not a pull request event). |
+| `comment-action` | `created`, `updated`, `skipped` (a passing run with no earlier comment, a pull request from a fork, an invalid `comment-id`) or `failed` (a warning says why, e.g. a missing permission). Empty when the comment step did not run (`comment: false`, or not a `pull_request` event) or `actions/github-script` could not start it (e.g. an empty `github-token`). |
 
 All paths are absolute paths on the runner. The outputs are set even when the job fails, so later steps with `if: always()` can use them: `status` and `exit-code` always; the others once the inputs were valid (they are empty when visual-ci never produced a result). A missing or unreadable JSON result is reported as `status: error` with an error annotation, never as a pass. The three `artifact-*` outputs come from the upload's own result, so they are empty whenever no artifact exists.
 
@@ -653,11 +655,11 @@ All paths are absolute paths on the runner. The outputs are set even when the jo
 
 In every mode only the folder of **this** run is uploaded (`<storage>/runs/<run-id>`), and only if the result names it, it really lies inside the workspace (also once symlinks are resolved), it contains no symlinks, and it holds at least one file. Never the whole `storage/`. When the run stopped before its first screenshot (invalid config, image build failed, the first page could not load) there is nothing to upload, and the `artifact-*` outputs stay empty.
 
-**Which artifacts can be imported:** a run that finished comparing (exit `0` or `1`) has `run.json` at the root of the zip, so the downloaded artifact imports as is: `npx visual-ci import visual-regression-diffs.zip` or **Import CI run** in the dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import)). An artifact from an **error run (exit `2`)** holds only the raw screenshots taken before the error, for debugging: it has no `run.json` and is **not importable** (the import refuses partial runs on purpose).
+**Which artifacts can be imported:** a run that finished comparing (exit `0` or `1`) has `run.json` at the root of the zip, so the downloaded artifact imports as is: `npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import visual-regression-diffs.zip` (or `node src/cli/index.js import ...` from a checkout) or **Import CI run** in the dashboard (see [Review a CI Run Locally](#6-review-a-ci-run-locally-dashboard-upload-or-visual-ci-import)). An artifact from an **error run (exit `2`)** holds only the raw screenshots taken before the error, for debugging: it has no `run.json` and is **not importable** (the import refuses partial runs on purpose).
 
 ### Pull request comment
 
-On `pull_request` (and `pull_request_target`) events the action keeps **one comment** on the pull request with the latest result. It is created the first time a run does not pass, and every later run updates the same comment, also once everything passes again ("All N snapshots match the baselines"). A pull request that passes from the start gets no comment. For example:
+On `pull_request` events the action keeps **one comment** on the pull request with the latest result. It is created the first time a run does not pass, and every later run updates the same comment, also once everything passes again ("All N snapshots match the baselines"). A pull request that passes from the start gets no comment. For example:
 
 > ### ❌ Visual CI found visual changes
 >
@@ -673,13 +675,14 @@ On `pull_request` (and `pull_request_target`) events the action keeps **one comm
 > Review it in your local dashboard:
 >
 > ```sh
-> gh run download 4242 -R owner/repo -n 'visual-regression-diffs' -D vrt-4242 && npx visual-ci import vrt-4242
+> gh run download 4242 -R owner/repo -n 'visual-regression-diffs' -D vrt-4242 && npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import vrt-4242
 > ```
 >
 > <sub>visual-ci · commit `0637412` · updated 2026-11-26 10:41 UTC</sub>
 
-- **What it shows:** the status with its counts (passed, changed, missing baseline, new baselines), or the error's code and message; a table of the changed snapshots only (`DIFF` and `MISSING_BASELINE`: route, viewport, mismatch rounded to 0.01%), at most 50 rows, then "…and N more"; links to the workflow run and the artifact; the pull request's head commit (not the merge commit `GITHUB_SHA`) and the time (UTC). The comment stays under 60,000 characters (GitHub's limit is 65,536): table rows are dropped first, the headline always stays.
-- **Import snippet:** shown only when the artifact can be imported (exit `0` or `1`, and an artifact was uploaded). For an error run it says the artifact holds debugging screenshots only.
+- **What it shows:** the status with its counts (passed, changed, missing baseline, new baselines), or the error's code and message; a table of the changed snapshots only (`DIFF` and `MISSING_BASELINE`: route, viewport, mismatch rounded to 0.01%), at most 50 rows, then "…and N more"; links to the workflow run and the artifact; the pull request's head commit (not the merge commit `GITHUB_SHA`) and the time (UTC). The comment stays under 60,000 bytes of UTF-8 (GitHub's limit is 65,536 characters): table rows are dropped first, the headline always stays. If the artifact upload failed (which fails the job even when every snapshot matched), the comment says so instead of "passed".
+- **Import snippet:** shown only when the artifact can be imported (exit `0` or `1`, and an artifact was uploaded). For an error run it says the artifact holds debugging screenshots only. It runs `npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci`, which fetches visual-ci from this repository: the npm package is not published yet, and the npm name `visual-ci` is not ours.
+- **Only `pull_request` events.** `pull_request_target` is not supported: the comment would name the pull request's head commit, while such a job usually tests the base branch.
 - **Permissions:** the job needs `pull-requests: write` (and `contents: read` for the checkout):
   ```yaml
   jobs:
@@ -688,10 +691,16 @@ On `pull_request` (and `pull_request_target`) events the action keeps **one comm
         contents: read
         pull-requests: write
   ```
-  Without it (or on Dependabot pull requests, whose token is read-only) the comment step warns how to fix it (*"give the job permissions: pull-requests: write"*) and the job's result is unchanged. A comment problem of any kind is only ever a warning: it never changes `status`, `exit-code` or whether the job passes.
+  Without it (or on Dependabot pull requests, whose token is read-only) the comment step warns with GitHub's answer and the probable fix (*"give the job permissions: pull-requests: write"*; a locked conversation also answers 403), and the job's result is unchanged. A comment problem of any kind is only ever a warning: it never changes `status`, `exit-code` or whether the job passes.
 - **Pull requests from forks:** no comment. The token of a `pull_request` run from a fork is read-only, so the action skips the comment with a notice; the results are in the step summary and the artifact. Commenting on fork pull requests from a separate `workflow_run` workflow is a planned follow-up.
 - **Safe with untrusted text:** routes, viewports and error messages are shown as code spans (`mdCode` in `src/shared/text.js`): control and bidi characters are escaped, the backtick fence is longer than any backtick run, and `|` is escaped in tables. So a route can't mention people, add links, images or HTML, or break the table. The step summary uses the same escaping.
-- **Which comment is updated:** the oldest one whose first line is the hidden marker `<!-- visual-ci:sticky id=<comment-id> -->` **and** that was written by `github-actions[bot]` (a `Bot` account). A person who pastes the marker into their own comment never gets it overwritten. With a personal access token in `github-token` the comment is written by that user, so it is never recognised again and each run adds a new comment: keep the default token.
+- **Which comment is updated:** the oldest one whose first line is the hidden marker `<!-- visual-ci:sticky id=<comment-id> -->` **and** that was written by `github-actions[bot]` (a `Bot` account). A person who pastes the marker into their own comment never gets it overwritten. With a personal access token or a GitHub App token in `github-token` the comment has another author, so it is never recognised again and each run adds a new comment: keep the default token.
+- **Duplicates:** two runs that overlap (two quick pushes, or matrix legs sharing a `comment-id`) can each create a comment. The next run keeps the oldest and edits the others to a short *"Superseded by the current visual-ci comment"* link, so no stale result lingers. To avoid overlaps, cancel older runs of the same pull request:
+  ```yaml
+  concurrency:
+    group: visual-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+  ```
 - **Matrix builds:** give each leg its own `comment-id` (and its own `artifact-name` and `run-id`), so each keeps a separate comment instead of overwriting the others:
   ```yaml
   strategy:

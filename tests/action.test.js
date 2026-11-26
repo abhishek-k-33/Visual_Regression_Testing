@@ -132,7 +132,7 @@ describe('action.yml: structure', () => {
   it('the comment step: github-script with the github-token input, on pull requests only, never failing the action', () => {
     const step = stepById('comment');
     expect(step.uses).toBe('actions/github-script@v8');
-    expect(step.if).toBe("${{ !cancelled() && inputs.comment == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') }}");
+    expect(step.if).toBe("${{ !cancelled() && inputs.comment == 'true' && github.event_name == 'pull_request' }}");
     expect(step['continue-on-error']).toBe(true);
     expect(step.with['github-token']).toBe('${{ inputs.github-token }}');
     expect(step.env).toEqual({
@@ -141,11 +141,13 @@ describe('action.yml: structure', () => {
       VISUAL_CI_STATUS: '${{ steps.outcome.outputs.status }}',
       VISUAL_CI_REPORT_PATH: '${{ steps.parse.outputs.report-path }}',
       VISUAL_CI_ARTIFACT_NAME: '${{ steps.outcome.outputs.artifact-name }}',
-      VISUAL_CI_ARTIFACT_URL: '${{ steps.upload.outputs.artifact-url }}'
+      VISUAL_CI_ARTIFACT_URL: '${{ steps.upload.outputs.artifact-url }}',
+      VISUAL_CI_UPLOAD_OUTCOME: '${{ steps.upload.outcome }}'
     });
     expect(step.with.script).toContain("path.join(process.env.VISUAL_CI_ACTION_PATH, 'src', 'ci', 'prComment.js')");
     expect(step.with.script).toContain('await run({ core, github, context });');
-    expect(step.with.script).toMatch(/^try \{[\s\S]*\} catch \(err\) \{\n\s+core\.warning\(/);
+    // A failure outside run() (e.g. the import throws) still reports comment-action: failed.
+    expect(step.with.script).toMatch(/^try \{[\s\S]*\} catch \(err\) \{\n\s+core\.setOutput\('comment-action', 'failed'\);\n\s+core\.setOutput\('comment-url', ''\);\n\s+core\.warning\(/);
     expect(action.outputs['comment-url'].value).toBe('${{ steps.comment.outputs.comment-url }}');
     expect(action.outputs['comment-action'].value).toBe('${{ steps.comment.outputs.comment-action }}');
     // The token goes to github-script only: never to a shell step or the container.
@@ -156,6 +158,8 @@ describe('action.yml: structure', () => {
     expect(action.inputs.comment.description).toMatch(/pull-requests: write/);
     expect(action.inputs['comment-id'].description).toMatch(/matrix/);
     expect(action.inputs['github-token'].description).toMatch(/github-actions\[bot\]/);
+    expect(action.inputs['github-token'].description).toMatch(/personal access token or a GitHub App token .*every run adds a new comment/);
+    expect(action.inputs.comment.description).not.toMatch(/pull_request_target/);
   });
 
   it('declares exactly the designed outputs', () => {
@@ -626,6 +630,21 @@ describe('README documents the action', () => {
     expect(section).not.toMatch(/Pull request comments are not part of the action yet/);
   });
 
+  it('never tells anyone to run a bare `npx visual-ci` (an npm name that is not ours), and says the package is unpublished', () => {
+    expect(readme).not.toMatch(/npx (-y )?visual-ci\b/);
+    expect(fs.readFileSync('src/server/public/js/import-upload.js', 'utf8')).not.toMatch(/npx (-y )?visual-ci\b/);
+    expect(readme).toContain('npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import');
+    expect(readme).toMatch(/npm package is \*\*not published yet\*\*/);
+  });
+
+  it('documents pull_request only, duplicates with a concurrency group, and PAT / App tokens', () => {
+    expect(section).toMatch(/\*\*Only `pull_request` events\.\*\* `pull_request_target` is not supported/);
+    expect(section).not.toMatch(/and `pull_request_target`\) events/);
+    expect(section).toMatch(/concurrency:\n\s+group: .*pull_request\.number/);
+    expect(section).toMatch(/Superseded by the current visual-ci comment/);
+    expect(section).toMatch(/GitHub App token/);
+  });
+
   it('documents baselines, limitations, error-run artifacts, unique names and secrets', () => {
     expect(section).toMatch(/update-baselines: true/);
     expect(section).toMatch(/Linux/);
@@ -868,9 +887,10 @@ async function runParseStep(runner, inputs = {}, { artifacts = null } = {}) {
  * pull_request context. `comments`: what listing returns; `commentError`: { status,
  * message } thrown by every issues call (403: the token lacks pull-requests: write);
  * `headRepo`: the PR head's repository (o/r is this one; anything else is a fork);
- * `crash`: the github-script process itself fails (continue-on-error must absorb it).
+ * `crash`: the github-script process itself fails (continue-on-error must absorb it);
+ * `importFails`: prComment.js can't be loaded (the script's own catch must report it).
  */
-async function runCommentStep(runner, inputs = {}, { comments = [], commentError = null, headRepo = 'o/r', crash = false } = {}) {
+async function runCommentStep(runner, inputs = {}, { comments = [], commentError = null, headRepo = 'o/r', crash = false, importFails = false } = {}) {
   const step = stepById('comment');
   const harness = path.join(runner.root, 'github-script-comment-harness.cjs');
   const body = path.join(runner.root, 'github-script-comment-body.js');
@@ -911,6 +931,7 @@ async function runCommentStep(runner, inputs = {}, { comments = [], commentError
     HARNESS_EVENT: ctx.github.event_name,
     HARNESS_COMMENT: JSON.stringify({ comments, commentError, headRepo, crash })
   });
+  if (importFails) env.VISUAL_CI_ACTION_PATH = path.join(runner.root, 'no-such-action');
   const result = await exec(process.execPath, [harness, body], { cwd: runner.workspace, env });
   if (result.code !== 0) {
     runner.steps.comment = { __outcome: 'failure' };
@@ -1472,7 +1493,7 @@ describe('the pull request comment, step by step (canned results)', { timeout: 6
     expect(body).toContain('### ❌ Visual CI found visual changes');
     expect(body).toContain('| 🔴 Changed | ``/pri`ci\\|ng`` | `mobile` | 4.44% |');
     expect(body).toContain('[Artifact `visual-regression-diffs`](https://github.com/o/r/actions/runs/4242/artifacts/9001)');
-    expect(body).toContain("gh run download 4242 -R o/r -n 'visual-regression-diffs' -D vrt-4242 && npx visual-ci import vrt-4242");
+    expect(body).toContain("gh run download 4242 -R o/r -n 'visual-regression-diffs' -D vrt-4242 && npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import vrt-4242");
     expect(body).toContain('commit `feedfac`'); // the PR head, not GITHUB_SHA (0123456...)
     expect(body).not.toContain('0123456');
     expect(r.outputs).toMatchObject({ 'comment-url': 'https://github.com/o/r/pull/17#issuecomment-777', 'comment-action': 'created', status: 'failed', 'exit-code': '1' });
@@ -1484,10 +1505,19 @@ describe('the pull request comment, step by step (canned results)', { timeout: 6
     expect(r.results.comment.token).toBe('ghs_custom');
   });
 
-  it('pull_request_target from the same repository comments too', async () => {
-    const r = await go({ __event: 'pull_request_target' }, { env: DIFF_ENV() });
-    expect(r.ran).toContain('comment');
-    expect(r.outputs['comment-action']).toBe('created');
+  it('a pass whose artifact upload failed: the comment says the job failed, as Set the result does (exit 2)', async () => {
+    withRunFolder();
+    const r = await go({ 'upload-artifact': 'always' }, { env: { FAKE_DOCKER_REPORT: cannedReport() }, upload: { mode: 'fail' } });
+    expect(r.outputs).toMatchObject({ status: 'passed', 'comment-action': 'created' });
+    expect(r.results.comment.calls.create[0].body).toContain('### ⚠️ Visual CI: the snapshots match, but the job failed');
+    expect(r.results['Set the result'].code).toBe(2);
+  });
+
+  it('when prComment.js cannot even be loaded, comment-action is failed (not empty) and the result is unchanged', async () => {
+    const r = await go({}, { env: DIFF_ENV(), comment: { importFails: true } });
+    expect(r.results.comment.annotations).toEqual([['warning', expect.stringContaining('the pull request comment step failed')]]);
+    expect(r.outputs).toMatchObject({ 'comment-action': 'failed', 'comment-url': '', status: 'failed', 'exit-code': '1' });
+    expect(r.results['Set the result'].code).toBe(1);
   });
 
   it('updates the earlier comment of the bot, never the one a person wrote with the marker', async () => {
@@ -1536,7 +1566,7 @@ describe('the pull request comment, step by step (canned results)', { timeout: 6
     expect(r.results['Set the result'].code).toBe(1);
   });
 
-  it.each(['push', 'workflow_dispatch', 'schedule'])('a %s event: the comment step does not run', async (event) => {
+  it.each(['push', 'workflow_dispatch', 'schedule', 'pull_request_target'])('a %s event: the comment step does not run', async (event) => {
     const r = await go({ __event: event }, { env: DIFF_ENV() });
     expect(r.ran).not.toContain('comment');
     expect(r.outputs).toMatchObject({ 'comment-url': '', 'comment-action': '' });
@@ -1705,7 +1735,7 @@ describe.skipIf(!HOST_BROWSERS)('the whole action against a real page (fake dock
     const body = r.results.comment.calls.create[0].body;
     expect(body).toContain('1 snapshot: 1 changed, 0 passed.');
     expect(body).toMatch(/^\| 🔴 Changed \| `\/` \| `desktop` \| \d+\.\d\d% \|$/m);
-    expect(body).toContain("-n 'visual-regression-diffs' -D vrt-4242 && npx visual-ci import vrt-4242");
+    expect(body).toContain("-n 'visual-regression-diffs' -D vrt-4242 && npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import vrt-4242");
     expect(r.results['Set the result'].code).toBe(1);
   });
 

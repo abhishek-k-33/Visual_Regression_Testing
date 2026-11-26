@@ -177,6 +177,7 @@ describe('Import CI run (dashboard)', () => {
       expect(await page.locator('.import-control').getAttribute('data-max-upload-bytes')).toBe('100');
       await page.setInputFiles('#import-file', artifact('ci_ui_big'));
       await expect.poll(() => page.locator('[data-import-error]').textContent()).toContain('uploads are limited to 100 bytes');
+      expect(await page.locator('[data-import-error]').textContent()).toContain('node src/cli/index.js import <file>'); // never a bare npx visual-ci
     } finally {
       if (previous === undefined) delete process.env.VISUAL_IMPORT_MAX_UPLOAD_BYTES;
       else process.env.VISUAL_IMPORT_MAX_UPLOAD_BYTES = previous;

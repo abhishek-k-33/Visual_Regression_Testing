@@ -89,7 +89,7 @@ function initImport() {
       return;
     }
     if (maxBytes && file.size > maxBytes) {
-      showError(`"${file.name}" is ${formatBytes(file.size)}; uploads are limited to ${formatBytes(maxBytes)}. Use the command line instead: npx visual-ci import <file>.`);
+      showError(`"${file.name}" is ${formatBytes(file.size)}; uploads are limited to ${formatBytes(maxBytes)}. Use the command line instead, from your checkout: node src/cli/index.js import <file>.`);
       return;
     }
 

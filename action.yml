@@ -69,7 +69,7 @@ inputs:
     required: false
     default: ''
   comment:
-    description: 'true: on pull_request and pull_request_target events, keep one comment on the pull request with the result (needs permissions pull-requests: write). It is created when a run does not pass and updated by every later run. (true or false)'
+    description: 'true: on pull_request events (only those), keep one comment on the pull request with the result (needs permissions pull-requests: write). It is created when a run does not pass and updated by every later run. (true or false)'
     required: false
     default: 'true'
   comment-id:
@@ -77,7 +77,7 @@ inputs:
     required: false
     default: default
   github-token:
-    description: Token for the pull request comment. The default job token comments as github-actions[bot]; the action only ever updates comments written by github-actions[bot].
+    description: Token for the pull request comment. Keep the default job token, which comments as github-actions[bot]. Only comments by github-actions[bot] are ever updated, so with a personal access token or a GitHub App token (another author) every run adds a new comment. An empty or unavailable token fails the comment step before it starts (a warning; the result is unchanged).
     required: false
     default: ${{ github.token }}
 
@@ -122,7 +122,7 @@ outputs:
     description: URL of the pull request comment created or updated by this run. Empty otherwise.
     value: ${{ steps.comment.outputs.comment-url }}
   comment-action:
-    description: 'What happened to the pull request comment: created, updated, skipped (a passing run with no earlier comment, a fork, an invalid comment-id) or failed (a warning says why). Empty when the comment step did not run (comment: false, or not a pull request event).'
+    description: 'What happened to the pull request comment: created, updated, skipped (a passing run with no earlier comment, a fork, an invalid comment-id) or failed (a warning says why). Empty when the comment step did not run (comment: false, or not a pull_request event) or github-script could not start it (e.g. an empty github-token).'
     value: ${{ steps.comment.outputs.comment-action }}
 
 runs:
@@ -378,15 +378,17 @@ runs:
           echo "artifact-name=$artifact_name"
         } >> "$GITHUB_OUTPUT"
 
-    # The pull request comment: after the upload (it links the artifact) and the outcome
-    # (its status), also after an earlier failure (then it reports the error). Same-repo
-    # pull requests only: a fork's token can't write (src/ci/prComment.js says so in a
-    # notice). A comment problem never changes the result: run() turns every error into
-    # a warning, the script catches the rest, and continue-on-error covers github-script.
+    # The pull request comment: after the upload (it links the artifact, and a failed
+    # upload fails the job) and the outcome (its status), also after an earlier failure
+    # (then it reports the error). pull_request events from this repository only: a
+    # fork's token can't write (src/ci/prComment.js says so in a notice), and with
+    # pull_request_target the job usually tests the base branch. A comment problem never
+    # changes the result: run() turns every error into a warning, the script catches the
+    # rest, and continue-on-error covers github-script itself (e.g. an empty token).
     # The head SHA comes from the event payload (GITHUB_SHA is the merge commit).
     - name: Comment on the pull request
       id: comment
-      if: ${{ !cancelled() && inputs.comment == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') }}
+      if: ${{ !cancelled() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
       continue-on-error: true
       uses: actions/github-script@v8
       env:
@@ -396,6 +398,7 @@ runs:
         VISUAL_CI_REPORT_PATH: ${{ steps.parse.outputs.report-path }}
         VISUAL_CI_ARTIFACT_NAME: ${{ steps.outcome.outputs.artifact-name }}
         VISUAL_CI_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        VISUAL_CI_UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
@@ -406,6 +409,8 @@ runs:
             const { run } = await import(pathToFileURL(file).href);
             await run({ core, github, context });
           } catch (err) {
+            core.setOutput('comment-action', 'failed');
+            core.setOutput('comment-url', '');
             core.warning('visual-ci: the pull request comment step failed: ' + String(err && err.message) + '. The visual result is not affected.');
           }
 
