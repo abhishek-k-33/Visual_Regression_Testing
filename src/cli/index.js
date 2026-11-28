@@ -17,6 +17,28 @@ import { EXIT, STDOUT_TARGET, CliError, buildResult, writeResult, sanitizeMessag
 import { jsonTargetConflict, jsonTargetShapeProblem } from './jsonTarget.js';
 import { createLogger } from './logger.js';
 import { toDisplayPath } from './display.js';
+import { resolveServeOptions } from './serve.js';
+
+/**
+ * Imports a module that needs better-sqlite3, turning a failure to load that driver
+ * into an error that says what is wrong and how to fix it.
+ *
+ * @template T
+ * @param {() => Promise<T>} load - e.g. () => import('../server/db.js')
+ * @returns {Promise<T>}
+ */
+async function importNeedingDatabase(load) {
+  try {
+    return await load();
+  } catch (err) {
+    const text = `${err?.message ?? err}\n${err?.stack ?? ''}`;
+    if (!/better[-_]sqlite3/i.test(text)) throw err;
+    const firstLine = String(err?.message ?? err).split('\n')[0];
+    throw new CliError('INTERNAL',
+      `Could not load better-sqlite3, the SQLite driver this command needs for the run database (${firstLine}). ` +
+      'Reinstall the dependencies (or run: npm rebuild better-sqlite3) with Node.js 22 or newer.', { cause: err });
+  }
+}
 
 /**
  * The --json result still owed if the command ends in an error or a crash: set once
@@ -481,6 +503,47 @@ program
       process.exitCode = EXIT.ERROR;
     } finally {
       if (db) closeDb();
+    }
+  });
+
+program
+  .command('serve')
+  .description('Start the web review dashboard (and its REST API)')
+  .option('-p, --port <n>', 'Port to listen on, 0 for any free port (default: $PORT, else 4000)')
+  .option('--host <host>', 'Interface to listen on (default: $HOST, else 127.0.0.1; 0.0.0.0 exposes the dashboard, which has no login, on your network)')
+  .option('-c, --config <path>', 'Path to visual.config.json (only storageDir is used)')
+  .action(async (options) => {
+    try {
+      const { port, host } = resolveServeOptions(options);
+      // Same storage root as `test` and `import` with the same config. The dashboard
+      // reads it from VISUAL_STORAGE_DIR, which still wins when it is already set.
+      if (options.config) {
+        process.env.VISUAL_STORAGE_DIR = resolveStorageRoot(readConfiguredStorageDir(options.config) || undefined);
+      }
+      const { startServer } = await importNeedingDatabase(() => import('../server/app.js'));
+      const server = startServer({ port, host });
+      // Installed before the URL is printed, so a signal right after it is handled too.
+      const stop = (signal) => {
+        console.log(`\n  ${signal} received: stopping the dashboard.`);
+        server.close(() => {
+          closeDb();
+          process.exit(EXIT.PASS);
+        });
+        server.closeAllConnections(); // keep-alive connections would hold close() open
+      };
+      process.once('SIGINT', stop);
+      process.once('SIGTERM', stop);
+      await new Promise((resolve, reject) => {
+        server.once('listening', resolve);
+        server.once('error', reject);
+      });
+      server.on('error', crash('Dashboard server error'));
+    } catch (err) {
+      const reason = err?.code === 'EADDRINUSE' ? `port ${err.port} on ${err.address} is already in use`
+        : err?.code === 'EACCES' ? `no permission to listen on ${err.address}:${err.port}`
+          : String(err?.message ?? err);
+      console.error(`\n[ERROR] Could not start the dashboard: ${sanitizeMessage(reason)}\n`);
+      process.exit(EXIT.ERROR);
     }
   });
 

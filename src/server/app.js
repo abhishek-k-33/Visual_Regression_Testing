@@ -1,5 +1,6 @@
 import express from 'express';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import apiRouter from './routes/api.js';
@@ -13,9 +14,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 4000;
-// Loopback only by default; set HOST=0.0.0.0 to expose on the network (Docker does this).
-const HOST = process.env.HOST || '127.0.0.1';
 
 // Reject requests whose Host header isn't localhost, an IP, or in ALLOWED_HOSTS (DNS rebinding)
 app.use(hostAllowlist);
@@ -76,16 +74,54 @@ app.use('/storage', (req, res, next) => {
 app.use('/api', requireSameOriginForWrites, apiRouter);
 app.use('/', viewRouter);
 
-// Start server if executed directly
-if (process.argv[1] && (process.argv[1].endsWith('app.js') || process.argv[1].endsWith('app'))) {
+const LOOPBACK_OR_ANY = new Set(['127.0.0.1', 'localhost', '::1', '0.0.0.0', '::']);
+
+/** The address to open in a browser for a server listening on host:port. */
+export function dashboardUrl(host, port) {
+  if (LOOPBACK_OR_ANY.has(host)) return `http://localhost:${port}`;
+  return `http://${net.isIPv6(host) ? `[${host}]` : host}:${port}`;
+}
+
+/**
+ * Opens the database and starts the dashboard. Defaults: PORT env or 4000, and
+ * HOST env or 127.0.0.1 (loopback only; HOST=0.0.0.0 exposes it on the network,
+ * which Docker does). Prints the URL once it is listening; listen errors (port in
+ * use...) are emitted as the returned server's 'error' event.
+ *
+ * @param {object} [options]
+ * @param {number|string} [options.port]
+ * @param {string} [options.host]
+ * @param {(line: string) => void} [options.log=console.log]
+ * @returns {import('node:http').Server}
+ */
+export function startServer({ port = process.env.PORT || 4000, host = process.env.HOST || '127.0.0.1', log = console.log } = {}) {
   getDb();
-  app.listen(PORT, HOST, () => {
-    console.log('──────────────────────────────────────────────────────');
-    console.log(`  Visual Regression Dashboard running at:`);
-    console.log(`  http://localhost:${PORT}`);
-    console.log(`  (listening on ${HOST}:${PORT})`);
-    console.log('──────────────────────────────────────────────────────');
+  const server = app.listen(port, host, () => {
+    const actualPort = server.address().port; // the real one when port 0 was asked for
+    log('──────────────────────────────────────────────────────');
+    log('  Visual Regression Dashboard running at:');
+    log(`  ${dashboardUrl(host, actualPort)}`);
+    log(`  (listening on ${host}:${actualPort})`);
+    log('──────────────────────────────────────────────────────');
+  });
+  return server;
+}
+
+// Start the server when this file is run directly (node src/server/app.js, npm start;
+// also `node src/server/app`, which Node resolves to app.js), not when it is imported.
+function isMainModule() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const self = fs.realpathSync(__filename);
+  return [entry, `${entry}.js`].some((candidate) => {
+    try {
+      return fs.realpathSync(path.resolve(candidate)) === self;
+    } catch {
+      return false;
+    }
   });
 }
+
+if (isMainModule()) startServer();
 
 export default app;
