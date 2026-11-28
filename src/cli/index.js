@@ -18,6 +18,7 @@ import { jsonTargetConflict, jsonTargetShapeProblem } from './jsonTarget.js';
 import { createLogger } from './logger.js';
 import { toDisplayPath } from './display.js';
 import { resolveServeOptions } from './serve.js';
+import { installBrowsers } from './installBrowsers.js';
 
 /**
  * Imports a module that needs better-sqlite3, turning a failure to load that driver
@@ -545,6 +546,21 @@ program
       console.error(`\n[ERROR] Could not start the dashboard: ${sanitizeMessage(reason)}\n`);
       process.exit(EXIT.ERROR);
     }
+  });
+
+program
+  .command('install-browsers')
+  .description("Download the Chromium build that this version of visual-ci's Playwright needs")
+  .option('--with-deps', 'Also install the system libraries Chromium needs (Linux; runs the package manager, with sudo when not root)')
+  .option('--dry-run', 'Only print what would be installed, and where')
+  .action(async (options) => {
+    const { exitCode, code, signal, error } = await installBrowsers({ withDeps: options.withDeps, dryRun: options.dryRun });
+    if (error) {
+      console.error(`\n[ERROR] Could not run the Playwright installer: ${sanitizeMessage(String(error?.message ?? error))}\n`);
+    } else if (exitCode !== EXIT.PASS) {
+      console.error(`\n[ERROR] The Playwright installer failed (${signal ? `signal ${signal}` : `exit code ${code}`}).\n`);
+    }
+    process.exit(exitCode);
   });
 
 // Fallback / default action
