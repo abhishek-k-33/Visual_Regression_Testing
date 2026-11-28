@@ -1,12 +1,14 @@
 # Proves the action's failure paths on a real runner: a run with visual differences
 # uploads an artifact that `visual-ci import` accepts, and a run that cannot reach its
-# app reports an error and uploads nothing. The checks pass only when the action fails
+# app reports an error and uploads nothing, and (on pull requests from this repository)
+# a run with differences comments on the pull request. The checks pass only when the action fails
 # the way it should (continue-on-error on the action step, assertions after it).
 #
 # Never writes baselines: strict compare mode (the default), no update-baselines, a
-# read-only token, no persisted git credentials, and a last step that fails if
-# storage/baselines changed. Never comments on the pull request (comment: false; the
-# token couldn't anyway), and asserts that the comment step did not run.
+# read-only token (the comment job may only write pull request comments), no persisted
+# git credentials, and a step that fails if storage/baselines changed. The diff and error
+# jobs never comment (comment: false) and assert that the comment step did not run; the
+# comment job proves that it does.
 name: Action Self-Test
 
 on:
@@ -211,3 +213,79 @@ jobs:
             echo "$changes"
             exit 1
           fi
+
+  # Live proof of the comment's create/update path on a real runner: posts one sticky
+  # comment (comment-id "selftest", named in its headline) on pull requests that touch
+  # the action, and updates it on later pushes. Same-repository pull requests only: a
+  # fork's token can't write comments. The only job here with a write permission.
+  comment:
+    name: Diff run comments on the pull request
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Job permissions replace the workflow's, so contents: read is repeated.
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Start Demo Site (regressed variant)
+        run: DEMO_VARIANT=regressed node scripts/serve-demo.js > demo-site.log 2>&1 &
+
+      - name: Visual Check (expected to comment)
+        id: visual
+        continue-on-error: true
+        uses: ./
+        with:
+          base-url: http://127.0.0.1:4567
+          wait-on: http://127.0.0.1:4567/
+          wait-timeout: 30
+          upload-artifact: never
+          artifact-name: selftest-comment-${{ github.run_attempt }}
+          comment-id: selftest
+
+      - name: Assert the Outputs of a Commented Run
+        env:
+          OUTCOME: ${{ steps.visual.outcome }}
+          STATUS: ${{ steps.visual.outputs.status }}
+          EXIT_CODE: ${{ steps.visual.outputs.exit-code }}
+          COMMENT_ACTION: ${{ steps.visual.outputs.comment-action }}
+          COMMENT_URL: ${{ steps.visual.outputs.comment-url }}
+        run: |
+          fail=0
+          check() {
+            if [ "$2" = "$3" ]; then echo "ok: $1 = $2"; else echo "::error title=self-test::$1: expected '$3', got '$2'"; fail=1; fi
+          }
+          check "action step outcome" "$OUTCOME" failure
+          check status "$STATUS" failed
+          check exit-code "$EXIT_CODE" 1
+          case "$COMMENT_ACTION" in
+            created|updated) echo "ok: comment-action = $COMMENT_ACTION" ;;
+            *) echo "::error title=self-test::comment-action: expected created or updated, got '$COMMENT_ACTION' (see the action's warnings)"; fail=1 ;;
+          esac
+          if [[ "$COMMENT_URL" == https://* ]]; then echo "ok: comment-url = $COMMENT_URL"; else echo "::error title=self-test::comment-url: expected an https URL, got '$COMMENT_URL'"; fail=1; fi
+          exit "$fail"
+
+      - name: Committed Baselines Are Untouched
+        if: always()
+        run: |
+          changes="$(git status --porcelain -- storage/baselines)"
+          if [ -n "$changes" ]; then
+            echo "::error title=self-test::storage/baselines changed:"
+            echo "$changes"
+            exit 1
+          fi
+
+      - name: Show Demo Site Log
+        if: failure()
+        run: cat demo-site.log || true

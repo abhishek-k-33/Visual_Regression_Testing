@@ -396,7 +396,7 @@ async function runWorkflowScript(step, context, { cwd = os.tmpdir(), env = {} } 
 }
 
 describe('action-selftest.yml proves the failure paths on a real runner', () => {
-  const { diff, error } = selftest.jobs;
+  const { diff, error, comment } = selftest.jobs;
   const actionStep = (job) => job.steps.find((s) => s.uses === './');
   const named = (job, re) => job.steps.find((s) => re.test(s.name));
 
@@ -408,15 +408,17 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
       }
     });
     expect(selftest.permissions).toEqual({ contents: 'read' });
-    expect(Object.keys(selftest.jobs).sort()).toEqual(['diff', 'error']);
+    expect(Object.keys(selftest.jobs).sort()).toEqual(['comment', 'diff', 'error']);
     for (const job of Object.values(selftest.jobs)) expect(job['runs-on']).toBe('ubuntu-latest');
     expect(error.permissions).toBeUndefined();
     // Job permissions replace the workflow's: contents: read stays, actions: read lists the run's artifacts.
     expect(diff.permissions).toEqual({ contents: 'read', actions: 'read' });
+    // The only write permission in the workflow: pull request comments, in the comment job.
+    expect(comment.permissions).toEqual({ contents: 'read', 'pull-requests': 'write' });
   });
 
-  it('never comments on the pull request: comment is false, and the token is read-only anyway', () => {
-    for (const [name, job] of Object.entries(selftest.jobs)) {
+  it('the diff and error jobs never comment on the pull request: comment is false, and their token is read-only anyway', () => {
+    for (const [name, job] of Object.entries({ diff, error })) {
       expect(String(actionStep(job).with.comment), name).toBe('false');
       expect(named(job, /^Assert the Outputs/).env.COMMENT_ACTION, name).toBe('${{ steps.visual.outputs.comment-action }}');
     }
@@ -430,7 +432,7 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
       const use = actionStep(job);
       expect(use.with.strict ?? 'true', name).toBe('true');
       expect(use.with['update-baselines'] ?? 'false', name).toBe('false');
-      const guard = job.steps.at(name === 'diff' ? -2 : -1);
+      const guard = job.steps.at(name === 'error' ? -1 : -2);
       expect(guard.name, name).toBe('Committed Baselines Are Untouched');
       expect(guard.if, name).toBe('always()');
     }
@@ -470,6 +472,44 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
     expect(use).toMatchObject({ id: 'visual', 'continue-on-error': true });
     expect(use.with).toMatchObject({ 'base-url': 'http://127.0.0.1:9/', 'upload-artifact': 'always', 'artifact-name': 'selftest-error-${{ github.run_attempt }}' });
     expect(use.with['wait-on']).toBeUndefined();
+  });
+
+  it('the comment job proves the create/update path: pull_request from this repository only, regressed page, comment-id selftest', () => {
+    expect(comment.if).toBe("github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository");
+    expect(named(comment, /^Start Demo Site/).run.trim()).toMatch(/^DEMO_VARIANT=regressed node scripts\/serve-demo\.js .*&$/);
+    const use = actionStep(comment);
+    expect(use).toMatchObject({ id: 'visual', 'continue-on-error': true });
+    expect(use.with).toMatchObject({ 'base-url': 'http://127.0.0.1:4567', 'upload-artifact': 'never', 'comment-id': 'selftest' });
+    expect(String(use.with.comment ?? action.inputs.comment.default)).toBe('true');
+    expect(use.with['github-token']).toBeUndefined(); // the job token, as github-actions[bot]
+    const order = comment.steps.map((s) => s.name);
+    expect(order.indexOf('Visual Check (expected to comment)')).toBeLessThan(order.indexOf('Assert the Outputs of a Commented Run'));
+  });
+
+  describe('the comment job assertions', () => {
+    const assertStep = () => named(comment, /^Assert the Outputs/);
+    const good = { status: 'failed', 'exit-code': '1', 'comment-action': 'created', 'comment-url': 'https://github.com/o/r/pull/3#issuecomment-1' };
+    const ctx = (outputs, outcome = 'failure') => ({ steps: { visual: { outcome, outputs } } });
+
+    it.each(['created', 'updated'])('pass when the comment was %s', async (act) => {
+      const r = await runWorkflowScript(assertStep(), ctx({ ...good, 'comment-action': act }));
+      expect(r.code, r.stdout).toBe(0);
+    });
+
+    it.each([
+      ['the action passed', {}, 'success'],
+      ['status passed', { status: 'passed' }],
+      ['exit code 2', { 'exit-code': '2' }],
+      ['the comment was skipped', { 'comment-action': 'skipped' }],
+      ['the comment failed', { 'comment-action': 'failed' }],
+      ['the comment step did not run', { 'comment-action': '' }],
+      ['no comment url', { 'comment-url': '' }],
+      ['an http comment url', { 'comment-url': 'http://x' }]
+    ])('fail when %s', async (_label, change, outcome) => {
+      const r = await runWorkflowScript(assertStep(), ctx({ ...good, ...change }, outcome));
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain('::error title=self-test::');
+    });
   });
 
   describe('the download step retries until the artifact is available', () => {
