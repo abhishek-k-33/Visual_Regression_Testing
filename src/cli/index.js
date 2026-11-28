@@ -8,8 +8,6 @@ import { loadConfig, readConfiguredStorageDir } from './config.js';
 import { captureScreenshots, getSnapshotFilename, assertValidRunId } from './capture.js';
 import { compareSnapshot, sha256, DEFAULT_PIXELMATCH_THRESHOLD } from './compare.js';
 import { buildRunManifest, writeRunManifest, toSqliteTimestamp, getToolVersion, MANIFEST_FILENAME } from './manifest.js';
-import { createTestRun, createSnapshot, getDb, closeDb } from '../server/db.js';
-import { importRuns } from '../server/importRuns.js';
 import { sanitizeForDisplay } from '../shared/text.js';
 import { resolveStorageRoot } from '../server/paths.js';
 import { generateSummaryMarkdown, writeSummaryReport } from './reporter.js';
@@ -19,6 +17,11 @@ import { createLogger } from './logger.js';
 import { toDisplayPath } from './display.js';
 import { resolveServeOptions } from './serve.js';
 import { installBrowsers } from './installBrowsers.js';
+
+// The database modules load better-sqlite3 (a native module) and the import code loads
+// yauzl, so they are imported only by the commands that need them: capture, serve
+// --help, install-browsers, --help and --version keep working if better-sqlite3 is
+// broken (e.g. its native build failed).
 
 /**
  * Imports a module that needs better-sqlite3, turning a failure to load that driver
@@ -209,6 +212,8 @@ program
       if (jsonTarget !== undefined && jsonTarget !== STDOUT_TARGET) {
         fs.rmSync(path.resolve(process.cwd(), jsonTarget), { force: true });
       }
+      // Before capturing: a run that cannot be recorded should fail fast, not after the screenshots.
+      const { createTestRun, createSnapshot, getDb } = await importNeedingDatabase(() => import('../server/db.js'));
 
       const overrides = {};
       if (options.baseUrl) {
@@ -477,10 +482,14 @@ program
   .option('-r, --run-id <id>', 'Local id for the imported run (only when importing a single run)')
   .action(async (input, options) => {
     let db;
+    let closeDb;
     try {
       const storageRoot = resolveStorageRoot(readConfiguredStorageDir(options.config) || undefined);
       const source = detectImportSource(input);
-      db = getDb(path.join(storageRoot, 'data.sqlite'));
+      const dbModule = await importNeedingDatabase(() => import('../server/db.js'));
+      const { importRuns } = await importNeedingDatabase(() => import('../server/importRuns.js'));
+      closeDb = dbModule.closeDb;
+      db = dbModule.getDb(path.join(storageRoot, 'data.sqlite'));
       const { runs } = await importRuns(source, { storageRoot, db, runId: options.runId });
 
       const dashboardPort = process.env.PORT || 4000; // the port `npm start` will use
@@ -503,7 +512,7 @@ program
       console.error(`\n[ERROR] Import failed: ${sanitizeForDisplay(String(err?.message ?? err))}\n`);
       process.exitCode = EXIT.ERROR;
     } finally {
-      if (db) closeDb();
+      if (db) closeDb?.();
     }
   });
 
@@ -522,6 +531,7 @@ program
         process.env.VISUAL_STORAGE_DIR = resolveStorageRoot(readConfiguredStorageDir(options.config) || undefined);
       }
       const { startServer } = await importNeedingDatabase(() => import('../server/app.js'));
+      const { closeDb } = await import('../server/db.js');
       const server = startServer({ port, host });
       // Installed before the URL is printed, so a signal right after it is handled too.
       const stop = (signal) => {
