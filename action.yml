@@ -241,6 +241,21 @@ runs:
       env:
         INPUT_IMAGE: ${{ inputs.image }}
       run: |
+        # A read-only copy of the action's own scripts for the github-script steps (which
+        # hold the token), made before the browser container runs. With uses: ./ the
+        # action folder is the workspace, which the container can write. A sibling of
+        # $RUNNER_TEMP/visual-ci (the container's folder), never inside it, and never mounted.
+        scripts="$RUNNER_TEMP/visual-ci-scripts"
+        if [ -e "$scripts" ]; then
+          chmod -R u+w -- "$scripts"
+          rm -rf -- "$scripts"
+        fi
+        mkdir -p "$scripts/src"
+        cp -R -- "$GITHUB_ACTION_PATH/src/ci" "$GITHUB_ACTION_PATH/src/shared" "$scripts/src/"
+        cp -- "$GITHUB_ACTION_PATH/package.json" "$scripts/" # "type": "module" for the .js files
+        chmod -R a-w -- "$scripts"
+        echo "scripts=$scripts" >> "$GITHUB_OUTPUT"
+
         if [ -n "$INPUT_IMAGE" ]; then
           ref="$INPUT_IMAGE"
           docker pull "$ref"
@@ -322,8 +337,9 @@ runs:
       if: ${{ !cancelled() && steps.validate.outcome == 'success' }}
       uses: actions/github-script@v8
       env:
-        # github.action_path: inside this step GITHUB_ACTION_PATH is github-script's own folder.
-        VISUAL_CI_ACTION_PATH: ${{ github.action_path }}
+        # The read-only copy (see the image step). Without it the container never ran, so the
+        # action folder is untouched. (Inside this step GITHUB_ACTION_PATH is github-script's own.)
+        VISUAL_CI_ACTION_PATH: ${{ steps.image.outputs.scripts || github.action_path }}
         VISUAL_CI_EXIT_CODE: ${{ steps.run.outputs.exit-code }}
         VISUAL_CI_RUN_ID: ${{ steps.validate.outputs.run-id }}
         VISUAL_CI_WORKING_DIRECTORY: ${{ steps.validate.outputs.working-directory }}
@@ -392,7 +408,7 @@ runs:
       continue-on-error: true
       uses: actions/github-script@v8
       env:
-        VISUAL_CI_ACTION_PATH: ${{ github.action_path }}
+        VISUAL_CI_ACTION_PATH: ${{ steps.image.outputs.scripts || github.action_path }}
         VISUAL_CI_COMMENT_ID: ${{ inputs.comment-id }}
         VISUAL_CI_STATUS: ${{ steps.outcome.outputs.status }}
         VISUAL_CI_REPORT_PATH: ${{ steps.parse.outputs.report-path }}

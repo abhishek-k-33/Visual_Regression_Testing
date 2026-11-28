@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import YAML from 'yaml';
 import { chromium } from 'playwright';
 import { OUTPUT_NAMES } from '../src/ci/actionReport.js';
@@ -136,7 +136,7 @@ describe('action.yml: structure', () => {
     expect(step['continue-on-error']).toBe(true);
     expect(step.with['github-token']).toBe('${{ inputs.github-token }}');
     expect(step.env).toEqual({
-      VISUAL_CI_ACTION_PATH: '${{ github.action_path }}',
+      VISUAL_CI_ACTION_PATH: '${{ steps.image.outputs.scripts || github.action_path }}',
       VISUAL_CI_COMMENT_ID: '${{ inputs.comment-id }}',
       VISUAL_CI_STATUS: '${{ steps.outcome.outputs.status }}',
       VISUAL_CI_REPORT_PATH: '${{ steps.parse.outputs.report-path }}',
@@ -262,10 +262,24 @@ describe('action.yml: structure', () => {
 
   it('the parse step loads the module from the action folder via github.action_path, and gives it github and context', () => {
     const parse = stepById('parse');
-    expect(parse.env.VISUAL_CI_ACTION_PATH).toBe('${{ github.action_path }}');
+    expect(parse.env.VISUAL_CI_ACTION_PATH).toBe('${{ steps.image.outputs.scripts || github.action_path }}');
     expect(parse.with.script).toContain("path.join(process.env.VISUAL_CI_ACTION_PATH, 'src', 'ci', 'actionReport.js')");
     expect(parse.with.script).toContain('await run({ core, github, context });');
     expect(fs.existsSync(path.join(REPO, 'src/ci/actionReport.js'))).toBe(true);
+  });
+
+  it('both github-script steps load their modules from the read-only copy the image step makes before docker run', () => {
+    const scriptSteps = steps.filter((st) => st.uses?.startsWith('actions/github-script@'));
+    expect(scriptSteps.map((st) => st.id)).toEqual(['parse', 'comment']);
+    for (const st of scriptSteps) expect(st.env.VISUAL_CI_ACTION_PATH, st.id).toBe('${{ steps.image.outputs.scripts || github.action_path }}');
+    const image = stepById('image').run;
+    expect(image).toContain('scripts="$RUNNER_TEMP/visual-ci-scripts"');
+    expect(image).toContain('chmod -R a-w -- "$scripts"');
+    // Copied and announced before anything is built or pulled, so a failed build never leaves a stale path.
+    expect(image.indexOf('echo "scripts=$scripts"')).toBeLessThan(image.indexOf('docker '));
+    // A sibling of the container's folder, never inside it, and never mounted.
+    expect(stepById('run').run).toContain('out="$RUNNER_TEMP/visual-ci"');
+    expect(stepById('run').run).not.toContain('visual-ci-scripts');
   });
 
   it('never mounts RUNNER_TEMP itself into the container, only its visual-ci folder and the step summary', () => {
@@ -722,6 +736,12 @@ if (args[0] === 'run') {
     fs.writeFileSync(jsonHost, process.env.FAKE_DOCKER_REPORT);
   }
 }
+// A compromised browser rewriting the action's scripts in the (mounted) workspace.
+if (args[0] === 'run' && process.env.FAKE_DOCKER_TAMPER) {
+  for (const f of ['src/ci/actionReport.js', 'src/ci/prComment.js', 'src/shared/text.js']) {
+    fs.writeFileSync(path.join(process.env.FAKE_DOCKER_TAMPER, f), "throw new Error('tampered');\n");
+  }
+}
 fs.appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify(entry) + '\n');
 process.exit(status);
 `;
@@ -781,7 +801,11 @@ function createRunner() {
     steps: {},
     uploads: [],
     dockerCalls: () => (fs.existsSync(runner.dockerLog) ? fs.readFileSync(runner.dockerLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []),
-    cleanup: () => fs.rmSync(root, { recursive: true, force: true })
+    actionPath: REPO, // github.action_path / GITHUB_ACTION_PATH
+    cleanup: () => {
+      execFileSync('chmod', ['-R', 'u+w', root]); // the action's read-only scripts copy
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   };
   for (const dir of [runner.workspace, commands, runner.bin, runner.home]) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(runner.bin, 'docker'), FAKE_DOCKER, { mode: 0o755 });
@@ -796,7 +820,7 @@ function contextFor(runner, inputs) {
   const stepsCtx = {};
   for (const [id, { __outcome, ...outputs }] of Object.entries(runner.steps)) stepsCtx[id] = { outputs, outcome: __outcome, conclusion: __outcome };
   // __event: the triggering event (github.event_name); push unless a test says otherwise.
-  return { inputs: withDefaults, steps: stepsCtx, runner: { os: inputs.__os || 'Linux', temp: runner.temp }, github: { action_path: REPO, event_name: inputs.__event || 'push' } };
+  return { inputs: withDefaults, steps: stepsCtx, runner: { os: inputs.__os || 'Linux', temp: runner.temp }, github: { action_path: runner.actionPath, event_name: inputs.__event || 'push' } };
 }
 
 /** Base environment of a step on the runner (what GitHub sets), plus the step's own env: from action.yml. */
@@ -806,7 +830,7 @@ function stepEnv(runner, step, inputs, extra = {}) {
     HOME: process.env.HOME,
     GITHUB_WORKSPACE: runner.workspace,
     RUNNER_TEMP: runner.temp,
-    GITHUB_ACTION_PATH: REPO,
+    GITHUB_ACTION_PATH: runner.actionPath,
     GITHUB_ACTIONS: 'true',
     GITHUB_RUN_ID: '4242',
     GITHUB_RUN_ATTEMPT: '3',
@@ -1164,24 +1188,55 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
   });
 
   describe('image', () => {
+    const scriptsDir = () => path.join(runner.temp, 'visual-ci-scripts');
+    const writable = (p) => (fs.statSync(p).mode & 0o222) !== 0;
+
+    it('copies src/ci, src/shared and package.json read-only into RUNNER_TEMP/visual-ci-scripts and outputs its path', async () => {
+      const r = await runBashStep(runner, stepById('image'), {});
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.outputs.scripts).toBe(scriptsDir());
+      for (const f of ['src/ci/prComment.js', 'src/ci/actionReport.js', 'src/shared/text.js', 'package.json']) {
+        const copy = path.join(scriptsDir(), f);
+        expect(fs.readFileSync(copy, 'utf8'), f).toBe(fs.readFileSync(path.join(REPO, f), 'utf8'));
+        expect(writable(copy), f).toBe(false);
+      }
+      for (const d of ['', 'src', 'src/ci', 'src/shared']) expect(writable(path.join(scriptsDir(), d)), d).toBe(false);
+      expect(fs.readdirSync(path.join(scriptsDir(), 'src')).sort()).toEqual(['ci', 'shared']); // nothing else of src/
+      // A sibling of the folder the container gets, not inside it.
+      expect(path.dirname(scriptsDir())).toBe(path.dirname(path.join(runner.temp, 'visual-ci')));
+    });
+
+    it('replaces an earlier read-only copy (the action used twice in a job)', async () => {
+      expect((await runBashStep(runner, stepById('image'), {})).code).toBe(0);
+      const again = await runBashStep(runner, stepById('image'), {});
+      expect(again.code, again.stderr).toBe(0);
+      expect(fs.existsSync(path.join(scriptsDir(), 'src/ci/prComment.js'))).toBe(true);
+    });
+
+    it('copies before building, so even a failed build leaves the copy', async () => {
+      const r = await runBashStep(runner, stepById('image'), {}, { FAKE_DOCKER_EXIT: '1' });
+      expect(r.code).toBe(1);
+      expect(r.outputs).toEqual({ scripts: scriptsDir() });
+    });
+
     it('builds the Dockerfile in the action folder when no image is given', async () => {
       const r = await runBashStep(runner, stepById('image'), {});
       expect(r.code).toBe(0);
-      expect(r.outputs).toEqual({ ref: 'visual-ci-action:local' });
+      expect(r.outputs).toEqual({ ref: 'visual-ci-action:local', scripts: scriptsDir() });
       expect(runner.dockerCalls().map((c) => c.args)).toEqual([['build', '-t', 'visual-ci-action:local', REPO]]);
     });
 
     it('pulls a prebuilt image instead', async () => {
       const r = await runBashStep(runner, stepById('image'), { image: 'ghcr.io/owner/visual-ci:1.2.3' });
       expect(r.code).toBe(0);
-      expect(r.outputs).toEqual({ ref: 'ghcr.io/owner/visual-ci:1.2.3' });
+      expect(r.outputs).toEqual({ ref: 'ghcr.io/owner/visual-ci:1.2.3', scripts: scriptsDir() });
       expect(runner.dockerCalls().map((c) => c.args)).toEqual([['pull', 'ghcr.io/owner/visual-ci:1.2.3']]);
     });
 
     it('fails the step when the build fails', async () => {
       const r = await runBashStep(runner, stepById('image'), {}, { FAKE_DOCKER_EXIT: '1' });
       expect(r.code).toBe(1);
-      expect(r.outputs).toEqual({});
+      expect(r.outputs.ref).toBeUndefined();
     });
   });
 
@@ -1233,6 +1288,12 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
       }
       expect(hostPaths).not.toContain(runner.temp);
       expect(hostPaths).not.toContain(path.dirname(runner.githubEnv));
+      // No mount covers the scripts copy the github-script steps load.
+      const scripts = path.join(runner.temp, 'visual-ci-scripts');
+      for (const host of hostPaths) {
+        const rel = path.relative(host, scripts);
+        expect(rel === '' || !rel.startsWith('..'), `${host} covers ${scripts}`).toBe(false);
+      }
       expect(fs.statSync(path.join(runner.temp, 'visual-ci')).isDirectory()).toBe(true); // created for the mount
     });
 
@@ -1498,6 +1559,21 @@ describe('the pull request comment, step by step (canned results)', { timeout: 6
     expect(body).not.toContain('0123456');
     expect(r.outputs).toMatchObject({ 'comment-url': 'https://github.com/o/r/pull/17#issuecomment-777', 'comment-action': 'created', status: 'failed', 'exit-code': '1' });
     expect(r.results['Set the result'].code).toBe(1);
+  });
+
+  it('a container that rewrites the action\'s scripts in the workspace (uses: ./) cannot change what the token-holding steps run', async () => {
+    // The action checked out inside the workspace, as with uses: ./ .
+    const checkout = path.join(runner.workspace, 'action');
+    fs.mkdirSync(path.join(checkout, 'src'), { recursive: true });
+    for (const d of ['src/ci', 'src/shared']) fs.cpSync(path.join(REPO, d), path.join(checkout, d), { recursive: true });
+    fs.copyFileSync(path.join(REPO, 'package.json'), path.join(checkout, 'package.json'));
+    runner.actionPath = checkout;
+    withRunFolder();
+    const r = await go({}, { env: { ...DIFF_ENV(), FAKE_DOCKER_TAMPER: checkout } });
+    expect(fs.readFileSync(path.join(checkout, 'src/ci/prComment.js'), 'utf8')).toContain('tampered'); // the attack happened
+    expect(r.results.parse.outputs).toMatchObject({ status: 'failed', 'exit-code': '1', changed: '1' });
+    expect(r.results.comment.calls.create).toHaveLength(1);
+    expect(r.outputs).toMatchObject({ 'comment-action': 'created', status: 'failed' });
   });
 
   it('passes the github-token input to github-script', async () => {
