@@ -1,11 +1,44 @@
 {
-  "name": "visual-regression-tool",
+  "name": "visual-ci",
   "version": "1.0.0",
-  "description": "Self-hosted, open-source Visual Regression Testing and CI tool",
+  "description": "Self-hosted visual regression testing for CI: Playwright screenshots, pixel diffs, a review dashboard and a GitHub Action",
+  "keywords": [
+    "visual-regression",
+    "visual-testing",
+    "screenshot-testing",
+    "regression-testing",
+    "playwright",
+    "pixelmatch",
+    "screenshot",
+    "ci",
+    "github-actions",
+    "cli",
+    "dashboard"
+  ],
+  "homepage": "https://github.com/abhishek-k-33/Visual_Regression_Testing#readme",
+  "bugs": {
+    "url": "https://github.com/abhishek-k-33/Visual_Regression_Testing/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/abhishek-k-33/Visual_Regression_Testing.git"
+  },
+  "license": "MIT",
+  "author": "",
   "type": "module",
-  "main": "src/cli/index.js",
   "bin": {
     "visual-ci": "./src/cli/index.js"
+  },
+  "exports": {
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
   },
   "scripts": {
     "start": "node src/server/app.js",
@@ -21,16 +54,6 @@
     "docker:update-baselines": "docker compose run --rm runner node src/cli/index.js test --update-baselines",
     "test": "vitest run"
   },
-  "keywords": [
-    "visual-regression",
-    "testing",
-    "playwright",
-    "ci",
-    "screenshot",
-    "pixelmatch"
-  ],
-  "author": "",
-  "license": "MIT",
   "dependencies": {
     "better-sqlite3": "^13.2.0",
     "commander": "^13.1.0",
