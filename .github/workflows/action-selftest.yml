@@ -1,11 +1,14 @@
 # Proves the action's failure paths on a real runner: a run with visual differences
 # uploads an artifact that `visual-ci import` accepts, and a run that cannot reach its
-# app reports an error and uploads nothing. The checks pass only when the action fails
+# app reports an error and uploads nothing, and (on pull requests from this repository)
+# a run with differences comments on the pull request. The checks pass only when the action fails
 # the way it should (continue-on-error on the action step, assertions after it).
 #
 # Never writes baselines: strict compare mode (the default), no update-baselines, a
-# read-only token, no persisted git credentials, and a last step that fails if
-# storage/baselines changed.
+# read-only token (the comment job may only write pull request comments), no persisted
+# git credentials, and a step that fails if storage/baselines changed. The diff and error
+# jobs never comment (comment: false) and assert that the comment step did not run; the
+# comment job proves that it does.
 name: Action Self-Test
 
 on:
@@ -15,6 +18,7 @@ on:
       - action.yml
       - 'src/ci/**'
       - 'src/cli/**'
+      - 'src/shared/**'
       - Dockerfile
       - .dockerignore
       - .github/workflows/action-selftest.yml
@@ -31,6 +35,11 @@ jobs:
     name: Diff run uploads an importable artifact
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # actions: read lets gh list and download this run's artifacts. Job permissions
+    # replace the workflow's, so contents: read is repeated.
+    permissions:
+      contents: read
+      actions: read
 
     steps:
       - name: Checkout Repository
@@ -59,6 +68,7 @@ jobs:
           upload-artifact: always
           artifact-name: selftest-diff-${{ github.run_attempt }}
           retention-days: 1
+          comment: false
 
       - name: Assert the Outputs of a Diff Run
         env:
@@ -69,6 +79,7 @@ jobs:
           ARTIFACT_NAME: ${{ steps.visual.outputs.artifact-name }}
           ARTIFACT_ID: ${{ steps.visual.outputs.artifact-id }}
           ARTIFACT_URL: ${{ steps.visual.outputs.artifact-url }}
+          COMMENT_ACTION: ${{ steps.visual.outputs.comment-action }}
           EXPECTED_ARTIFACT_NAME: selftest-diff-${{ github.run_attempt }}
         run: |
           fail=0
@@ -79,19 +90,38 @@ jobs:
           check status "$STATUS" failed
           check exit-code "$EXIT_CODE" 1
           check artifact-name "$ARTIFACT_NAME" "$EXPECTED_ARTIFACT_NAME"
+          check comment-action "$COMMENT_ACTION" ""
           if [[ "$CHANGED" =~ ^[0-9]+$ ]] && [ "$CHANGED" -ge 1 ]; then echo "ok: changed = $CHANGED"; else echo "::error title=self-test::changed: expected at least 1, got '$CHANGED'"; fail=1; fi
           if [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]; then echo "ok: artifact-id = $ARTIFACT_ID"; else echo "::error title=self-test::artifact-id: expected a number, got '$ARTIFACT_ID'"; fail=1; fi
           if [[ "$ARTIFACT_URL" == https://* ]]; then echo "ok: artifact-url = $ARTIFACT_URL"; else echo "::error title=self-test::artifact-url: expected an https URL, got '$ARTIFACT_URL'"; fail=1; fi
           exit "$fail"
 
-      # By name (checked against the expected name above): a single named artifact is
-      # extracted straight into path. Downloading by id found nothing in the same run
-      # ("None of the provided artifact IDs were found", run 45670878311).
+      # By name (checked against the expected name above, and again here: an empty name
+      # would download every artifact of the run). A just-uploaded artifact is not always
+      # found yet within the same run: download-artifact failed 140 ms after the upload
+      # finished (run 45761556091, by name; run 45670878311, by id), so retry with backoff.
       - name: Download the Artifact
-        uses: actions/download-artifact@v7
-        with:
-          name: ${{ steps.visual.outputs.artifact-name }}
-          path: ${{ runner.temp }}/selftest-artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ steps.visual.outputs.artifact-name }}
+          ARTIFACT_DIR: ${{ runner.temp }}/selftest-artifact
+        run: |
+          if ! [[ "$ARTIFACT_NAME" =~ ^[A-Za-z0-9._-][A-Za-z0-9._\ -]{0,99}$ ]]; then
+            echo "::error title=self-test::no valid artifact name to download"
+            exit 1
+          fi
+          for delay in 2 4 8 16 32 0; do
+            rm -rf -- "$ARTIFACT_DIR"
+            if gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n "$ARTIFACT_NAME" -D "$ARTIFACT_DIR"; then
+              echo "Downloaded the artifact."
+              exit 0
+            fi
+            [ "$delay" -eq 0 ] && break
+            echo "The artifact is not available yet; retrying in ${delay}s."
+            sleep "$delay"
+          done
+          echo "::error title=self-test::the artifact could not be downloaded after 6 attempts"
+          exit 1
 
       - name: Install Dependencies for visual-ci import
         run: npm ci --omit=dev
@@ -149,6 +179,7 @@ jobs:
           upload-artifact: always
           artifact-name: selftest-error-${{ github.run_attempt }}
           retention-days: 1
+          comment: false
 
       - name: Assert the Outputs of an Error Run
         env:
@@ -158,6 +189,7 @@ jobs:
           ARTIFACT_NAME: ${{ steps.visual.outputs.artifact-name }}
           ARTIFACT_ID: ${{ steps.visual.outputs.artifact-id }}
           ARTIFACT_URL: ${{ steps.visual.outputs.artifact-url }}
+          COMMENT_ACTION: ${{ steps.visual.outputs.comment-action }}
         run: |
           fail=0
           check() {
@@ -169,6 +201,7 @@ jobs:
           check artifact-name "$ARTIFACT_NAME" ""
           check artifact-id "$ARTIFACT_ID" ""
           check artifact-url "$ARTIFACT_URL" ""
+          check comment-action "$COMMENT_ACTION" ""
           exit "$fail"
 
       - name: Committed Baselines Are Untouched
@@ -180,3 +213,79 @@ jobs:
             echo "$changes"
             exit 1
           fi
+
+  # Live proof of the comment's create/update path on a real runner: posts one sticky
+  # comment (comment-id "selftest", named in its headline) on pull requests that touch
+  # the action, and updates it on later pushes. Same-repository pull requests only: a
+  # fork's token can't write comments. The only job here with a write permission.
+  comment:
+    name: Diff run comments on the pull request
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Job permissions replace the workflow's, so contents: read is repeated.
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Start Demo Site (regressed variant)
+        run: DEMO_VARIANT=regressed node scripts/serve-demo.js > demo-site.log 2>&1 &
+
+      - name: Visual Check (expected to comment)
+        id: visual
+        continue-on-error: true
+        uses: ./
+        with:
+          base-url: http://127.0.0.1:4567
+          wait-on: http://127.0.0.1:4567/
+          wait-timeout: 30
+          upload-artifact: never
+          artifact-name: selftest-comment-${{ github.run_attempt }}
+          comment-id: selftest
+
+      - name: Assert the Outputs of a Commented Run
+        env:
+          OUTCOME: ${{ steps.visual.outcome }}
+          STATUS: ${{ steps.visual.outputs.status }}
+          EXIT_CODE: ${{ steps.visual.outputs.exit-code }}
+          COMMENT_ACTION: ${{ steps.visual.outputs.comment-action }}
+          COMMENT_URL: ${{ steps.visual.outputs.comment-url }}
+        run: |
+          fail=0
+          check() {
+            if [ "$2" = "$3" ]; then echo "ok: $1 = $2"; else echo "::error title=self-test::$1: expected '$3', got '$2'"; fail=1; fi
+          }
+          check "action step outcome" "$OUTCOME" failure
+          check status "$STATUS" failed
+          check exit-code "$EXIT_CODE" 1
+          case "$COMMENT_ACTION" in
+            created|updated) echo "ok: comment-action = $COMMENT_ACTION" ;;
+            *) echo "::error title=self-test::comment-action: expected created or updated, got '$COMMENT_ACTION' (see the action's warnings)"; fail=1 ;;
+          esac
+          if [[ "$COMMENT_URL" == https://* ]]; then echo "ok: comment-url = $COMMENT_URL"; else echo "::error title=self-test::comment-url: expected an https URL, got '$COMMENT_URL'"; fail=1; fi
+          exit "$fail"
+
+      - name: Committed Baselines Are Untouched
+        if: always()
+        run: |
+          changes="$(git status --porcelain -- storage/baselines)"
+          if [ -n "$changes" ]; then
+            echo "::error title=self-test::storage/baselines changed:"
+            echo "$changes"
+            exit 1
+          fi
+
+      - name: Show Demo Site Log
+        if: failure()
+        run: cat demo-site.log || true

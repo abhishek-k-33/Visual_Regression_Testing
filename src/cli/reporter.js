@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { mdCode } from '../shared/text.js';
 
 /**
  * Format a status string with an emoji badge for Markdown display.
@@ -55,15 +56,15 @@ export function generateSummaryMarkdown(options) {
     : `❌ **FAILED (${failedCount} regression${failedCount === 1 ? '' : 's'})**`;
 
   const thresholdPercent = (threshold * 100).toFixed(2);
-  const branchName = gitInfo.branch ? `\`${gitInfo.branch}\`` : '_N/A_';
-  const commitHash = gitInfo.commit_hash ? `\`${gitInfo.commit_hash}\`` : '_N/A_';
+  const branchName = gitInfo.branch ? mdCode(gitInfo.branch) : '_N/A_';
+  const commitHash = gitInfo.commit_hash ? mdCode(gitInfo.commit_hash) : '_N/A_';
 
   const lines = [
     '# 📸 Visual CI Test Report',
     '',
     '| Metric | Value |',
     '| :--- | :--- |',
-    `| **Run ID** | \`${runId}\` |`,
+    `| **Run ID** | ${mdCode(runId)} |`,
     `| **Branch** | ${branchName} |`,
     `| **Commit** | ${commitHash} |`,
     `| **Overall Status** | ${overallBadge} |`,
@@ -82,8 +83,9 @@ export function generateSummaryMarkdown(options) {
 
   for (const r of results) {
     const statusCol = formatStatusBadge(r.status);
-    const routeCol = `\`${r.route}\``;
-    const viewportCol = `\`${r.viewport}\``;
+    // Routes and viewports come from the config: a backtick or | must not break the table.
+    const routeCol = mdCode(r.route);
+    const viewportCol = mdCode(r.viewport);
     const mismatchCol = r.mismatchPercentage !== undefined
       ? `\`${r.mismatchPercentage.toFixed(2)}%\``
       : '`0.00%`';

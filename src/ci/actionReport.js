@@ -156,7 +156,7 @@ export function shouldUpload(mode, exitCode, hasFiles) {
   return false; // never (or an unknown mode, which the validate step already refuses)
 }
 
-function readReport(file, fsImpl) {
+export function readReport(file, fsImpl = fs) {
   let text;
   try {
     text = fsImpl.readFileSync(file, 'utf8');

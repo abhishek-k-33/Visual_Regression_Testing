@@ -97,6 +97,10 @@ describe('Import CI run (dashboard)', () => {
       await held;
       await route.continue();
     });
+    // Counted from before the first upload starts: a listener added later may or may not
+    // see the held request's event (it raced on slow CI runners).
+    let uploads = 0;
+    page.on('request', (r) => { if (new URL(r.url()).pathname.endsWith('/api/imports')) uploads += 1; });
     const button = page.locator('#import-run-btn'); // its accessible name changes while busy
     await page.setInputFiles('#import-file', artifact('ci_ui_busy'));
 
@@ -108,8 +112,7 @@ describe('Import CI run (dashboard)', () => {
     expect(await status.textContent()).toContain('Importing ci_ui_busy.zip');
 
     // Another file dropped meanwhile is not uploaded.
-    let uploads = 0;
-    page.on('request', (r) => { if (r.url().endsWith('/api/imports')) uploads += 1; });
+    await expect.poll(() => uploads).toBe(1); // the held upload
     const dataTransfer = await page.evaluateHandle(() => {
       const dt = new DataTransfer();
       dt.items.add(new File([new Uint8Array([80, 75, 5, 6])], 'other.zip', { type: 'application/zip' }));
@@ -119,7 +122,7 @@ describe('Import CI run (dashboard)', () => {
 
     release();
     await page.waitForURL(`${ui.baseUrl}/runs/ci_ui_busy`);
-    expect(uploads).toBe(0); // the held request was already counted before the listener
+    expect(uploads).toBe(1); // only the held upload: the drop added none
   });
 
   it('keeps the empty status region rendered, so its first message is announced', async () => {
@@ -174,6 +177,7 @@ describe('Import CI run (dashboard)', () => {
       expect(await page.locator('.import-control').getAttribute('data-max-upload-bytes')).toBe('100');
       await page.setInputFiles('#import-file', artifact('ci_ui_big'));
       await expect.poll(() => page.locator('[data-import-error]').textContent()).toContain('uploads are limited to 100 bytes');
+      expect(await page.locator('[data-import-error]').textContent()).toContain('node src/cli/index.js import <file>'); // never a bare npx visual-ci
     } finally {
       if (previous === undefined) delete process.env.VISUAL_IMPORT_MAX_UPLOAD_BYTES;
       else process.env.VISUAL_IMPORT_MAX_UPLOAD_BYTES = previous;

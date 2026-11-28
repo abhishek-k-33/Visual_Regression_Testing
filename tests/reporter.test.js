@@ -126,6 +126,27 @@ describe('Reporter Module (Phase 5)', () => {
       expect(markdown).toContain('New baseline master initialized');
       expect(markdown).toContain('_N/A_');
     });
+
+    it('keeps a route or branch with backticks, | or markup inside its code span and its table cell', () => {
+      const markdown = generateSummaryMarkdown({
+        runId: 'run_odd',
+        gitInfo: { branch: 'feat/`x`|y', commit_hash: 'abc123' },
+        passedCount: 0,
+        failedCount: 1,
+        newBaselineCount: 0,
+        results: [
+          { route: '/a`b|c', viewport: 'm|``', status: 'DIFF', mismatchPercentage: 2 },
+          { route: '/@user <img src=x onerror=y>\n| x |', viewport: 'desktop', status: 'MATCH', mismatchPercentage: 0 }
+        ]
+      });
+      expect(markdown).toContain('| **Branch** | ``feat/`x`\\|y`` |');
+      expect(markdown).toContain('| 🔴 **FAILED** | ``/a`b\\|c`` | ``` m\\|`` ``` | `2.00%` |');
+      expect(markdown).toContain('| 🟢 **PASSED** | `/@user <img src=x onerror=y>\\u{A}\\| x \\|` | `desktop` |');
+      // Every table row still has exactly its five cells (escaped pipes don't split cells).
+      for (const row of markdown.split('\n').filter((l) => l.startsWith('| 🔴') || l.startsWith('| 🟢'))) {
+        expect(row.replace(/\\\|/g, '').split('|')).toHaveLength(7);
+      }
+    });
   });
 
   describe('writeSummaryReport', () => {

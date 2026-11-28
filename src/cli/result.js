@@ -2,8 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getToolVersion } from './manifest.js';
-// TODO(A3): import from src/shared/text.js once sanitizeForDisplay moves there.
-import { sanitizeForDisplay } from '../server/importRuns.js';
+import { sanitizeForDisplay } from '../shared/text.js';
 import { redactUrl, redactUrlsInText, redactLocalPaths, toDisplayPath } from './display.js';
 
 export { CliError } from './errors.js';

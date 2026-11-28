@@ -4,10 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import YAML from 'yaml';
 import { chromium } from 'playwright';
 import { OUTPUT_NAMES } from '../src/ci/actionReport.js';
+import { COMMENT_OUTPUT_NAMES, stickyMarker } from '../src/ci/prComment.js';
 import { importRuns } from '../src/server/importRuns.js';
 import { getDb, closeDb } from '../src/server/db.js';
 import { writeZip, folderEntries } from './helpers/zip.js';
@@ -53,18 +54,23 @@ const EXPECTED_INPUTS = {
   'artifact-name': { required: false, default: 'visual-regression-diffs' },
   'upload-artifact': { required: false, default: 'on-failure' },
   'retention-days': { required: false, default: '' },
-  image: { required: false, default: '' }
+  image: { required: false, default: '' },
+  comment: { required: false, default: 'true' },
+  'comment-id': { required: false, default: 'default' },
+  'github-token': { required: false, default: '${{ github.token }}' }
 };
 const EXPECTED_OUTPUTS = [
   'status', 'exit-code', 'total', 'changed', 'new-baselines', 'run-id', 'report-path',
-  'summary-path', 'run-dir', 'artifact-name', 'artifact-id', 'artifact-url'
+  'summary-path', 'run-dir', 'artifact-name', 'artifact-id', 'artifact-url', 'comment-url', 'comment-action'
 ];
 const UPLOAD_ARTIFACT_OUTPUTS = ['artifact-id', 'artifact-url'];
+/** What a github-script step of the action sets: the parse step's outputs or the comment step's. */
+const githubScriptOutputs = (step) => (step.id === 'comment' ? COMMENT_OUTPUT_NAMES : OUTPUT_NAMES);
 const PINNED = /^[\w.-]+\/[\w.-]+(\/[\w./-]+)?@(v\d+|[0-9a-f]{40})$/;
 
 describe('expression evaluator (test helper)', () => {
   const ctx = {
-    inputs: { 'wait-on': '', strict: 'true' },
+    inputs: { 'wait-on': '', strict: 'true', comment: 'true' },
     steps: { validate: { outcome: 'success', outputs: { 'run-id': 'r1' } }, parse: { outcome: 'skipped', outputs: {} } },
     runner: { os: 'Linux' },
     github: {}
@@ -123,8 +129,37 @@ describe('action.yml: structure', () => {
     expect(action.inputs['base-url'].description).toMatch(/secret/);
   });
 
-  it('leaves the pull request comment inputs to A3', () => {
-    for (const name of ['comment', 'comment-id', 'github-token']) expect(action.inputs[name]).toBeUndefined();
+  it('the comment step: github-script with the github-token input, on pull requests only, never failing the action', () => {
+    const step = stepById('comment');
+    expect(step.uses).toBe('actions/github-script@v8');
+    expect(step.if).toBe("${{ !cancelled() && inputs.comment == 'true' && github.event_name == 'pull_request' }}");
+    expect(step['continue-on-error']).toBe(true);
+    expect(step.with['github-token']).toBe('${{ inputs.github-token }}');
+    expect(step.env).toEqual({
+      VISUAL_CI_ACTION_PATH: '${{ steps.image.outputs.scripts || github.action_path }}',
+      VISUAL_CI_COMMENT_ID: '${{ inputs.comment-id }}',
+      VISUAL_CI_STATUS: '${{ steps.outcome.outputs.status }}',
+      VISUAL_CI_REPORT_PATH: '${{ steps.parse.outputs.report-path }}',
+      VISUAL_CI_ARTIFACT_NAME: '${{ steps.outcome.outputs.artifact-name }}',
+      VISUAL_CI_ARTIFACT_URL: '${{ steps.upload.outputs.artifact-url }}',
+      VISUAL_CI_UPLOAD_OUTCOME: '${{ steps.upload.outcome }}'
+    });
+    expect(step.with.script).toContain("path.join(process.env.VISUAL_CI_ACTION_PATH, 'src', 'ci', 'prComment.js')");
+    expect(step.with.script).toContain('await run({ core, github, context });');
+    // A failure outside run() (e.g. the import throws) still reports comment-action: failed.
+    expect(step.with.script).toMatch(/^try \{[\s\S]*\} catch \(err\) \{\n\s+core\.setOutput\('comment-action', 'failed'\);\n\s+core\.setOutput\('comment-url', ''\);\n\s+core\.warning\(/);
+    expect(action.outputs['comment-url'].value).toBe('${{ steps.comment.outputs.comment-url }}');
+    expect(action.outputs['comment-action'].value).toBe('${{ steps.comment.outputs.comment-action }}');
+    // The token goes to github-script only: never to a shell step or the container.
+    for (const other of steps.filter((st) => st !== step)) expect(JSON.stringify(other), other.name).not.toContain('github-token');
+  });
+
+  it('describes the comment inputs: permissions, separate comments per comment-id, the bot author', () => {
+    expect(action.inputs.comment.description).toMatch(/pull-requests: write/);
+    expect(action.inputs['comment-id'].description).toMatch(/matrix/);
+    expect(action.inputs['github-token'].description).toMatch(/github-actions\[bot\]/);
+    expect(action.inputs['github-token'].description).toMatch(/personal access token or a GitHub App token .*every run adds a new comment/);
+    expect(action.inputs.comment.description).not.toMatch(/pull_request_target/);
   });
 
   it('declares exactly the designed outputs', () => {
@@ -141,7 +176,7 @@ describe('action.yml: structure', () => {
       const [, stepId, stepOutput] = match;
       const step = stepById(stepId);
       expect(step, `${name}: no step with id ${stepId}`).toBeDefined();
-      if (step.uses?.startsWith('actions/github-script@')) expect(OUTPUT_NAMES).toContain(stepOutput);
+      if (step.uses?.startsWith('actions/github-script@')) expect(githubScriptOutputs(step)).toContain(stepOutput);
       else if (step.uses?.startsWith('actions/upload-artifact@')) expect(UPLOAD_ARTIFACT_OUTPUTS).toContain(stepOutput);
       else expect(step.run).toContain(`${stepOutput}=`);
     }
@@ -160,7 +195,7 @@ describe('action.yml: structure', () => {
       for (const [, id, out] of expr.matchAll(/steps\.([\w-]+)\.outputs\.([\w-]+)/g)) {
         const step = stepById(id);
         expect(step, `${expr}: no step ${id}`).toBeDefined();
-        const produced = step.uses?.startsWith('actions/github-script@') ? OUTPUT_NAMES
+        const produced = step.uses?.startsWith('actions/github-script@') ? githubScriptOutputs(step)
           : step.uses?.startsWith('actions/upload-artifact@') ? UPLOAD_ARTIFACT_OUTPUTS
             : [...step.run.matchAll(/^\s*echo "([\w-]+)=/gm)].map((m) => m[1]);
         expect(produced, expr).toContain(out);
@@ -203,7 +238,6 @@ describe('action.yml: structure', () => {
     ];
     expect(uses).toContain('actions/github-script@v8');
     expect(uses).toContain('actions/upload-artifact@v6');
-    expect(uses).toContain('actions/download-artifact@v7');
     for (const ref of uses) expect(ref).toMatch(PINNED);
   });
 
@@ -211,9 +245,9 @@ describe('action.yml: structure', () => {
     for (const step of steps.filter((s) => s.run)) expect(step.shell, step.name).toBe('bash');
   });
 
-  it('builds the image before waiting for the app (the app gets the build time to start)', () => {
+  it('builds the image before waiting for the app, and comments after the upload and the outcome (before the result)', () => {
     expect(steps.map((s) => s.id || s.name)).toEqual([
-      'runner', 'validate', 'image', 'wait', 'run', 'parse', 'upload', 'outcome', 'Set the result'
+      'runner', 'validate', 'image', 'wait', 'run', 'parse', 'upload', 'outcome', 'comment', 'Set the result'
     ]);
   });
 
@@ -228,10 +262,24 @@ describe('action.yml: structure', () => {
 
   it('the parse step loads the module from the action folder via github.action_path, and gives it github and context', () => {
     const parse = stepById('parse');
-    expect(parse.env.VISUAL_CI_ACTION_PATH).toBe('${{ github.action_path }}');
+    expect(parse.env.VISUAL_CI_ACTION_PATH).toBe('${{ steps.image.outputs.scripts || github.action_path }}');
     expect(parse.with.script).toContain("path.join(process.env.VISUAL_CI_ACTION_PATH, 'src', 'ci', 'actionReport.js')");
     expect(parse.with.script).toContain('await run({ core, github, context });');
     expect(fs.existsSync(path.join(REPO, 'src/ci/actionReport.js'))).toBe(true);
+  });
+
+  it('both github-script steps load their modules from the read-only copy the image step makes before docker run', () => {
+    const scriptSteps = steps.filter((st) => st.uses?.startsWith('actions/github-script@'));
+    expect(scriptSteps.map((st) => st.id)).toEqual(['parse', 'comment']);
+    for (const st of scriptSteps) expect(st.env.VISUAL_CI_ACTION_PATH, st.id).toBe('${{ steps.image.outputs.scripts || github.action_path }}');
+    const image = stepById('image').run;
+    expect(image).toContain('scripts="$RUNNER_TEMP/visual-ci-scripts"');
+    expect(image).toContain('chmod -R a-w -- "$scripts"');
+    // Copied and announced before anything is built or pulled, so a failed build never leaves a stale path.
+    expect(image.indexOf('echo "scripts=$scripts"')).toBeLessThan(image.indexOf('docker '));
+    // A sibling of the container's folder, never inside it, and never mounted.
+    expect(stepById('run').run).toContain('out="$RUNNER_TEMP/visual-ci"');
+    expect(stepById('run').run).not.toContain('visual-ci-scripts');
   });
 
   it('never mounts RUNNER_TEMP itself into the container, only its visual-ci folder and the step summary', () => {
@@ -284,7 +332,14 @@ describe('visual-ci.yml dogfoods the action', () => {
     });
     expect(workflow.concurrency).toEqual({ group: '${{ github.workflow }}-${{ github.ref }}', 'cancel-in-progress': true });
     expect(workflow.permissions).toEqual({ contents: 'read' });
-    for (const j of Object.values(workflow.jobs)) expect(j.permissions).toBeUndefined();
+    expect(workflow.jobs['unit-tests'].permissions).toBeUndefined();
+  });
+
+  it('grants pull-requests: write to the visual job only (job permissions replace the workflow ones, so contents: read stays)', () => {
+    expect(job.permissions).toEqual({ contents: 'read', 'pull-requests': 'write' });
+    const check = job.steps.find((s) => s.uses === './');
+    expect(String(check.with.comment ?? action.inputs.comment.default)).toBe('true');
+    expect(check.with['github-token']).toBeUndefined(); // the job token, as github-actions[bot]
   });
 
   it('keeps the unit test job unchanged', () => {
@@ -341,7 +396,7 @@ async function runWorkflowScript(step, context, { cwd = os.tmpdir(), env = {} } 
 }
 
 describe('action-selftest.yml proves the failure paths on a real runner', () => {
-  const { diff, error } = selftest.jobs;
+  const { diff, error, comment } = selftest.jobs;
   const actionStep = (job) => job.steps.find((s) => s.uses === './');
   const named = (job, re) => job.steps.find((s) => re.test(s.name));
 
@@ -349,15 +404,25 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
     expect(selftest.on).toEqual({
       workflow_dispatch: null,
       pull_request: {
-        paths: ['action.yml', 'src/ci/**', 'src/cli/**', 'Dockerfile', '.dockerignore', '.github/workflows/action-selftest.yml']
+        paths: ['action.yml', 'src/ci/**', 'src/cli/**', 'src/shared/**', 'Dockerfile', '.dockerignore', '.github/workflows/action-selftest.yml']
       }
     });
     expect(selftest.permissions).toEqual({ contents: 'read' });
-    expect(Object.keys(selftest.jobs).sort()).toEqual(['diff', 'error']);
-    for (const job of Object.values(selftest.jobs)) {
-      expect(job.permissions).toBeUndefined();
-      expect(job['runs-on']).toBe('ubuntu-latest');
+    expect(Object.keys(selftest.jobs).sort()).toEqual(['comment', 'diff', 'error']);
+    for (const job of Object.values(selftest.jobs)) expect(job['runs-on']).toBe('ubuntu-latest');
+    expect(error.permissions).toBeUndefined();
+    // Job permissions replace the workflow's: contents: read stays, actions: read lists the run's artifacts.
+    expect(diff.permissions).toEqual({ contents: 'read', actions: 'read' });
+    // The only write permission in the workflow: pull request comments, in the comment job.
+    expect(comment.permissions).toEqual({ contents: 'read', 'pull-requests': 'write' });
+  });
+
+  it('the diff and error jobs never comment on the pull request: comment is false, and their token is read-only anyway', () => {
+    for (const [name, job] of Object.entries({ diff, error })) {
+      expect(String(actionStep(job).with.comment), name).toBe('false');
+      expect(named(job, /^Assert the Outputs/).env.COMMENT_ACTION, name).toBe('${{ steps.visual.outputs.comment-action }}');
     }
+    expect(selftest.permissions).toEqual({ contents: 'read' });
   });
 
   it('can never change committed baselines: strict compare, no credentials, and a check at the end', () => {
@@ -367,7 +432,7 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
       const use = actionStep(job);
       expect(use.with.strict ?? 'true', name).toBe('true');
       expect(use.with['update-baselines'] ?? 'false', name).toBe('false');
-      const guard = job.steps.at(name === 'diff' ? -2 : -1);
+      const guard = job.steps.at(name === 'error' ? -1 : -2);
       expect(guard.name, name).toBe('Committed Baselines Are Untouched');
       expect(guard.if, name).toBe('always()');
     }
@@ -385,10 +450,15 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
     });
   });
 
-  it('the diff job downloads the artifact by its (asserted) name and imports it into a throwaway storage folder', () => {
-    const download = diff.steps.find((s) => s.uses?.startsWith('actions/download-artifact@'));
-    // By name, not by id: download-artifact found no artifact by id within the same run.
-    expect(download.with).toEqual({ name: '${{ steps.visual.outputs.artifact-name }}', path: '${{ runner.temp }}/selftest-artifact' });
+  it('the diff job downloads the artifact by its (asserted) name, with retries, and imports it into a throwaway storage folder', () => {
+    expect(diff.steps.some((s) => s.uses?.startsWith('actions/download-artifact@'))).toBe(false);
+    const download = named(diff, /^Download the Artifact/);
+    expect(download.env).toEqual({
+      GH_TOKEN: '${{ github.token }}',
+      ARTIFACT_NAME: '${{ steps.visual.outputs.artifact-name }}',
+      ARTIFACT_DIR: '${{ runner.temp }}/selftest-artifact'
+    });
+    expect(download.run).toContain('gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n "$ARTIFACT_NAME" -D "$ARTIFACT_DIR"');
     const importStep = named(diff, /^Import the Artifact/);
     expect(importStep.run).toContain('[ ! -f "$ARTIFACT_DIR/run.json" ]');
     expect(importStep.run).toContain('export VISUAL_STORAGE_DIR="$RUNNER_TEMP/selftest-import-storage"');
@@ -404,12 +474,108 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
     expect(use.with['wait-on']).toBeUndefined();
   });
 
+  it('the comment job proves the create/update path: pull_request from this repository only, regressed page, comment-id selftest', () => {
+    expect(comment.if).toBe("github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository");
+    expect(named(comment, /^Start Demo Site/).run.trim()).toMatch(/^DEMO_VARIANT=regressed node scripts\/serve-demo\.js .*&$/);
+    const use = actionStep(comment);
+    expect(use).toMatchObject({ id: 'visual', 'continue-on-error': true });
+    expect(use.with).toMatchObject({ 'base-url': 'http://127.0.0.1:4567', 'upload-artifact': 'never', 'comment-id': 'selftest' });
+    expect(String(use.with.comment ?? action.inputs.comment.default)).toBe('true');
+    expect(use.with['github-token']).toBeUndefined(); // the job token, as github-actions[bot]
+    const order = comment.steps.map((s) => s.name);
+    expect(order.indexOf('Visual Check (expected to comment)')).toBeLessThan(order.indexOf('Assert the Outputs of a Commented Run'));
+  });
+
+  describe('the comment job assertions', () => {
+    const assertStep = () => named(comment, /^Assert the Outputs/);
+    const good = { status: 'failed', 'exit-code': '1', 'comment-action': 'created', 'comment-url': 'https://github.com/o/r/pull/3#issuecomment-1' };
+    const ctx = (outputs, outcome = 'failure') => ({ steps: { visual: { outcome, outputs } } });
+
+    it.each(['created', 'updated'])('pass when the comment was %s', async (act) => {
+      const r = await runWorkflowScript(assertStep(), ctx({ ...good, 'comment-action': act }));
+      expect(r.code, r.stdout).toBe(0);
+    });
+
+    it.each([
+      ['the action passed', {}, 'success'],
+      ['status passed', { status: 'passed' }],
+      ['exit code 2', { 'exit-code': '2' }],
+      ['the comment was skipped', { 'comment-action': 'skipped' }],
+      ['the comment failed', { 'comment-action': 'failed' }],
+      ['the comment step did not run', { 'comment-action': '' }],
+      ['no comment url', { 'comment-url': '' }],
+      ['an http comment url', { 'comment-url': 'http://x' }]
+    ])('fail when %s', async (_label, change, outcome) => {
+      const r = await runWorkflowScript(assertStep(), ctx({ ...good, ...change }, outcome));
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain('::error title=self-test::');
+    });
+  });
+
+  describe('the download step retries until the artifact is available', () => {
+    const download = named(diff, /^Download the Artifact/);
+    let dir;
+    beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vrt-dl-')); });
+    afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    // Fake gh (fails the first FAIL_TIMES calls, then extracts run.json into -D) and a
+    // fake sleep that only records its argument.
+    const run = async (name, failTimes) => {
+      const bin = path.join(dir, 'bin');
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env bash
+echo "$*" >> "${dir}/gh.log"
+n=$(wc -l < "${dir}/gh.log")
+if [ "$n" -le "$FAIL_TIMES" ]; then echo "no valid artifacts found to download" >&2; exit 1; fi
+while [ $# -gt 0 ]; do [ "$1" = -D ] && out="$2"; shift; done
+mkdir -p "$out" && echo '{}' > "$out/run.json"
+`, { mode: 0o755 });
+      fs.writeFileSync(path.join(bin, 'sleep'), `#!/usr/bin/env bash\necho "$1" >> "${dir}/sleep.log"\n`, { mode: 0o755 });
+      const ctx = { steps: { visual: { outputs: { 'artifact-name': name } } }, github: { token: 'ghs_x' }, runner: { temp: dir } };
+      const r = await runWorkflowScript(download, ctx, {
+        env: { PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAIL_TIMES: String(failTimes), GITHUB_RUN_ID: '99', GITHUB_REPOSITORY: 'o/r' }
+      });
+      const lines = (f) => (fs.existsSync(path.join(dir, f)) ? fs.readFileSync(path.join(dir, f), 'utf8').trim().split('\n').filter(Boolean) : []);
+      return { ...r, gh: lines('gh.log'), sleeps: lines('sleep.log') };
+    };
+
+    it('succeeds at once when the artifact is there', async () => {
+      const r = await run('selftest-diff-1', 0);
+      expect(r.code, r.stdout + r.stderr).toBe(0);
+      expect(r.gh).toEqual([`run download 99 -R o/r -n selftest-diff-1 -D ${path.join(dir, 'selftest-artifact')}`]);
+      expect(r.sleeps).toEqual([]);
+      expect(fs.existsSync(path.join(dir, 'selftest-artifact', 'run.json'))).toBe(true);
+    });
+
+    it('retries with growing waits while it is not found yet (the same-run lag)', async () => {
+      const r = await run('selftest-diff-1', 3);
+      expect(r.code, r.stdout + r.stderr).toBe(0);
+      expect(r.gh).toHaveLength(4);
+      expect(r.sleeps).toEqual(['2', '4', '8']);
+    });
+
+    it('gives up after 6 attempts with an error', async () => {
+      const r = await run('selftest-diff-1', 100);
+      expect(r.code).toBe(1);
+      expect(r.gh).toHaveLength(6);
+      expect(r.sleeps).toEqual(['2', '4', '8', '16', '32']);
+      expect(r.stdout).toContain('::error title=self-test::the artifact could not be downloaded after 6 attempts');
+    });
+
+    it.each(['', '../x', 'a/b'])('never downloads with the artifact name %j (an empty one would download everything)', async (name) => {
+      const r = await run(name, 0);
+      expect(r.code).toBe(1);
+      expect(r.gh).toEqual([]);
+      expect(r.stdout).toContain('no valid artifact name');
+    });
+  });
+
   describe('the assertions fail the job when an output is wrong', () => {
     const diffOutputs = {
       status: 'failed', 'exit-code': '1', changed: '2', 'artifact-name': 'selftest-diff-1',
-      'artifact-id': '4711', 'artifact-url': 'https://github.com/o/r/actions/runs/1/artifacts/4711'
+      'artifact-id': '4711', 'artifact-url': 'https://github.com/o/r/actions/runs/1/artifacts/4711', 'comment-action': ''
     };
-    const errorOutputs = { status: 'error', 'exit-code': '2', 'artifact-name': '', 'artifact-id': '', 'artifact-url': '' };
+    const errorOutputs = { status: 'error', 'exit-code': '2', 'artifact-name': '', 'artifact-id': '', 'artifact-url': '', 'comment-action': '' };
     const ctx = (outputs, outcome = 'failure') => ({ steps: { visual: { outcome, outputs } }, github: { run_attempt: '1' }, runner: { temp: os.tmpdir() } });
     const assertDiff = named(diff, /^Assert the Outputs/);
     const assertError = named(error, /^Assert the Outputs/);
@@ -429,7 +595,8 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
       ['changed empty', { changed: '' }],
       ['no artifact id', { 'artifact-id': '' }],
       ['no artifact url', { 'artifact-url': '' }],
-      ['no artifact name', { 'artifact-name': '' }]
+      ['no artifact name', { 'artifact-name': '' }],
+      ['the comment step ran', { 'comment-action': 'skipped' }]
     ])('diff job: fails when %s', async (_label, change, outcome) => {
       const r = await runWorkflowScript(assertDiff, ctx({ ...diffOutputs, ...change }, outcome));
       expect(r.code).toBe(1);
@@ -442,7 +609,8 @@ describe('action-selftest.yml proves the failure paths on a real runner', () => 
       ['exit code 1', { 'exit-code': '1' }],
       ['an artifact id', { 'artifact-id': '12' }],
       ['an artifact url', { 'artifact-url': 'https://x' }],
-      ['an artifact name', { 'artifact-name': 'selftest-error-1' }]
+      ['an artifact name', { 'artifact-name': 'selftest-error-1' }],
+      ['a comment was posted', { 'comment-action': 'created' }]
     ])('error job: fails when %s', async (_label, change, outcome) => {
       const r = await runWorkflowScript(assertError, ctx({ ...errorOutputs, ...change }, outcome));
       expect(r.code).toBe(1);
@@ -500,6 +668,35 @@ describe('README documents the action', () => {
 
   it.each(EXPECTED_OUTPUTS)('documents the output %s', (name) => {
     expect(section).toMatch(new RegExp(`^\\| \`${name}\` \\|`, 'm'));
+  });
+
+  it('documents the pull request comment: sample, permissions, forks, matrix comment-id, the bot author, safety', () => {
+    expect(section).toMatch(/^### Pull request comment$/m);
+    expect(section).toContain('> ### ❌ Visual CI found visual changes'); // the sample
+    expect(section).toMatch(/permissions:\n\s+contents: read\n\s+pull-requests: write/);
+    expect(section).toMatch(/pull-requests: write\s+# the pull request comment/); // in the complete workflow
+    expect(section).toMatch(/\*\*Pull requests from forks:\*\* no comment/);
+    expect(section).toMatch(/workflow_run/); // the documented follow-up
+    expect(section).toMatch(/comment-id: \$\{\{ matrix\.\w+ \}\}/);
+    expect(section).toContain('github-actions[bot]');
+    expect(section).toContain('<!-- visual-ci:sticky id=<comment-id> -->');
+    expect(section).toContain('comment: false');
+    expect(section).not.toMatch(/Pull request comments are not part of the action yet/);
+  });
+
+  it('never tells anyone to run a bare `npx visual-ci` (an npm name that is not ours), and says the package is unpublished', () => {
+    expect(readme).not.toMatch(/npx (-y )?visual-ci\b/);
+    expect(fs.readFileSync('src/server/public/js/import-upload.js', 'utf8')).not.toMatch(/npx (-y )?visual-ci\b/);
+    expect(readme).toContain('npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import');
+    expect(readme).toMatch(/npm package is \*\*not published yet\*\*/);
+  });
+
+  it('documents pull_request only, duplicates with a concurrency group, and PAT / App tokens', () => {
+    expect(section).toMatch(/\*\*Only `pull_request` events\.\*\* `pull_request_target` is not supported/);
+    expect(section).not.toMatch(/and `pull_request_target`\) events/);
+    expect(section).toMatch(/concurrency:\n\s+group: .*pull_request\.number/);
+    expect(section).toMatch(/Superseded by the current visual-ci comment/);
+    expect(section).toMatch(/GitHub App token/);
   });
 
   it('documents baselines, limitations, error-run artifacts, unique names and secrets', () => {
@@ -579,6 +776,12 @@ if (args[0] === 'run') {
     fs.writeFileSync(jsonHost, process.env.FAKE_DOCKER_REPORT);
   }
 }
+// A compromised browser rewriting the action's scripts in the (mounted) workspace.
+if (args[0] === 'run' && process.env.FAKE_DOCKER_TAMPER) {
+  for (const f of ['src/ci/actionReport.js', 'src/ci/prComment.js', 'src/shared/text.js']) {
+    fs.writeFileSync(path.join(process.env.FAKE_DOCKER_TAMPER, f), "throw new Error('tampered');\n");
+  }
+}
 fs.appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify(entry) + '\n');
 process.exit(status);
 `;
@@ -638,7 +841,11 @@ function createRunner() {
     steps: {},
     uploads: [],
     dockerCalls: () => (fs.existsSync(runner.dockerLog) ? fs.readFileSync(runner.dockerLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []),
-    cleanup: () => fs.rmSync(root, { recursive: true, force: true })
+    actionPath: REPO, // github.action_path / GITHUB_ACTION_PATH
+    cleanup: () => {
+      execFileSync('chmod', ['-R', 'u+w', root]); // the action's read-only scripts copy
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   };
   for (const dir of [runner.workspace, commands, runner.bin, runner.home]) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(runner.bin, 'docker'), FAKE_DOCKER, { mode: 0o755 });
@@ -652,7 +859,8 @@ function contextFor(runner, inputs) {
   for (const [name, def] of Object.entries(action.inputs)) withDefaults[name] = inputs[name] ?? def.default ?? '';
   const stepsCtx = {};
   for (const [id, { __outcome, ...outputs }] of Object.entries(runner.steps)) stepsCtx[id] = { outputs, outcome: __outcome, conclusion: __outcome };
-  return { inputs: withDefaults, steps: stepsCtx, runner: { os: inputs.__os || 'Linux', temp: runner.temp }, github: { action_path: REPO } };
+  // __event: the triggering event (github.event_name); push unless a test says otherwise.
+  return { inputs: withDefaults, steps: stepsCtx, runner: { os: inputs.__os || 'Linux', temp: runner.temp }, github: { action_path: runner.actionPath, event_name: inputs.__event || 'push' } };
 }
 
 /** Base environment of a step on the runner (what GitHub sets), plus the step's own env: from action.yml. */
@@ -662,7 +870,7 @@ function stepEnv(runner, step, inputs, extra = {}) {
     HOME: process.env.HOME,
     GITHUB_WORKSPACE: runner.workspace,
     RUNNER_TEMP: runner.temp,
-    GITHUB_ACTION_PATH: REPO,
+    GITHUB_ACTION_PATH: runner.actionPath,
     GITHUB_ACTIONS: 'true',
     GITHUB_RUN_ID: '4242',
     GITHUB_RUN_ATTEMPT: '3',
@@ -738,6 +946,67 @@ async function runParseStep(runner, inputs = {}, { artifacts = null } = {}) {
 }
 
 /**
+ * Runs the comment step's script the way github-script does (like runParseStep), with
+ * a fake Octokit (issues.listComments / createComment / updateComment, paginate) and a
+ * pull_request context. `comments`: what listing returns; `commentError`: { status,
+ * message } thrown by every issues call (403: the token lacks pull-requests: write);
+ * `headRepo`: the PR head's repository (o/r is this one; anything else is a fork);
+ * `crash`: the github-script process itself fails (continue-on-error must absorb it);
+ * `importFails`: prComment.js can't be loaded (the script's own catch must report it).
+ */
+async function runCommentStep(runner, inputs = {}, { comments = [], commentError = null, headRepo = 'o/r', crash = false, importFails = false } = {}) {
+  const step = stepById('comment');
+  const harness = path.join(runner.root, 'github-script-comment-harness.cjs');
+  const body = path.join(runner.root, 'github-script-comment-body.js');
+  fs.writeFileSync(body, step.with.script);
+  fs.writeFileSync(harness, `
+    const fs = require('fs');
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    const opts = JSON.parse(process.env.HARNESS_COMMENT);
+    if (opts.crash) process.exit(1);
+    const outputs = {}; const annotations = []; const calls = { list: [], create: [], update: [] };
+    const core = {
+      setOutput: (k, v) => { outputs[k] = String(v); },
+      error: (m) => annotations.push(['error', String(m)]),
+      warning: (m) => annotations.push(['warning', String(m)]),
+      notice: (m) => annotations.push(['notice', String(m)]),
+      info: () => {}
+    };
+    const fail = () => { if (opts.commentError) { const e = new Error(opts.commentError.message); e.status = opts.commentError.status; throw e; } };
+    const github = {
+      paginate: async (fn, params) => (await fn(params)).data,
+      rest: { issues: {
+        listComments: async (p) => { calls.list.push(p); fail(); return { data: opts.comments }; },
+        createComment: async (p) => { calls.create.push(p); fail(); return { data: { id: 777, html_url: 'https://github.com/o/r/pull/17#issuecomment-777' } }; },
+        updateComment: async (p) => { calls.update.push(p); fail(); return { data: { id: p.comment_id, html_url: 'https://github.com/o/r/pull/17#issuecomment-' + p.comment_id } }; }
+      } }
+    };
+    const pr = { number: 17, head: { sha: 'feedfacefeedfacefeedfacefeedfacefeedface', repo: { full_name: opts.headRepo } } };
+    const context = {
+      eventName: process.env.HARNESS_EVENT, serverUrl: 'https://github.com', runId: Number(process.env.GITHUB_RUN_ID),
+      repo: { owner: 'o', repo: 'r' }, payload: process.env.HARNESS_EVENT.startsWith('pull_request') ? { pull_request: pr } : {}
+    };
+    new AsyncFunction('require', 'core', 'github', 'context', fs.readFileSync(process.argv[2], 'utf8'))(require, core, github, context)
+      .then(() => process.stdout.write(JSON.stringify({ outputs, annotations, calls })), (e) => { console.error(e); process.exit(1); });
+  `);
+  const ctx = contextFor(runner, inputs);
+  const env = stepEnv(runner, step, inputs, {
+    GITHUB_ACTION_PATH: path.join(runner.root, 'not-this-action'),
+    HARNESS_EVENT: ctx.github.event_name,
+    HARNESS_COMMENT: JSON.stringify({ comments, commentError, headRepo, crash })
+  });
+  if (importFails) env.VISUAL_CI_ACTION_PATH = path.join(runner.root, 'no-such-action');
+  const result = await exec(process.execPath, [harness, body], { cwd: runner.workspace, env });
+  if (result.code !== 0) {
+    runner.steps.comment = { __outcome: 'failure' };
+    return { code: result.code, outputs: {}, annotations: [], calls: null, stderr: result.stderr };
+  }
+  const parsed = JSON.parse(result.stdout);
+  runner.steps.comment = { ...parsed.outputs, __outcome: 'success' };
+  return { code: 0, ...parsed, token: interpolate(step.with['github-token'], ctx) };
+}
+
+/**
  * The upload step, faked: records its evaluated `with:` and, like upload-artifact with
  * if-no-files-found: error, fails when the path holds no file. `mode: 'fail'` makes it
  * fail like a name collision (409 Conflict) does.
@@ -762,7 +1031,7 @@ function runUploadStep(runner, inputs, { mode = 'success' } = {}) {
  * its real `if:` says so (a failed step fails the action, and later steps then need a
  * status function such as !cancelled()), then evaluates the action's outputs.
  */
-async function runAction(runner, inputs, { env = {}, upload = {}, artifacts = null } = {}) {
+async function runAction(runner, inputs, { env = {}, upload = {}, artifacts = null, comment = {} } = {}) {
   runner.steps = {};
   const status = { failed: false };
   const ran = [];
@@ -776,10 +1045,11 @@ async function runAction(runner, inputs, { env = {}, upload = {}, artifacts = nu
     ran.push(key);
     let result;
     if (step.run) result = await runBashStep(runner, step, inputs, env);
+    else if (step.id === 'comment') result = await runCommentStep(runner, inputs, comment);
     else if (step.uses.startsWith('actions/github-script@')) result = await runParseStep(runner, inputs, { artifacts });
     else if (step.uses.startsWith('actions/upload-artifact@')) result = runUploadStep(runner, inputs, upload);
     else throw new Error(`unexpected step ${step.uses}`);
-    if (result.code !== 0) status.failed = true;
+    if (result.code !== 0 && step['continue-on-error'] !== true) status.failed = true;
     results[key] = result;
   }
   const ctx = contextFor(runner, inputs);
@@ -837,7 +1107,9 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
         'artifact-name': 'visual diffs web',
         'upload-artifact': 'always',
         'retention-days': '90',
-        image: 'ghcr.io/owner/visual-ci:1.0.0'
+        image: 'ghcr.io/owner/visual-ci:1.0.0',
+        comment: 'false',
+        'comment-id': 'chrome_1.2-' + 'x'.repeat(53)
       });
       expect(r.code, r.stdout).toBe(0);
       expect(r.outputs).toEqual({ 'run-id': 'nightly_2026-11-25', 'working-directory': 'apps/web site' });
@@ -874,7 +1146,12 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
       ['retention-days too high', { 'retention-days': '91' }, 'retention-days must be a whole number from 1 to 90'],
       ['retention-days zero', { 'retention-days': '0' }, 'retention-days must be a whole number from 1 to 90'],
       ['image starting with a dash', { image: '--help' }, 'image must be an image reference'],
-      ['image with a space', { image: 'a b' }, 'image must be an image reference']
+      ['image with a space', { image: 'a b' }, 'image must be an image reference'],
+      ['comment not a boolean', { comment: 'yes' }, 'comment must be true or false.'],
+      ['comment-id empty', { 'comment-id': '' }, "comment-id may only contain letters, digits, '.', '_' and '-' (at most 64)."],
+      ['comment-id with a space', { 'comment-id': 'a b' }, 'comment-id may only contain'],
+      ['comment-id closing the HTML comment', { 'comment-id': 'x-->' }, 'comment-id may only contain'],
+      ['comment-id too long', { 'comment-id': 'a'.repeat(65) }, 'comment-id may only contain']
     ])('refuses %s', async (_label, inputs, message) => {
       const r = await validate(inputs);
       expect(r.code).toBe(1);
@@ -951,24 +1228,55 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
   });
 
   describe('image', () => {
+    const scriptsDir = () => path.join(runner.temp, 'visual-ci-scripts');
+    const writable = (p) => (fs.statSync(p).mode & 0o222) !== 0;
+
+    it('copies src/ci, src/shared and package.json read-only into RUNNER_TEMP/visual-ci-scripts and outputs its path', async () => {
+      const r = await runBashStep(runner, stepById('image'), {});
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.outputs.scripts).toBe(scriptsDir());
+      for (const f of ['src/ci/prComment.js', 'src/ci/actionReport.js', 'src/shared/text.js', 'package.json']) {
+        const copy = path.join(scriptsDir(), f);
+        expect(fs.readFileSync(copy, 'utf8'), f).toBe(fs.readFileSync(path.join(REPO, f), 'utf8'));
+        expect(writable(copy), f).toBe(false);
+      }
+      for (const d of ['', 'src', 'src/ci', 'src/shared']) expect(writable(path.join(scriptsDir(), d)), d).toBe(false);
+      expect(fs.readdirSync(path.join(scriptsDir(), 'src')).sort()).toEqual(['ci', 'shared']); // nothing else of src/
+      // A sibling of the folder the container gets, not inside it.
+      expect(path.dirname(scriptsDir())).toBe(path.dirname(path.join(runner.temp, 'visual-ci')));
+    });
+
+    it('replaces an earlier read-only copy (the action used twice in a job)', async () => {
+      expect((await runBashStep(runner, stepById('image'), {})).code).toBe(0);
+      const again = await runBashStep(runner, stepById('image'), {});
+      expect(again.code, again.stderr).toBe(0);
+      expect(fs.existsSync(path.join(scriptsDir(), 'src/ci/prComment.js'))).toBe(true);
+    });
+
+    it('copies before building, so even a failed build leaves the copy', async () => {
+      const r = await runBashStep(runner, stepById('image'), {}, { FAKE_DOCKER_EXIT: '1' });
+      expect(r.code).toBe(1);
+      expect(r.outputs).toEqual({ scripts: scriptsDir() });
+    });
+
     it('builds the Dockerfile in the action folder when no image is given', async () => {
       const r = await runBashStep(runner, stepById('image'), {});
       expect(r.code).toBe(0);
-      expect(r.outputs).toEqual({ ref: 'visual-ci-action:local' });
+      expect(r.outputs).toEqual({ ref: 'visual-ci-action:local', scripts: scriptsDir() });
       expect(runner.dockerCalls().map((c) => c.args)).toEqual([['build', '-t', 'visual-ci-action:local', REPO]]);
     });
 
     it('pulls a prebuilt image instead', async () => {
       const r = await runBashStep(runner, stepById('image'), { image: 'ghcr.io/owner/visual-ci:1.2.3' });
       expect(r.code).toBe(0);
-      expect(r.outputs).toEqual({ ref: 'ghcr.io/owner/visual-ci:1.2.3' });
+      expect(r.outputs).toEqual({ ref: 'ghcr.io/owner/visual-ci:1.2.3', scripts: scriptsDir() });
       expect(runner.dockerCalls().map((c) => c.args)).toEqual([['pull', 'ghcr.io/owner/visual-ci:1.2.3']]);
     });
 
     it('fails the step when the build fails', async () => {
       const r = await runBashStep(runner, stepById('image'), {}, { FAKE_DOCKER_EXIT: '1' });
       expect(r.code).toBe(1);
-      expect(r.outputs).toEqual({});
+      expect(r.outputs.ref).toBeUndefined();
     });
   });
 
@@ -1020,6 +1328,12 @@ describe('action steps (bash, with a fake docker)', { timeout: 60000 }, () => {
       }
       expect(hostPaths).not.toContain(runner.temp);
       expect(hostPaths).not.toContain(path.dirname(runner.githubEnv));
+      // No mount covers the scripts copy the github-script steps load.
+      const scripts = path.join(runner.temp, 'visual-ci-scripts');
+      for (const host of hostPaths) {
+        const rel = path.relative(host, scripts);
+        expect(rel === '' || !rel.startsWith('..'), `${host} covers ${scripts}`).toBe(false);
+      }
       expect(fs.statSync(path.join(runner.temp, 'visual-ci')).isDirectory()).toBe(true); // created for the mount
     });
 
@@ -1244,6 +1558,188 @@ describe('the whole action, step by step by its if: conditions (canned results)'
   });
 });
 
+describe('the pull request comment, step by step (canned results)', { timeout: 60000 }, () => {
+  let runner;
+  beforeEach(() => { runner = createRunner(); });
+  afterEach(() => runner.cleanup());
+
+  const runDir = () => path.join(runner.workspace, 'storage', 'runs', 'gh-4242-3');
+  const withRunFolder = () => {
+    fs.mkdirSync(runDir(), { recursive: true });
+    for (const f of ['index-desktop.png', 'run.json']) fs.writeFileSync(path.join(runDir(), f), 'x');
+  };
+  const diffReport = () => cannedReport({
+    status: 'failed',
+    exit_code: 1,
+    counts: { total: 2, passed: 1, changed: 1, missing_baseline: 0, new_baseline: 0 },
+    snapshots: [
+      { route: '/', viewport: 'desktop', status: 'MATCH', mismatch_percentage: 0 },
+      { route: '/pri`ci|ng', viewport: 'mobile', status: 'DIFF', mismatch_percentage: 4.4444 }
+    ]
+  });
+  const DIFF_ENV = () => ({ FAKE_DOCKER_REPORT: diffReport(), FAKE_DOCKER_RUN_EXIT: '1' });
+  const go = (inputs = {}, options = {}) => runAction(runner, { 'base-url': 'http://127.0.0.1:3000', __event: 'pull_request', ...inputs }, options);
+  const BOT = { login: 'github-actions[bot]', type: 'Bot' };
+
+  it('a diff on a pull request: creates the comment with the table, the artifact, the import snippet and the PR head SHA', async () => {
+    withRunFolder();
+    const r = await go({}, { env: DIFF_ENV() });
+    expect(r.ran).toEqual(['runner', 'validate', 'image', 'run', 'parse', 'upload', 'outcome', 'comment', 'Set the result']);
+    const { calls, annotations } = r.results.comment;
+    expect(annotations).toEqual([]);
+    expect(calls.list).toEqual([{ owner: 'o', repo: 'r', issue_number: 17, per_page: 100 }]);
+    expect(calls.create).toHaveLength(1);
+    const body = calls.create[0].body;
+    expect(body.split('\n')[0]).toBe(stickyMarker('default'));
+    expect(body).toContain('### ❌ Visual CI found visual changes');
+    expect(body).toContain('| 🔴 Changed | ``/pri`ci\\|ng`` | `mobile` | 4.44% |');
+    expect(body).toContain('[Artifact `visual-regression-diffs`](https://github.com/o/r/actions/runs/4242/artifacts/9001)');
+    expect(body).toContain("gh run download 4242 -R o/r -n 'visual-regression-diffs' -D vrt-4242 && npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import vrt-4242");
+    expect(body).toContain('commit `feedfac`'); // the PR head, not GITHUB_SHA (0123456...)
+    expect(body).not.toContain('0123456');
+    expect(r.outputs).toMatchObject({ 'comment-url': 'https://github.com/o/r/pull/17#issuecomment-777', 'comment-action': 'created', status: 'failed', 'exit-code': '1' });
+    expect(r.results['Set the result'].code).toBe(1);
+  });
+
+  it('a container that rewrites the action\'s scripts in the workspace (uses: ./) cannot change what the token-holding steps run', async () => {
+    // The action checked out inside the workspace, as with uses: ./ .
+    const checkout = path.join(runner.workspace, 'action');
+    fs.mkdirSync(path.join(checkout, 'src'), { recursive: true });
+    for (const d of ['src/ci', 'src/shared']) fs.cpSync(path.join(REPO, d), path.join(checkout, d), { recursive: true });
+    fs.copyFileSync(path.join(REPO, 'package.json'), path.join(checkout, 'package.json'));
+    runner.actionPath = checkout;
+    withRunFolder();
+    const r = await go({}, { env: { ...DIFF_ENV(), FAKE_DOCKER_TAMPER: checkout } });
+    expect(fs.readFileSync(path.join(checkout, 'src/ci/prComment.js'), 'utf8')).toContain('tampered'); // the attack happened
+    expect(r.results.parse.outputs).toMatchObject({ status: 'failed', 'exit-code': '1', changed: '1' });
+    expect(r.results.comment.calls.create).toHaveLength(1);
+    expect(r.outputs).toMatchObject({ 'comment-action': 'created', status: 'failed' });
+  });
+
+  it('passes the github-token input to github-script', async () => {
+    const r = await go({ 'github-token': 'ghs_custom' }, { env: DIFF_ENV() });
+    expect(r.results.comment.token).toBe('ghs_custom');
+  });
+
+  it('a pass whose artifact upload failed: the comment says the job failed, as Set the result does (exit 2)', async () => {
+    withRunFolder();
+    const r = await go({ 'upload-artifact': 'always' }, { env: { FAKE_DOCKER_REPORT: cannedReport() }, upload: { mode: 'fail' } });
+    expect(r.outputs).toMatchObject({ status: 'passed', 'comment-action': 'created' });
+    expect(r.results.comment.calls.create[0].body).toContain('### ⚠️ Visual CI: the snapshots match, but the job failed');
+    expect(r.results['Set the result'].code).toBe(2);
+  });
+
+  it('when prComment.js cannot even be loaded, comment-action is failed (not empty) and the result is unchanged', async () => {
+    const r = await go({}, { env: DIFF_ENV(), comment: { importFails: true } });
+    expect(r.results.comment.annotations).toEqual([['warning', expect.stringContaining('the pull request comment step failed')]]);
+    expect(r.outputs).toMatchObject({ 'comment-action': 'failed', 'comment-url': '', status: 'failed', 'exit-code': '1' });
+    expect(r.results['Set the result'].code).toBe(1);
+  });
+
+  it('updates the earlier comment of the bot, never the one a person wrote with the marker', async () => {
+    const marker = stickyMarker('default');
+    const r = await go({}, {
+      env: DIFF_ENV(),
+      comment: { comments: [
+        { id: 5, user: { login: 'mallory', type: 'User' }, body: `${marker}\nmine`, created_at: '2026-11-01T00:00:00Z' },
+        { id: 8, user: BOT, body: `${marker}\nold`, created_at: '2026-11-02T00:00:00Z' }
+      ] }
+    });
+    expect(r.results.comment.calls.update.map((c) => c.comment_id)).toEqual([8]);
+    expect(r.results.comment.calls.create).toEqual([]);
+    expect(r.outputs).toMatchObject({ 'comment-action': 'updated', 'comment-url': 'https://github.com/o/r/pull/17#issuecomment-8' });
+  });
+
+  it('a pass with no earlier comment creates none; with one, it is updated to say everything matches', async () => {
+    const first = await go({}, { env: { FAKE_DOCKER_REPORT: cannedReport() } });
+    expect(first.ran).toContain('comment');
+    expect(first.results.comment.calls.create).toEqual([]);
+    expect(first.outputs).toMatchObject({ status: 'passed', 'comment-action': 'skipped', 'comment-url': '' });
+    expect(first.failed).toBe(false);
+
+    const second = await go({}, { env: { FAKE_DOCKER_REPORT: cannedReport() }, comment: { comments: [{ id: 9, user: BOT, body: `${stickyMarker('default')}\nfailed`, created_at: '2026-11-01T00:00:00Z' }] } });
+    expect(second.results.comment.calls.update).toHaveLength(1);
+    expect(second.results.comment.calls.update[0].body).toContain('All 1 snapshot match the baselines.');
+    expect(second.outputs['comment-action']).toBe('updated');
+  });
+
+  it('a comment-id keeps a separate comment (matrix): another id\'s comment is left alone', async () => {
+    const r = await go({ 'comment-id': 'firefox' }, {
+      env: DIFF_ENV(),
+      comment: { comments: [{ id: 3, user: BOT, body: `${stickyMarker('default')}\nchrome`, created_at: '2026-11-01T00:00:00Z' }] }
+    });
+    expect(r.results.comment.calls.update).toEqual([]);
+    expect(r.results.comment.calls.create[0].body.split('\n')[0]).toBe('<!-- visual-ci:sticky id=firefox -->');
+    expect(r.results.comment.calls.create[0].body).toContain('(`firefox`)');
+  });
+
+  it('a pull request from a fork: a notice, no API call, the result unchanged', async () => {
+    const r = await go({}, { env: DIFF_ENV(), comment: { headRepo: 'someone/r' } });
+    expect(r.ran).toContain('comment');
+    expect(r.results.comment.annotations).toEqual([['notice', expect.stringContaining('from a fork')]]);
+    expect(r.results.comment.calls.list).toEqual([]);
+    expect(r.outputs).toMatchObject({ 'comment-action': 'skipped', 'comment-url': '', status: 'failed', 'exit-code': '1' });
+    expect(r.results['Set the result'].code).toBe(1);
+  });
+
+  it.each(['push', 'workflow_dispatch', 'schedule', 'pull_request_target'])('a %s event: the comment step does not run', async (event) => {
+    const r = await go({ __event: event }, { env: DIFF_ENV() });
+    expect(r.ran).not.toContain('comment');
+    expect(r.outputs).toMatchObject({ 'comment-url': '', 'comment-action': '' });
+  });
+
+  it('comment: false: the comment step does not run, even on a pull request', async () => {
+    const r = await go({ comment: 'false' }, { env: DIFF_ENV() });
+    expect(r.ran).not.toContain('comment');
+    expect(r.outputs).toMatchObject({ 'comment-url': '', 'comment-action': '', status: 'failed' });
+  });
+
+  it.each([
+    ['a pass', () => ({ FAKE_DOCKER_REPORT: cannedReport() }), 0, [{ id: 9, user: { login: 'github-actions[bot]', type: 'Bot' }, body: '<!-- visual-ci:sticky id=default -->\nx' }]],
+    ['a diff', DIFF_ENV, 1, []]
+  ])('403 without pull-requests: write on %s: a warning saying how to fix it; the job result is unchanged', async (_label, env, code, comments) => {
+    const r = await go({}, { env: env(), comment: { comments, commentError: { status: 403, message: 'Resource not accessible by integration' } } });
+    expect(r.results.comment.annotations).toEqual([['warning', expect.stringContaining('permissions: pull-requests: write')]]);
+    expect(r.outputs).toMatchObject({ 'comment-action': 'failed', 'comment-url': '', 'exit-code': String(code) });
+    expect(r.failed).toBe(code !== 0);
+    expect(r.results['Set the result'].code).toBe(code);
+  });
+
+  it('a crashing comment step (github-script itself fails) does not fail a passing action: continue-on-error', async () => {
+    const r = await go({}, { env: { FAKE_DOCKER_REPORT: cannedReport() }, comment: { crash: true } });
+    expect(r.results.comment.code).toBe(1);
+    expect(r.failed).toBe(false);
+    expect(r.results['Set the result'].code).toBe(0);
+    expect(r.outputs).toMatchObject({ status: 'passed', 'exit-code': '0', 'comment-action': '' });
+  });
+
+  it('when visual-ci never ran (invalid input), the comment reports the error', async () => {
+    const r = await go({ strict: 'maybe' });
+    expect(r.ran).toEqual(['runner', 'validate', 'outcome', 'comment', 'Set the result']);
+    const body = r.results.comment.calls.create[0].body;
+    expect(body).toContain('### ⚠️ Visual CI failed with an error');
+    expect(body).toContain('`NO_RESULT`');
+    expect(r.results['Set the result'].code).toBe(2);
+  });
+
+  it('an invalid comment-id fails validation, and the comment step only warns', async () => {
+    const r = await go({ 'comment-id': 'bad id' });
+    expect(r.results.validate.stdout).toContain('comment-id may only contain');
+    expect(r.results.comment.annotations).toEqual([['warning', expect.stringContaining('comment-id')]]);
+    expect(r.outputs['comment-action']).toBe('skipped');
+  });
+
+  it('an error run with a debugging artifact says it cannot be imported', async () => {
+    withRunFolder();
+    const report = cannedReport({ status: 'error', exit_code: 2, error: { code: 'NAVIGATION_FAILED', message: 'net::ERR_CONNECTION_REFUSED at http://127.0.0.1:3000/b' } });
+    const r = await go({}, { env: { FAKE_DOCKER_REPORT: report, FAKE_DOCKER_RUN_EXIT: '2' } });
+    const body = r.results.comment.calls.create[0].body;
+    expect(body).toContain('`NAVIGATION_FAILED`: `net::ERR_CONNECTION_REFUSED at http://127.0.0.1:3000/b`');
+    expect(body).toContain('cannot be imported');
+    expect(body).not.toContain('gh run download');
+  });
+});
+
 // Real Chromium runs: far above vitest's 5 s default on a busy machine.
 describe.skipIf(!HOST_BROWSERS)('the whole action against a real page (fake docker runs the real CLI)', { timeout: 120000 }, () => {
   const CONFIG = JSON.stringify({
@@ -1346,6 +1842,17 @@ describe.skipIf(!HOST_BROWSERS)('the whole action against a real page (fake dock
     } finally {
       closeDb();
     }
+  });
+
+  it('a changed page on a pull request gets a comment built from the real result', async () => {
+    color = 'black';
+    const r = await go({ 'run-id': 'pr', __event: 'pull_request' });
+    expect(r.outputs).toMatchObject({ status: 'failed', 'exit-code': '1', 'comment-action': 'created' });
+    const body = r.results.comment.calls.create[0].body;
+    expect(body).toContain('1 snapshot: 1 changed, 0 passed.');
+    expect(body).toMatch(/^\| 🔴 Changed \| `\/` \| `desktop` \| \d+\.\d\d% \|$/m);
+    expect(body).toContain("-n 'visual-regression-diffs' -D vrt-4242 && npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import vrt-4242");
+    expect(r.results['Set the result'].code).toBe(1);
   });
 
   it('upload-artifact: always uploads a passing run', async () => {

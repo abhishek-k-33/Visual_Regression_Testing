@@ -8,6 +8,7 @@ import { getSnapshotFilename } from '../cli/naming.js';
 import { MANIFEST_FILENAME, MANIFEST_SCHEMA, MANIFEST_VERSION, toSqliteTimestamp } from '../cli/manifest.js';
 import { createSnapshot, createTestRun, getTestRunById, recalculateRunStatus } from './db.js';
 import { isInside } from './paths.js';
+import { UNSAFE_CHARS, sanitizeForDisplay } from '../shared/text.js';
 
 /**
  * Imports test runs recorded elsewhere (typically the `visual-regression-diffs` artifact
@@ -59,12 +60,8 @@ const VIEWPORT_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const HEX_SHA256 = /^[0-9a-f]{64}$/;
 const COMMIT_PATTERN = /^[0-9A-Fa-f]{1,64}$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
-// C0/DEL/C1 controls, format characters (bidi overrides U+202A-E, isolates U+2066-9,
-// marks U+200E/F, zero-width chars, BOM...), lone surrogates and line/paragraph
-// separators: refused in every manifest string and archive entry name, and escaped
-// whenever untrusted text is shown (they can rewrite a terminal or disguise text).
-const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
-const UNSAFE_CHARS_GLOBAL = new RegExp(UNSAFE_CHARS.source, 'gu');
+// UNSAFE_CHARS (controls, bidi/format characters, surrogates, separators, see
+// src/shared/text.js) are refused in every manifest string and archive entry name.
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const MAX_MANIFEST_DEPTH = 3; // run.json, <id>/run.json, runs/<id>/run.json
 const MAX_FILE_DEPTH = MAX_MANIFEST_DEPTH + 1; // + baselines/<file>.png
@@ -90,16 +87,8 @@ const badInput = (message) => new ImportError(400, message);
 const tooLarge = (message) => new ImportError(413, message);
 const invalid = (message) => new ImportError(422, message);
 
-/**
- * Makes untrusted text safe to print to a terminal or log: every control, format,
- * surrogate or separator character becomes a visible \u{...} escape.
- *
- * @param {unknown} text
- * @returns {string}
- */
-export function sanitizeForDisplay(text) {
-  return String(text).replace(UNSAFE_CHARS_GLOBAL, (ch) => `\\u{${ch.codePointAt(0).toString(16).toUpperCase()}}`);
-}
+// Moved to src/shared/text.js; still exported here for existing callers.
+export { sanitizeForDisplay };
 
 /** Untrusted value for an error message: quoted, escaped and shortened. */
 function show(value) {
