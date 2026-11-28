@@ -60,7 +60,8 @@ An open-source, self-hosted visual regression testing engine and interactive rev
 
 ```text
 Visual Regression Testing Project/
-├── package.json                   # Scripts and project dependencies
+├── package.json                   # The visual-ci npm package: bin, files whitelist, engines, scripts, dependencies
+├── LICENSE                        # MIT
 ├── visual.config.json             # Visual regression test specifications
 ├── Dockerfile                     # Standardized Playwright + Ubuntu font container
 ├── docker-compose.yml             # Orchestration for dashboard & test runner
@@ -79,7 +80,10 @@ Visual Regression Testing Project/
 │   └── PHASE_5_EXECUTION.md       # GitHub Actions CI & Markdown Reporting
 ├── src/
 │   ├── cli/                       # CLI commands and screenshot engine
-│   │   ├── index.js               # CLI entry point (`visual-ci capture`, `visual-ci test`, `visual-ci import`)
+│   │   ├── index.js               # CLI entry point (`visual-ci capture`, `test`, `import`, `serve`, `install-browsers`)
+│   │   ├── serve.js               # `visual-ci serve` port/host options (flags > PORT/HOST > 4000/127.0.0.1)
+│   │   ├── installBrowsers.js     # `visual-ci install-browsers`: runs our own Playwright's `install chromium`
+│   │   ├── invocation.js          # How to run visual-ci again, for hints (never a bare `npx visual-ci` that would hit npm)
 │   │   ├── capture.js             # Playwright multi-viewport capture engine
 │   │   ├── compare.js             # Pixel comparison and canvas dimension normalizer
 │   │   ├── manifest.js            # Writes run.json, the per-run record that travels with CI artifacts
@@ -97,7 +101,7 @@ Visual Regression Testing Project/
 │   ├── shared/
 │   │   └── text.js                # No-dependency text helpers (sanitizeForDisplay, mdCode) for the CLI, the server and the action
 │   └── server/                    # Web review dashboard & REST API
-│       ├── app.js                 # Express server configuration
+│       ├── app.js                 # Express server configuration; startServer({ port, host })
 │       ├── db.js                  # SQLite schema and queries
 │       ├── importRuns.js          # Imports CI runs (artifact zip or folder) safely: validation, limits, id collisions
 │       ├── uploadImport.js        # POST /api/imports: capped streaming upload, one import at a time, disk guard
@@ -163,6 +167,12 @@ Visual Regression Testing Project/
     ├── action-report.test.js      # Action outputs from the JSON result: path mapping, upload modes, missing/invalid results
     ├── pr-comment.test.js         # PR comment: mdCode escaping, rendering and caps, sticky upsert (bot only), the step's run()
     ├── server.test.js             # Express REST API and dashboard view tests (incl. route history)
+    ├── serve.test.js              # visual-ci serve / startServer: free port, -c storageDir, PORT, SIGINT/SIGTERM, exit 2 cases
+    ├── install-browsers.test.js   # visual-ci install-browsers: our Playwright's CLI, exact argv (fake spawn), --dry-run, exit codes
+    ├── lazy-imports.test.js       # Loader hook breaks better-sqlite3: --version, --help, capture still work; test/import/serve exit 2
+    ├── invocation.test.js         # cliCommand(): the command hints show (never a bare npx visual-ci where it is not installed)
+    ├── package.test.js            # npm pack --dry-run: what the package ships and leaves out; package.json, LICENSE
+    ├── fixtures/broken-better-sqlite3/ # node --import hook that makes every import of better-sqlite3 fail
     ├── storage-dir.test.js        # Custom storageDir honoured by CLI and dashboard
     ├── urls.test.js               # Base-path URL helpers
     ├── viewModels.test.js         # Template data shaping, /storage URL mapping, history model, snapshot counts
@@ -192,7 +202,28 @@ Visual Regression Testing Project/
 - **Node.js**: `v22.x` LTS or higher
 - **npm**: `10.x` or higher
 
-### Installation
+### Install as a package (in your own project)
+
+visual-ci is a command-line tool you add to your project as a dev dependency. It needs **Node.js 22 or newer**.
+
+> **Not on npm yet.** The package has not been published. Until the first release, install it from GitHub:
+>
+> ```bash
+> npm i -D github:abhishek-k-33/Visual_Regression_Testing
+> ```
+>
+> After the first release it will be `npm i -D visual-ci`. Until then never run `npx visual-ci` in a folder where it is **not** installed: npx would download whatever is published under that name on npm, which is not this project.
+
+```bash
+npm i -D github:abhishek-k-33/Visual_Regression_Testing   # after the first release: npm i -D visual-ci
+npx visual-ci install-browsers                            # the Chromium build visual-ci's Playwright needs
+npx visual-ci test -u http://localhost:3000               # with a visual.config.json in the project
+npx visual-ci serve                                       # review the results on http://localhost:4000
+```
+
+`npx visual-ci ...` runs the copy installed in your project (it is only safe where visual-ci is installed, see above). In `package.json` scripts, plain `visual-ci ...` works too.
+
+### Installation (from a checkout of this repository)
 
 ```bash
 # Clone the repository
@@ -202,8 +233,9 @@ cd Visual_Regression_Testing
 # Install dependencies
 npm install
 
-# Install Playwright Chromium binary and system dependencies
-npx playwright install chromium
+# Install the Chromium build that this Playwright version needs
+# (add --with-deps on Linux to also install its system libraries)
+node src/cli/index.js install-browsers
 ```
 
 ---
@@ -352,7 +384,7 @@ Schema `visual-ci-result`, version `1`. Future versions only add fields; existin
 ```
 
 - `status` is `passed` (exit 0), `failed` (exit 1) or `error` (exit 2); `exit_code` is the process exit code.
-- `error` is `null`, or `{ "code", "message" }` with `code` one of `CONFIG_NOT_FOUND`, `CONFIG_INVALID` (including an invalid `maskSelectors` entry), `NAVIGATION_FAILED` (a page that could not load), `BROWSER_MISSING` (Chromium or its system libraries not installed: run `npx playwright install --with-deps chromium`), `INVALID_ARGUMENT`, `INTERNAL` (anything else, including crashes). Messages are sanitised: control and bidi characters are escaped, the working directory is shown as `.` and the home directory as `~`.
+- `error` is `null`, or `{ "code", "message" }` with `code` one of `CONFIG_NOT_FOUND`, `CONFIG_INVALID` (including an invalid `maskSelectors` entry), `NAVIGATION_FAILED` (a page that could not load), `BROWSER_MISSING` (Chromium or its system libraries not installed: run `visual-ci install-browsers --with-deps`; the message gives the exact command for how you run visual-ci), `INVALID_ARGUMENT`, `INTERNAL` (anything else, including crashes). Messages are sanitised: control and bidi characters are escaped, the working directory is shown as `.` and the home directory as `~`.
 - **No secrets:** `base_url` and every message (JSON and terminal) have URL credentials (`user:pass@`) removed and the values of token-like query parameters (`token`, `access_token`, `auth`, `key`, `apikey`, `api_key`, `password`, `secret`, `sig`, `signature`, any case) replaced by `***`.
 - `run` is `null` when the run never started (e.g. the config could not be loaded). On a later error it holds what is known; `manifest` and `summary` are `null` when those files were not written.
 - `mode` is `compare` or `update-baselines`. `threshold_percentage` and `mismatch_percentage` are percentages (`1` = 1%), rounded to 6 decimals.
@@ -374,12 +406,35 @@ npm run capture
 Launches the Express dashboard and REST API server:
 
 ```bash
-npm start
+npx visual-ci serve            # where visual-ci is installed (from a checkout: npm start, or node src/cli/index.js serve)
 ```
 
 *Access the dashboard at:* **[http://localhost:4000](http://localhost:4000)**
 
-The server listens on `127.0.0.1` only. To reach it from other machines, start it with `HOST=0.0.0.0 npm start`. The dashboard has no authentication, so only do this on a trusted network.
+```text
+visual-ci serve [options]
+
+  -p, --port <n>         Port to listen on, 0 for any free port (default: $PORT, else 4000)
+  --host <host>          Interface to listen on (default: $HOST, else 127.0.0.1)
+  -c, --config <path>    Config to read storageDir from (only storageDir is used), so the dashboard
+                         shows the same storage as `test -c` / `import -c`; VISUAL_STORAGE_DIR still wins
+```
+
+It prints the URL once it is listening; **Ctrl+C** stops it cleanly (exit `0`). An invalid port, a port already in use or a missing `-c` file exits with `2`. `npm start` and `node src/server/app.js` still start the same server (with `PORT` and `HOST` from the environment).
+
+The server listens on `127.0.0.1` only. To reach it from other machines, start it with `--host 0.0.0.0` (or `HOST=0.0.0.0 npm start`). The dashboard has no authentication, so only do this on a trusted network. If you then open it through a hostname rather than an IP address, list that name in `ALLOWED_HOSTS` (see below).
+
+#### Install the browser (`visual-ci install-browsers`)
+
+```text
+visual-ci install-browsers [--with-deps] [--dry-run]
+
+  --with-deps            Also install the system libraries Chromium needs (Linux; runs the package
+                         manager, with sudo when not root)
+  --dry-run              Only print what would be installed, and where
+```
+
+It runs **visual-ci's own Playwright** (`install chromium`), so the browser is the build that the pinned Playwright version launches; `npx playwright install` could pick up a different Playwright (for example your project's own). Its output goes straight to the terminal; it exits `0` on success and `2` if the installer fails. When Chromium is missing, `test` and `capture` fail with `BROWSER_MISSING` and say which command to run.
 
 **Cross-site protection.** Because the dashboard has no login, the server defends against other websites driving it through your browser:
 
@@ -421,7 +476,7 @@ When the visual check fails in GitHub Actions, review it in your own dashboard i
 
 1. Open the failed workflow run on GitHub and download the **`visual-regression-diffs`** artifact (bottom of the run's *Summary* page). You get `visual-regression-diffs.zip`.
 2. Import it, from your checkout of the branch, in either of two ways:
-   - **In the dashboard** (`npm start`, then [http://localhost:4000](http://localhost:4000)): click **Import CI run** and pick the zip, or drop the zip anywhere on the dashboard page. When it is done the dashboard opens the imported run (or lists them, if the artifact held several); errors are shown under the page heading.
+   - **In the dashboard** (`npx visual-ci serve` where visual-ci is installed, or `npm start` in a checkout, then [http://localhost:4000](http://localhost:4000)): click **Import CI run** and pick the zip, or drop the zip anywhere on the dashboard page. When it is done the dashboard opens the imported run (or lists them, if the artifact held several); errors are shown under the page heading.
    - **On the command line:**
      ```bash
      node src/cli/index.js import ~/Downloads/visual-regression-diffs.zip
@@ -429,7 +484,7 @@ When the visual check fails in GitHub Actions, review it in your own dashboard i
      npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import ~/Downloads/visual-regression-diffs.zip
      ```
      The npm package is **not published yet**, so never give `npx` the bare name `visual-ci`: that name on npm is not ours, and npx would download and run whatever is published under it. `-p github:abhishek-k-33/Visual_Regression_Testing` makes npx fetch this repository instead (the first run installs its dependencies, about half a minute).
-     It prints each imported run with its dashboard link, e.g. `http://localhost:4000/runs/run_1732440000000` (using `PORT` if you set it).
+     It prints each imported run with its dashboard link, e.g. `http://localhost:4000/runs/run_1732440000000` (using `PORT` if you set it), and the command that opens the dashboard, written for how you ran the import (`npx visual-ci serve` when visual-ci is installed in the project, the same `npx -y -p github:...` command when run through npx, `node src/cli/index.js serve` in a checkout).
 3. Imported runs carry an **Imported** badge on the dashboard and in the run header.
 
 ```text
@@ -773,7 +828,7 @@ The project includes pre-configured automation for GitHub Actions (`.github/work
 The project includes unit, integration, and deliverable verification suites:
 
 ```bash
-# Run all 894 Vitest unit, integration & browser tests
+# Run all 943 Vitest unit, integration & browser tests
 npm test
 
 # Run Phase 1 Deliverable Verification (Capture & Masking)
@@ -805,6 +860,10 @@ node tests/verify-phase-5.js
  ✓ tests/display.test.js (8 tests)
  ✓ tests/json-target.test.js (7 tests)
  ✓ tests/capture-errors.test.js (8 tests)
+ ✓ tests/install-browsers.test.js (8 tests)
+ ✓ tests/invocation.test.js (6 tests)
+ ✓ tests/lazy-imports.test.js (7 tests)
+ ✓ tests/package.test.js (12 tests)
  ✓ tests/demo-app.test.js (8 tests)
  ✓ tests/build-static-demo.test.js (14 tests)
  ✓ tests/db.test.js (19 tests)
@@ -819,7 +878,8 @@ node tests/verify-phase-5.js
  ✓ tests/per-run-baselines.test.js (11 tests)
  ✓ tests/approve-all.test.js (21 tests)
  ✓ tests/approve-all-api.test.js (12 tests)
- ✓ tests/server.test.js (51 tests)
+ ✓ tests/server.test.js (52 tests)
+ ✓ tests/serve.test.js (15 tests)
  ✓ tests/storage-dir.test.js (3 tests)
  ✓ tests/urls.test.js (3 tests)
  ✓ tests/viewModels.test.js (32 tests)
@@ -829,8 +889,8 @@ node tests/verify-phase-5.js
  ✓ tests/a11y-axe.test.js (14 tests)
  ✓ tests/keyboard-ui.test.js (20 tests)
 
- Test Files  34 passed (34)
-      Tests  894 passed (894)
+ Test Files  39 passed (39)
+      Tests  943 passed (943)
 ```
 
 ---
@@ -858,4 +918,4 @@ Detailed implementation specifications, security audits, and architectural recor
 
 ## 📄 License
 
-MIT © Abhishek
+[MIT](LICENSE)

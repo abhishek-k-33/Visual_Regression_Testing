@@ -684,8 +684,18 @@ describe('README documents the action', () => {
     expect(section).not.toMatch(/Pull request comments are not part of the action yet/);
   });
 
-  it('never tells anyone to run a bare `npx visual-ci` (an npm name that is not ours), and says the package is unpublished', () => {
-    expect(readme).not.toMatch(/npx (-y )?visual-ci\b/);
+  it('never tells anyone to run a bare `npx visual-ci` (an npm name that is not ours) where it is not installed, and says the package is unpublished', () => {
+    // `npx visual-ci` only appears where visual-ci is installed (npx then runs that local
+    // copy): in the "Install as a package" section, after the warning, or on a line that
+    // says so. `npx -y visual-ci` (fetch from the registry without asking) never appears.
+    expect(readme).not.toMatch(/npx -y visual-ci\b/);
+    const install = readme.slice(readme.indexOf('### Install as a package'), readme.indexOf('### Installation (from a checkout'));
+    expect(install).toMatch(/\*\*Not on npm yet\.\*\*/);
+    expect(install).toContain('npm i -D github:abhishek-k-33/Visual_Regression_Testing');
+    expect(install).toMatch(/never run `npx visual-ci` in a folder where it is \*\*not\*\* installed/);
+    const outside = readme.replace(install, '').split('\n').filter((line) => /npx visual-ci\b/.test(line));
+    expect(outside.length).toBeGreaterThan(0);
+    for (const line of outside) expect(line, line).toMatch(/installed|never a bare/);
     expect(fs.readFileSync('src/server/public/js/import-upload.js', 'utf8')).not.toMatch(/npx (-y )?visual-ci\b/);
     expect(readme).toContain('npx -y -p github:abhishek-k-33/Visual_Regression_Testing visual-ci import');
     expect(readme).toMatch(/npm package is \*\*not published yet\*\*/);
