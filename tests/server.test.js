@@ -7,6 +7,7 @@ import { initDb, closeDb, createTestRun, createSnapshot } from '../src/server/db
 import { isAllowedHost } from '../src/server/security.js';
 import { indexModel, runDetailModel, historyModel } from '../src/server/viewModels.js';
 import { pageLocals } from '../src/server/urls.js';
+import { cliCommand } from '../src/cli/invocation.js';
 
 const SAME_ORIGIN_WRITE = { method: 'POST', headers: { 'X-Requested-With': 'test' } };
 
@@ -100,6 +101,13 @@ describe('Express Review Dashboard & REST API', () => {
     const html = await res.text();
     expect(html).toContain('Visual Regression Test Runs');
     expect(html).toContain('Dashboard');
+  });
+
+  it('GET / tells the page how to run visual-ci from here (for its command-line hints)', async () => {
+    const html = await (await fetch(`${baseUrl}/`)).text();
+    // This server runs from a checkout, so the command is node <path to src/cli/index.js>.
+    expect(html).toContain(`data-cli-command="${cliCommand()}"`);
+    expect(cliCommand()).toBe('node src/cli/index.js');
   });
 
   it('POST /api/runs no longer exists (clients cannot register file paths)', async () => {

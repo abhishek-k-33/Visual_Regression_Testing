@@ -108,7 +108,7 @@ export function generateSummaryMarkdown(options) {
     lines.push('> ⚠️ **Action Required:** Visual differences were detected.');
     lines.push('> - Review diff screenshots uploaded in the **`visual-regression-diffs`** workflow artifact.');
     lines.push('> - Or inspect interactively on the local dashboard: `http://localhost:4000/runs/' + runId + '`.');
-    lines.push('> - If changes are intended, update baselines locally using: `npm run test:visual -- --update-baselines` and commit.');
+    lines.push('> - If changes are intended, update baselines locally using: `npx visual-ci test --update-baselines` (in the project that has visual-ci installed) and commit.');
     lines.push('');
   } else {
     lines.push('> ✨ **All snapshots passed!** No unexpected visual regressions detected.');

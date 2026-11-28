@@ -8,6 +8,7 @@ import { getSnapshotFilename } from './naming.js';
 import { CliError } from './errors.js';
 import { redactUrl, redactUrlsInText } from './display.js';
 import { sanitizeMessage } from './result.js';
+import { cliCommand } from './invocation.js';
 
 const firstLine = (err) => String(err?.message ?? err).split('\n')[0];
 
@@ -23,11 +24,11 @@ export function toLaunchError(err) {
   const message = String(err?.message ?? err);
   if (message.includes("Executable doesn't exist")) {
     return new CliError('BROWSER_MISSING',
-      `Playwright's Chromium is not installed (${firstLine(err)}). Install it with: npx playwright install chromium`, { cause: err });
+      `Playwright's Chromium is not installed (${firstLine(err)}). Install it with: ${cliCommand()} install-browsers`, { cause: err });
   }
   if (message.includes('Host system is missing dependencies')) {
     return new CliError('BROWSER_MISSING',
-      'Chromium cannot start: the host system is missing libraries it needs. Install them with: npx playwright install --with-deps chromium', { cause: err });
+      `Chromium cannot start: the host system is missing libraries it needs. Install them with: ${cliCommand()} install-browsers --with-deps`, { cause: err });
   }
   return err;
 }

@@ -15,6 +15,7 @@ import { EXIT, STDOUT_TARGET, CliError, buildResult, writeResult, sanitizeMessag
 import { jsonTargetConflict, jsonTargetShapeProblem } from './jsonTarget.js';
 import { createLogger } from './logger.js';
 import { toDisplayPath } from './display.js';
+import { cliCommand } from './invocation.js';
 import { resolveServeOptions } from './serve.js';
 import { installBrowsers } from './installBrowsers.js';
 
@@ -492,7 +493,7 @@ program
       db = dbModule.getDb(path.join(storageRoot, 'data.sqlite'));
       const { runs } = await importRuns(source, { storageRoot, db, runId: options.runId });
 
-      const dashboardPort = process.env.PORT || 4000; // the port `npm start` will use
+      const dashboardPort = process.env.PORT || 4000; // the port `visual-ci serve` uses by default
       const fresh = runs.filter((r) => !r.alreadyImported).length;
       const where = path.relative(process.cwd(), storageRoot) || '.';
       console.log(fresh === 0
@@ -506,7 +507,7 @@ program
         console.log(`    ${run.id}  ${run.status}, ${run.snapshots} snapshot${plural}${notes.length ? `  (${notes.join('; ')})` : ''}`);
         console.log(`      http://localhost:${dashboardPort}${run.url}`);
       }
-      console.log('\n  Open the dashboard with `npm start` to review them.\n');
+      console.log(`\n  Open the dashboard with \`${cliCommand()} serve\` to review them.\n`);
     } catch (err) {
       // Backstop: messages can quote names from the archive (importRuns already escapes them).
       console.error(`\n[ERROR] Import failed: ${sanitizeForDisplay(String(err?.message ?? err))}\n`);

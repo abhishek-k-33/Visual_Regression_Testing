@@ -15,6 +15,7 @@ import { importRuns, IMPORT_LIMITS, STALE_STAGING_MS, sanitizeForDisplay } from 
 import { runDetailModel, hashCacheInfo } from '../src/server/viewModels.js';
 import { toSqliteTimestamp } from '../src/cli/manifest.js';
 import { writeZip, folderEntries } from './helpers/zip.js';
+import { cliCommand } from '../src/cli/invocation.js';
 
 // `visual-ci import`: a CI run's folder (or the zipped artifact) recreated in a local
 // storage root. The CI run is produced once by the real CLI against a local page.
@@ -907,6 +908,10 @@ describe('visual-ci import (CLI)', () => {
     expect(first.out).toContain('Imported 1 run into store');
     expect(first.out).toContain('ci_diff  FAILED, 3 snapshots');
     expect(first.out).toContain('http://localhost:4000/runs/ci_diff');
+    // How to open the dashboard, as this copy of visual-ci runs (here: node <repo>/src/cli/index.js),
+    // not this repository's `npm start`, which users of the package don't have.
+    expect(first.out).toContain(`Open the dashboard with \`${cliCommand({ cwd })} serve\` to review them.`);
+    expect(first.out).not.toContain('npm start');
     expect(fs.existsSync(path.join(storage, 'runs', 'ci_diff', 'index-desktop.png'))).toBe(true);
 
     const again = await runCli(['import', 'visual-regression-diffs.zip'], { cwd, env: { VISUAL_STORAGE_DIR: storage } });

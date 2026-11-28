@@ -106,6 +106,9 @@ describe('Reporter Module (Phase 5)', () => {
       expect(markdown).toContain('⚠️ **Action Required:** Visual differences were detected.');
       expect(markdown).toContain('visual-regression-diffs');
       expect(markdown).toContain('http://localhost:4000/runs/run_fail_456');
+      // The package's own command, not this repository's npm scripts (users don't have them).
+      expect(markdown).toContain('`npx visual-ci test --update-baselines` (in the project that has visual-ci installed)');
+      expect(markdown).not.toContain('npm run');
     });
 
     it('handles new baseline records gracefully', () => {

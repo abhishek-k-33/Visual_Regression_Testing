@@ -38,6 +38,8 @@ function initImport() {
   const label = button.querySelector('.import-label');
   const idleLabel = label?.textContent || 'Import CI run';
   const maxBytes = Number(control?.dataset.maxUploadBytes) || 0;
+  // How to run visual-ci where this dashboard runs (see cliCommand in src/cli/invocation.js).
+  const cliCommand = control?.dataset.cliCommand || 'visual-ci';
   let uploading = false;
 
   const setStatus = (content) => {
@@ -89,7 +91,7 @@ function initImport() {
       return;
     }
     if (maxBytes && file.size > maxBytes) {
-      showError(`"${file.name}" is ${formatBytes(file.size)}; uploads are limited to ${formatBytes(maxBytes)}. Use the command line instead, from your checkout: node src/cli/index.js import <file>.`);
+      showError(`"${file.name}" is ${formatBytes(file.size)}; uploads are limited to ${formatBytes(maxBytes)}. Use the command line instead: ${cliCommand} import <file>`);
       return;
     }
 

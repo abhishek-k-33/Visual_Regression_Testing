@@ -1,6 +1,7 @@
 import express from 'express';
 import { indexModel, runDetailModel, historyModel } from '../viewModels.js';
 import { maxUploadBytes } from '../uploadImport.js';
+import { cliCommand } from '../../cli/invocation.js';
 
 const router = express.Router();
 
@@ -14,8 +15,9 @@ function renderError(res, heading, err) {
  */
 router.get('/', (req, res) => {
   try {
-    // maxUploadBytes: lets the import button refuse an oversized file before uploading it
-    res.render('index', { ...indexModel(), maxUploadBytes: maxUploadBytes() });
+    // maxUploadBytes: lets the import button refuse an oversized file before uploading it.
+    // cliCommand: how to run visual-ci from here, for the page's command-line hints.
+    res.render('index', { ...indexModel(), maxUploadBytes: maxUploadBytes(), cliCommand: cliCommand() });
   } catch (err) {
     renderError(res, 'Error Loading Dashboard', err);
   }

@@ -20,7 +20,7 @@
       <div class="page-heading-actions">
         <% if (mode !== 'static') { %>
           <%# Import a CI artifact (import-upload.js); not in the read-only static build. -%>
-          <div class="import-control" data-max-upload-bytes="<%= locals.maxUploadBytes || '' %>">
+          <div class="import-control" data-max-upload-bytes="<%= locals.maxUploadBytes || '' %>" data-cli-command="<%= locals.cliCommand || 'visual-ci' %>">
             <button type="button" class="btn-import" id="import-run-btn" aria-describedby="import-hint">
               <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -156,7 +156,7 @@
                     </svg>
                     <div class="empty-state-title">No test runs recorded yet</div>
                     <div class="empty-state-desc">
-                      Execute <code>npm run test:visual</code> in your project terminal to perform multi-viewport captures and compare against baselines.
+                      Execute <code><%= locals.cliCommand || 'visual-ci' %> test</code> in your project terminal to perform multi-viewport captures and compare against baselines.
                     </div>
                   </div>
                 </td>

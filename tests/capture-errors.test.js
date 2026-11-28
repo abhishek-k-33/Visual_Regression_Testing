@@ -54,14 +54,18 @@ describe('capture error classification', () => {
     fake.launch = async () => { throw new Error("browserType.launch: Executable doesn't exist at /home/me/.cache/ms-playwright/chromium-1/chrome\n╔═══╗"); };
     const err = await rejection(capture());
     expect(classifyError(err)).toBe('BROWSER_MISSING');
-    expect(err.message).toContain('npx playwright install chromium');
+    // Our own installer (it runs the Playwright we depend on), never `npx playwright`,
+    // run the way this copy of visual-ci runs (a checkout here: node src/cli/index.js).
+    expect(err.message).toContain('Install it with: node src/cli/index.js install-browsers');
+    expect(err.message).not.toContain('npx playwright');
   });
 
   it('missing system libraries are BROWSER_MISSING, pointing at --with-deps', async () => {
     fake.launch = async () => { throw new Error('browserType.launch: \n╔══╗\n║ Host system is missing dependencies to run browsers. ║\n║ sudo npx playwright install-deps ║'); };
     const err = await rejection(capture());
     expect(classifyError(err)).toBe('BROWSER_MISSING');
-    expect(err.message).toContain('npx playwright install --with-deps chromium');
+    expect(err.message).toContain('Install them with: node src/cli/index.js install-browsers --with-deps');
+    expect(err.message).not.toContain('npx playwright');
   });
 
   it('other launch errors are left alone (INTERNAL)', () => {
